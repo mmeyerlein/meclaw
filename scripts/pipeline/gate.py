@@ -15,6 +15,7 @@ Local run data lives under `~/.local/state/meclaw/pipeline/` (`runs/<run>/`,
 """
 import contextlib
 import datetime
+import errno
 import glob
 import hashlib
 import importlib
@@ -422,11 +423,210 @@ def _cmd_line(cmd):
     return shlex.join(list(argv or []))
 
 
+# GH #1521: a `GATE tests [...]` line of 65 663 characters (the scope named
+# every selected test) did not fit the 64 KiB of the stdout pipe, and the pass
+# ended ABORTED. The station line carries at most this many scope characters;
+# the full scope stays in the receipt, in summary.txt and in the station logs.
+SCOPE_LINE_MAX = 200
+
+
+def _scope_parts(scope):
+    """The entries of a scope at its top level: [(separator, text), ...].
+
+    A scope is a list (`a, b, c`) or a nextest filter (`a + b`); a separator
+    inside brackets is part of its entry. Unbalanced brackets (a regex with a
+    bare `)`) leave the scope one entry -- never a wrong count."""
+    parts, depth, start, sep, i = [], 0, 0, "", 0
+    while i < len(scope):
+        ch = scope[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth < 0:
+                return [("", scope)]
+        elif depth == 0 and scope.startswith((", ", " + "), i):
+            parts.append((sep, scope[start:i]))
+            sep = " + " if scope[i] == " " else ", "
+            i += len(sep)
+            start = i
+            continue
+        i += 1
+    if depth != 0:
+        return [("", scope)]
+    parts.append((sep, scope[start:]))
+    return parts
+
+
+def _short_scope(scope, limit=SCOPE_LINE_MAX):
+    """`scope` for a station line: unchanged up to `limit` characters, else
+    the first entries that fit and `... +k more` (k = entries not shown in
+    full); an entry longer than `limit` alone shows its head."""
+    if len(scope) <= limit:
+        return scope
+    parts = _scope_parts(scope)
+    kept, n = "", 0
+    for sep, text in parts:
+        cand = kept + sep + text
+        if len(cand) > limit:
+            break
+        kept, n = cand, n + 1
+    if n == 0:
+        kept = scope[:limit]
+    return "%s ... +%d more" % (kept, len(parts) - n)
+
+
 def _gate_line(data, scopes):
     name = data.get("station", "")
     reason = data.get("reason") or ""
-    return "GATE %s [%s] %ss %s%s" % (name, scopes.get(name, ""), int(data.get("secs") or 0),
+    return "GATE %s [%s] %ss %s%s" % (name, _short_scope(scopes.get(name, "")),
+                                      int(data.get("secs") or 0),
                                       data.get("verdict", ""), (" " + reason) if reason else "")
+
+
+# GH #1521: `strand.sh gate` runs the runner as `... 2>&1 | gate_tee`, so fd 1
+# and fd 2 are one open file description of one pipe. The lane's `ssh`
+# inherits fd 2 and sets O_NONBLOCK on it while it runs (OpenSSH does so for
+# every stdio fd that is no tty) -- and with it on fd 1: measured with OpenSSH
+# 9.6p1 against a lane, `fd1 nonblock=True` during the ssh, False before and
+# after. A `print` of a line longer than the free pipe buffer then raised
+# `BlockingIOError` and the pass was lost. Every runner line therefore goes
+# out whole: wait for the pipe, write the rest, never half a line.
+OUTPUT_STALL_S = 600  # a hang marker, no verdict: a reader that took no byte this long
+_POLL_S = 30
+# stdout and stderr share one pipe: one line at a time, and the station
+# threads' lines do not cut into each other (re-entrant: write holds it
+# around _emit).
+_OUTPUT_LOCK = threading.RLock()
+# The output's clock (tests run it virtual).
+_out_clock = time.monotonic
+# R1 of the review (#1521): after a stall the output is dead for the rest of
+# the call -- every further line is dropped at once instead of waiting another
+# OUTPUT_STALL_S, and the pass ends ABORTED (exit 2) with this reason.
+OUTPUT_STALLED = "output_stalled"
+# `why`: the first stall's text; `told`: the main thread had its one
+# `OutputStalled` (a stall in another thread -- the deadline timer -- reaches
+# the main thread at its next line).
+_OUTPUT_STALL = {"why": None, "told": False}
+
+
+class OutputStalled(OSError):
+    """The reader of the runner's stdout took no byte for `OUTPUT_STALL_S`."""
+
+
+def _output_reset():
+    """A live output again (one `_cmd_gate` call; tests)."""
+    _OUTPUT_STALL.update(why=None, told=False)
+
+
+def output_stalled():
+    """The first stall's text of this call, None while the output lives."""
+    return _OUTPUT_STALL["why"]
+
+
+def _output_dead():
+    """A line onto a dead output: dropped -- the main thread's first one raises
+    `OutputStalled` (no wait), so a stall in another thread ends the pass too."""
+    if not _OUTPUT_STALL["told"] and threading.current_thread() is threading.main_thread():
+        _OUTPUT_STALL["told"] = True
+        raise OutputStalled(errno.EAGAIN, _OUTPUT_STALL["why"])
+
+
+def _wait_writable(fd, timeout):
+    """Block until `fd` takes bytes (or reports an error) or `timeout` passes."""
+    import select  # noqa: PLC0415 -- only on a full non-blocking pipe
+    poller = select.poll()
+    poller.register(fd, select.POLLOUT)
+    poller.poll(max(0, int(timeout * 1000)))
+
+
+def _stalled(since, stall_s, left):
+    if _out_clock() - since >= stall_s:
+        raise OutputStalled(errno.EAGAIN, "the reader of the gate's output took no byte for "
+                            "%ds -- %d byte(s) of a line not written" % (stall_s, left))
+
+
+def _write_all(fd, data, stall_s=None):
+    """All of `data` onto `fd`, blocking or not: a full non-blocking pipe is
+    waited for, a short write continued; `OutputStalled` after `stall_s`
+    without a single byte taken (the hang marker)."""
+    stall_s = OUTPUT_STALL_S if stall_s is None else stall_s
+    view, since = memoryview(data), _out_clock()
+    while view:
+        try:
+            n = os.write(fd, view)
+        except (BlockingIOError, InterruptedError):
+            n = 0
+        if n:
+            view, since = view[n:], _out_clock()
+            continue
+        _stalled(since, stall_s, len(view))
+        _wait_writable(fd, min(_POLL_S, max(0.0, stall_s - (_out_clock() - since))))
+
+
+class _WholeLines:
+    """A text stream whose lines reach its fd whole (GH #1521): complete
+    lines go out through `_write_all`, a partial line waits for its newline
+    or a flush. A stream without an fd (a test's StringIO) passes through."""
+
+    def __init__(self, stream):
+        self._s, self._part = stream, ""
+
+    def _fd(self):
+        try:
+            return self._s.fileno()
+        except (AttributeError, OSError, ValueError):
+            return None
+
+    def _drain(self, fd):
+        """What the wrapped stream still buffers, before our first byte."""
+        since = _out_clock()
+        while True:
+            try:
+                self._s.flush()
+                return
+            except BlockingIOError:
+                _stalled(since, OUTPUT_STALL_S, 0)
+                _wait_writable(fd, _POLL_S)
+
+    def _emit(self, fd, text):
+        enc = getattr(self._s, "encoding", None) or "utf-8"
+        errors = getattr(self._s, "errors", None) or "strict"
+        with _OUTPUT_LOCK:
+            if _OUTPUT_STALL["why"] is not None:
+                return _output_dead()
+            try:
+                self._drain(fd)
+                _write_all(fd, text.encode(enc, errors))
+            except OutputStalled as exc:
+                _OUTPUT_STALL["why"] = str(exc.strerror or exc)
+                return _output_dead()
+        return None
+
+    def write(self, text):
+        fd = self._fd()
+        if fd is None:
+            return self._s.write(text)
+        with _OUTPUT_LOCK:
+            self._part += text
+            cut = self._part.rfind("\n") + 1
+            if cut:
+                out, self._part = self._part[:cut], self._part[cut:]
+                self._emit(fd, out)
+        return len(text)
+
+    def flush(self):
+        fd = self._fd()
+        if fd is None:
+            return self._s.flush()
+        with _OUTPUT_LOCK:
+            if self._part:
+                out, self._part = self._part, ""
+                self._emit(fd, out)
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._s, name)
 
 
 def _now_iso():
@@ -775,6 +975,10 @@ class _Pass:
         if self.store_lost:  # fail-closed (#1161): a pass with a hole in the store does not count
             verdict = "ABORTED"
             self.note_lost(db, run)
+        stalled = output_stalled()
+        if stalled:  # #1521 R1: the verdict reached no reader -- no verdict on the commit
+            verdict = "ABORTED"
+            v2 = dict(v2, verdict=verdict, aborted_reason=stalled)
         if v2.get("verdict") != verdict:  # the stream is the record: a scope stop after the file
             v2 = dict(v2, verdict=verdict)
         if self.doc.get("full_pass"):  # the lane's receipt.json never saw the plan (#1165)
@@ -798,7 +1002,8 @@ class _Pass:
             lane_line += " cache=off"
         self.write_legacy(v2)
         if self.o.archive:
-            self.archive(v2, dest, receipt.gate_lines(v2) + [lane_line])
+            self.archive(v2, dest, receipt.gate_lines(v2) + [lane_line] +
+                         (["gate: ABORTED -- %s" % stalled] if stalled else []))
         # The full rev (W9, GH #1123): the merge queue accepts a verdict only
         # for its candidate, and the summary line carries seven characters.
         print("gate: rev = %s" % (v2.get("rev") or self.doc.get("rev") or "none"), file=self.out)
@@ -967,12 +1172,25 @@ def _stream_to_end(p, proc, ingest, abort, deadline_at):
         pass
     try:
         try:
-            return p.stream(proc, ingest=ingest)
-        except KeyboardInterrupt:
-            print("gate: interrupted -- the executor is asked to abort the run; Ctrl-C again "
-                  "leaves at once (the run is then lost)", file=p.err, flush=True)
-            abort("interrupt")
-            return p.stream(proc, ingest=ingest)
+            try:
+                return p.stream(proc, ingest=ingest)
+            except KeyboardInterrupt:
+                print("gate: interrupted -- the executor is asked to abort the run; Ctrl-C again "
+                      "leaves at once (the run is then lost)", file=p.err, flush=True)
+                abort("interrupt")
+                return p.stream(proc, ingest=ingest)
+        except OutputStalled:
+            # #1521 R1: nobody reads the runner any more. The executor is asked to
+            # abort, its stream is read to its end into the store (every line of
+            # ours is dropped now, none waits), and the pass ends ABORTED with
+            # the reason -- whatever the executor said: its verdict reached no one.
+            abort("output stalled")
+            rc = p.stream(proc, ingest=ingest)
+            if p.pass_ended is not None:
+                data = dict(p.pass_ended.get("data") or {}, verdict="ABORTED",
+                            reason=OUTPUT_STALLED)
+                p.pass_ended = dict(p.pass_ended, data=data)
+            return rc
     finally:
         if timer is not None:
             timer.cancel()
@@ -1415,6 +1633,15 @@ def _unit_gone(ln, adm, err):
     return state
 
 
+def _note_output_stalled(db, p, adm):
+    """#1521 R1: the stall's reason in the store, at the lane lease, after the
+    close (the form of `_note_unit_gone`)."""
+    p.store("output note", events.emit, db, "lease_noted", "note",
+            {"resource": adm.lane, "holder": adm.strand or adm.wave or "-", "run": adm.run,
+             "ttl_s": None, "verb": OUTPUT_STALLED, "detail": output_stalled()},
+            run=adm.run)
+
+
 def _note_unit_gone(db, p, adm, reason, state):
     """Z17 (OR-DT.Z13.3): one `lease_noted` row AFTER the close went through --
     the close itself writes the `lease_released` of an armed token, so a row
@@ -1566,7 +1793,8 @@ def _close_on_the_way_out(ln, adm, d, started, close, err):
     tree): gone is ABORTED, anything else -- a pid, no answer, a run without a
     scope (I1) -- stays lost (fail-closed); `take` closes it once the lane
     probes empty and the driver is dead (`schedule._close_dead_runs`)."""
-    aborted = {"event": "pass_ended", "data": {"verdict": "ABORTED"}}
+    aborted = {"event": "pass_ended", "data": dict(
+        {"verdict": "ABORTED"}, **({"reason": OUTPUT_STALLED} if output_stalled() else {}))}
     if not started:
         if close(aborted):
             print("gate: the pass of %s ended before its executor started on %s -- closed "
@@ -1821,6 +2049,8 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
         try:
             if not closed:
                 _close_on_the_way_out(ln, adm, d, started, close, err)
+            if output_stalled():
+                _note_output_stalled(db, p, adm)
         finally:
             restore_signals()
             if held is not None:
@@ -1994,12 +2224,36 @@ def _cmd_gate(args):
     refusal before the pass -- its last stderr line goes to stdout too (when
     that is another file) and to the lease, so a wrapper keeping one stream
     and `token who` see it."""
-    out, err = progress.Tail(sys.stdout, marks=("GATE-SUMMARY",)), progress.Tail(sys.stderr)
-    rc = run_gate(args.argv, out, err)
-    if rc not in (0, 1, 4) and not out.marked:
-        progress.refuse("gate", err.last or "no reason printed", out=sys.stdout, err=sys.stderr,
-                        holder=_gate_holder(args.argv), code=rc, word="REFUSED (exit %d)" % rc)
-    return rc
+    # GH #1521: every line of the runner -- its own and any module's `print`
+    # -- reaches a non-blocking stdout pipe whole (`_WholeLines`).
+    # A reader that took no byte for OUTPUT_STALL_S (R1): the pass ends ABORTED,
+    # exit 2 -- never RED --, its reason at the lease (the lines are dropped).
+    _output_reset()
+    saved = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _WholeLines(sys.stdout), _WholeLines(sys.stderr)
+    try:
+        out, err = progress.Tail(sys.stdout, marks=("GATE-SUMMARY",)), progress.Tail(sys.stderr)
+        try:
+            rc = run_gate(args.argv, out, err)
+        except OutputStalled:
+            rc = 2
+        if output_stalled():
+            _OUTPUT_STALL["told"] = True  # from here on every line is dropped, none raises
+            return progress.refuse("gate", "%s; the pass is aborted, no verdict on the commit"
+                                   % output_stalled(), out=sys.stdout, err=sys.stderr,
+                                   holder=_gate_holder(args.argv), code=2,
+                                   word="ABORTED (exit 2)")
+        if rc not in (0, 1, 4) and not out.marked:
+            progress.refuse("gate", err.last or "no reason printed", out=sys.stdout,
+                            err=sys.stderr, holder=_gate_holder(args.argv), code=rc,
+                            word="REFUSED (exit %d)" % rc)
+        return rc
+    finally:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        finally:
+            sys.stdout, sys.stderr = saved
 
 
 def _gate_holder(argv):

@@ -278,3 +278,278 @@ pub fn open_advice(consult: &str, departs: Value) -> (String, Vec<Value>) {
     let key = hop_str(in_phase(&b, "turn-open"), "turn_id");
     (key, b)
 }
+
+// oneanswer
+
+/// The store `./window` as far as the rows of a round go, kept in the test
+/// (D54g oneanswer, GH #1505). The ops `collector/assemble` sends on `cstore`
+/// are run here in the order they leave and answered in the two shapes
+/// `./window` answers in: one call as a single-op reply, two or more as a
+/// bundle. A pin that drives the cell through it measures what leaves on
+/// `answer` and what the store holds, not which phase or call id carried it.
+/// `order_by` is not read: rows come back in the order they were written.
+pub struct WindowStore {
+    tables: std::collections::BTreeMap<String, Vec<Value>>,
+    /// Every op the cell sent, in order, as `(table, operation, args)`.
+    pub ops: Vec<(String, String, Value)>,
+    /// The call ids this store refuses (`refusing`): such an op runs not at
+    /// all and answers `sql_error`, the others of its bundle run as usual.
+    refused: std::collections::BTreeSet<String>,
+}
+
+fn cell_matches(have: &Value, want: &Value) -> bool {
+    let Some(cond) = want.as_object() else {
+        return have == want;
+    };
+    // `or_null` wraps one comparison: a missing value matches too, as the
+    // store renders it (`IS NULL OR …`).
+    if let Some(inner) = cond.get("or_null") {
+        return have.is_null() || cell_matches(have, inner);
+    }
+    cond.iter().all(|(op, v)| {
+        let ord = match (have.as_str(), v.as_str()) {
+            (Some(a), Some(b)) => a.cmp(b),
+            _ => have
+                .as_f64()
+                .unwrap_or(0.0)
+                .total_cmp(&v.as_f64().unwrap_or(0.0)),
+        };
+        match op.as_str() {
+            "eq" => have == v,
+            "neq" => have != v,
+            "in" => v.as_array().is_some_and(|a| a.contains(have)),
+            "lt" => ord.is_lt(),
+            "lte" => ord.is_le(),
+            "gt" => ord.is_gt(),
+            "gte" => ord.is_ge(),
+            other => panic!("the test store knows no comparison `{other}`: {want}"),
+        }
+    })
+}
+
+fn row_matches(row: &Value, filter: &Value) -> bool {
+    filter.as_object().is_none_or(|w| {
+        w.iter()
+            .all(|(k, want)| cell_matches(row.get(k).unwrap_or(&Value::Null), want))
+    })
+}
+
+impl WindowStore {
+    /// A store that holds `rows` in `table` and nothing else.
+    pub fn holding(table: &str, rows: Vec<Value>) -> Self {
+        let mut tables = std::collections::BTreeMap::new();
+        tables.insert(table.to_string(), rows);
+        Self {
+            tables,
+            ops: Vec::new(),
+            refused: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// The same store, refusing every op sent under the call id `id` with
+    /// `sql_error` -- the store's way of failing one leg of a bundle while the
+    /// legs around it run (review M-3 of D54g oneanswer, error injection).
+    #[must_use]
+    pub fn refusing(mut self, id: &str) -> Self {
+        self.refused.insert(id.to_string());
+        self
+    }
+
+    /// Answer the ops under call id `id` again, after `refusing`: one leg
+    /// refused once while a later op under the same id runs.
+    pub fn heal(&mut self, id: &str) {
+        self.refused.remove(id);
+    }
+
+    /// The rows of one table as the store holds them now.
+    pub fn rows(&self, table: &str) -> Vec<Value> {
+        self.tables.get(table).cloned().unwrap_or_default()
+    }
+
+    /// Run one op; returns `(operation, rows read, rows affected)`.
+    fn run(&mut self, args: &Value) -> (String, Value, usize) {
+        let table = args["table"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a store op names no table: {args}"))
+            .to_string();
+        let operation = args["operation"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a store op names no operation: {args}"))
+            .to_string();
+        self.ops
+            .push((table.clone(), operation.clone(), args.clone()));
+        let rows = self.tables.entry(table).or_default();
+        let (read, affected) = match operation.as_str() {
+            "select" => {
+                let mut found: Vec<Value> = rows
+                    .iter()
+                    .filter(|r| row_matches(r, &args["where"]))
+                    .cloned()
+                    .collect();
+                if let Some(n) = args["limit"].as_u64() {
+                    found.truncate(usize::try_from(n).unwrap_or(usize::MAX));
+                }
+                if let Some(cols) = args["columns"].as_array() {
+                    found = found
+                        .iter()
+                        .map(|r| {
+                            let mut o = serde_json::Map::new();
+                            for c in cols.iter().filter_map(Value::as_str) {
+                                o.insert(c.to_string(), r.get(c).cloned().unwrap_or(Value::Null));
+                            }
+                            Value::Object(o)
+                        })
+                        .collect();
+                }
+                let n = found.len();
+                (Value::Array(found), n)
+            }
+            "insert" => {
+                if args["if_absent"].is_object()
+                    && rows.iter().any(|r| row_matches(r, &args["if_absent"]))
+                {
+                    (json!([]), 0)
+                } else {
+                    if args["replace"].is_object() {
+                        rows.retain(|r| !row_matches(r, &args["replace"]));
+                    }
+                    rows.push(args["row"].clone());
+                    (json!([]), 1)
+                }
+            }
+            "delete" => {
+                let before = rows.len();
+                rows.retain(|r| !row_matches(r, &args["where"]));
+                (json!([]), before - rows.len())
+            }
+            "update" => {
+                let mut n = 0;
+                for r in rows.iter_mut() {
+                    if !row_matches(r, &args["where"]) {
+                        continue;
+                    }
+                    if let Some(set) = args["set"].as_object() {
+                        for (k, v) in set {
+                            r[k.as_str()] = v.clone();
+                        }
+                    }
+                    n += 1;
+                }
+                (json!([]), n)
+            }
+            other => panic!("the test store knows no operation `{other}`: {args}"),
+        };
+        (operation, read, affected)
+    }
+
+    /// Run the ops of one `cstore` emission and build the reply `./window`
+    /// hands back: the context of the message the cell was handling, with the
+    /// keys the hive's `cstore` edge promotes from the hop (`col_phase`,
+    /// `turn_id`, `session_id`, `iter`, `col_gate`, `store_origin`).
+    pub fn reply(&mut self, cstore: &Value, ctx: &Value) -> Value {
+        let head = &cstore["header"];
+        let mut context = ctx.clone();
+        for (to, from) in [
+            ("col_phase", "phase"),
+            ("turn_id", "turn_id"),
+            ("session_id", "session_id"),
+            ("iter", "iter"),
+            ("col_gate", "gate"),
+        ] {
+            context[to] = head[from].clone();
+        }
+        context["store_origin"] = json!("collector");
+        let mut legs: Vec<(String, String, Value, usize, bool)> = Vec::new();
+        for (id, args) in calls_of(cstore) {
+            if self.refused.contains(&id) {
+                let operation = args["operation"].as_str().unwrap_or_default().to_string();
+                legs.push((id, operation, json!({"code": "sql_error"}), 0, true));
+                continue;
+            }
+            let (operation, read, affected) = self.run(&args);
+            legs.push((id, operation, read, affected, false));
+        }
+        let messages: Vec<Value> = legs
+            .iter()
+            .map(|(id, _, read, _, _)| {
+                json!({"origin": "tool", "type": "tool_result", "id": id,
+                       "text": read.to_string()})
+            })
+            .collect();
+        if let [(_, operation, _, affected, refused)] = legs.as_slice() {
+            let mut hop = json!({"operation": operation, "rows_affected": affected});
+            if *refused {
+                hop["error_code"] = json!("sql_error");
+            }
+            return json!({
+                "header": {"context": context.clone(), "hop": hop},
+                "messages": messages
+            });
+        }
+        let results: Vec<Value> = legs
+            .iter()
+            .map(|(id, operation, _, affected, refused)| {
+                let mut r = json!({"tool_call_id": id, "operation": operation,
+                                   "rows_affected": affected, "duration_ms": 0});
+                if *refused {
+                    r["error_code"] = json!("sql_error");
+                }
+                r
+            })
+            .collect();
+        let errors = legs.iter().filter(|leg| leg.4).count();
+        json!({
+            "header": {"context": context,
+                       "hop": {"operation": "bundle", "rows_affected": legs.len(),
+                               "bundle_errors": errors}},
+            "messages": messages,
+            "results": results
+        })
+    }
+}
+
+/// Feed one message to the shipped `collector/assemble` and then every reply
+/// of the store it leads to, until the cell sends no store op any more.
+/// Returns what left on every other route, in order. The step cap is a hang
+/// mark, not a verdict about the cell.
+pub fn drive(store: &mut WindowStore, doc: Value) -> Vec<Value> {
+    drive_with(&[], store, doc)
+}
+
+/// `drive` with the case's params laid over the shipped ones.
+pub fn drive_with(over: &[(&str, Value)], store: &mut WindowStore, doc: Value) -> Vec<Value> {
+    let mut left = Vec::new();
+    let mut queue = std::collections::VecDeque::from([doc]);
+    let mut steps = 0;
+    while let Some(msg) = queue.pop_front() {
+        steps += 1;
+        assert!(steps <= 64, "the cell and its store never came to rest");
+        let ctx = msg["header"]["context"].clone();
+        for e in assemble(over, msg) {
+            if e["header"]["route"].as_str() == Some("cstore") {
+                queue.push_back(store.reply(&e, &ctx));
+            } else {
+                left.push(e);
+            }
+        }
+    }
+    left
+}
+
+/// A store that holds the opening row of round `turn_id` and nothing else.
+/// Since GH #1505 every interim leaves through `bridge-gate`, which lets it
+/// out only while its round is open.
+pub fn open_round_of(turn_id: &str) -> WindowStore {
+    WindowStore::holding(
+        "round",
+        vec![json!({"turn_id": turn_id, "session_id": SESSION, "iter": 0,
+                    "role": "leg-window", "turn": "{}", "fired": 1, "recorded_at": ""})],
+    )
+}
+
+/// What leaves when `doc` meets a store that holds nothing. Since GH #1505 no
+/// answer leaves `collector/assemble` in the call that brought it: it goes
+/// through `answer-gate` and leaves on the store's reply.
+pub fn through_store(doc: Value) -> Vec<Value> {
+    drive(&mut WindowStore::holding("round", Vec::new()), doc)
+}

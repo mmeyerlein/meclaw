@@ -35,8 +35,10 @@ export reads the same function). In short: `CHANGELOG.md`, `docs/status.en.md`
 and a wave's `plans/<wave>/{berichte,straenge,receipts}/**` (added or modified,
 100644, not named by a script or test) may change; the version places
 (`Cargo.toml`, `crates/*/Cargo.toml`, `Cargo.lock`, `templates/**/template.json`)
-only in their version strings. `ROADMAP.md` and every other `plans/**` path are
-foreign (review C1). Every foreign file is one line `foreign: <path> (<reason>)`.
+only in their version strings; `ROADMAP.md` only when lines are added under
+`## Shipped` and nothing else (the release's own line, GH #1518). Any other
+`ROADMAP.md` change and every other `plans/**` path are foreign (review C1).
+Every foreign file is one line `foreign: <path> (<reason>)`.
 
 Exit: 0 clean, 1 foreign files or a differing templates tree, 2 unusable
 receipt (no `core_commit`, no `templates_tree`) or unknown commit.

@@ -26,7 +26,7 @@
 #[allow(unused_imports)]
 use crate::assemble_cell; // harness_fold: mod assemble_cell;
 
-use assemble_cell::{ASSEMBLE, lane, on_route, run_cell};
+use assemble_cell::{ASSEMBLE, drive, lane, on_route, open_round_of, run_cell};
 use meclaw_colony::config::{EdgeSpec, HiveParams};
 use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_core::serde_json::{Map, Value, json};
@@ -124,12 +124,15 @@ fn answer_of(out: &[Value]) -> &Value {
     on_route(out, "answer")
 }
 
+/// GH #1505: nothing a model wrote leaves the collector in the call that
+/// brought it -- an answer goes through `answer-gate`, an interim through
+/// `bridge-gate` -- so the round is open in a store kept here and what comes
+/// back is what left on the store's reply.
 fn in_answer(hop: Map<String, Value>, text: &str) -> Vec<Value> {
     let mut hop = hop;
     hop.remove("route");
-    run_cell(
-        ASSEMBLE,
-        &[],
+    drive(
+        &mut open_round_of("round-843"),
         lane(
             "in_answer",
             Value::Object(hop),
@@ -137,7 +140,6 @@ fn in_answer(hop: Map<String, Value>, text: &str) -> Vec<Value> {
             json!([{"origin": "assistant", "type": "text", "text": text}]),
         ),
     )
-    .0
 }
 
 #[test]

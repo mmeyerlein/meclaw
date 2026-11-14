@@ -7,7 +7,6 @@ pub mod composite_colony;
 pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
 pub mod curator_profiles;
-pub mod gh1225_kr_the_set_sent_last_stands;
 pub mod gh1225_kr_two_turns_and_a_restart_never_share_an_episode_id;
 pub mod gh1225_without_a_package_the_curator_still_rebuilds;
 pub mod gh1247_a_complex_turn_goes_straight_to_cogny;
@@ -65,6 +64,8 @@ pub mod gh949_things_leave_as_thing_seen;
 pub mod gh955_the_loser_of_two_first_claims_backs_off;
 pub mod gh972_a_pin_carries_the_round_its_row_proves;
 pub mod gh972_two_groups_of_one_source_replace_in_one_message;
+pub mod gh_d38_c0_policy_corpus_is_byte_identical;
+pub mod gh_d38_c1_lead_state_lives_in_its_own_cell;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;
 #[path = "../mock_openai.rs"]

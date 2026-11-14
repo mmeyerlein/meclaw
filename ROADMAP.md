@@ -24,8 +24,8 @@ a red build.
 Release detail is in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
-When Now is empty, the tree is between two waves: what the last one built is in
-v0.77.0, under [§ Shipped](#shipped), and the open findings wait in the tracker
+When Now is empty, the tree is between two waves: what the last one built is the
+newest line under [§ Shipped](#shipped), and the open findings wait in the tracker
 for the next wave to give them a horizon. A horizon holds bullets only — a
 sentence like this one stands up here, above the first heading, where the gate
 does not read it.
@@ -101,6 +101,45 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.87.0: this release makes a live voice session one target of the curator like any other and tightens what a
+  conversation hears, says and keeps:
+- v0.86.1: in the first turn of a freshly born colony the router's crisis note reaches the model that answers it;
+  the window watch finds the running round by place, an errand files one outcome, and a late catalogue row, a
+  repeated recall or a consult no longer breaks the next call's prefix; `rusqlite` moves to 0.41 for
+  RUSTSEC-2026-0459.
+- v0.86.0: the curator becomes `curator@2.0.0` and no longer knows who calls it: it cuts each window for the
+  target the caller names, by the profile that target's model cell reports; what it decided for others moves to
+  its owners, the lead and the assistant.
+- v0.85.1: the line on the day's wellbeing keys on a class the model sets on each fact; a recall quote survives
+  when the guard cuts its source; the LongMemEval harness runs again, and the live voice path sends its app id.
+- v0.85.0: the curator is taken apart into parts that each carry one decision, held against a behaviour corpus of
+  forty-four cases; each call is cut for its target model from the catalogue row, so a new model is one row, not
+  a code change.
+- v0.84.0: what the window keeps is state, not chronicle: a topic ages, a state line opens the notes, a rebuild
+  can write a handover brief, and the memory is looked up when a turn needs it.
+- v0.83.0: the curator's raw budget measures the rounds in the form they are sent; a question about the person's
+  own life no longer leaves on the fast path without what the companion remembers.
+- v0.82.0: the window becomes visible and goes on a diet: the curator keeps raw what fits a token budget and
+  collects what no longer shapes the conversation, never an error or anyone's words; the memory keeps who said
+  what how firmly.
+- v0.81.0: the last latency rests of the phone, voice and text releases: a speculation streams sentence by
+  sentence, a flat tool's `args` reach the tool at the first call, and a large body's blob offload leaves the
+  colony loop.
+- v0.80.0: an answer reaches the person sentence by sentence: an `llm` cell streams on all three wires and emits
+  each sentence on a `partial` lane that reaches only the person's channels.
+- v0.79.1: a crisis word on a partial interrupts even when the turn's route was unsure; the fact of a tool turn on
+  a call can come straight from the tool, and a call no longer runs the same tool twice.
+- v0.79.0: a phone call carries: speculation runs on its own `quick_spec` cell beside the bridge, the curator
+  tells the live session how long an answer will take, and a crisis word on a partial interrupts before the turn
+  ends.
+- v0.78.1: the public CI's kit self-test job installs the pinned toolchain first; this release carries the
+  release notes, discussion and website update that 0.78.0 did not get.
+- v0.78.0: a failed speculative quick call falls back to the brain, so every turn gets exactly one answer;
+  `strand.sh candidate` proves the binaries of every build lane equal, and the public CI frees its runner's disk
+  before a shard builds.
+- v0.77.2: the public CI's shard settings no longer leak into the self-tests, and the suite runs on ten shards.
+- v0.77.1: the release cut lands with a wave's last merge, one full pass serves as integration and release check,
+  and one release command carries a release to the published site.
 - v0.77.0: live voice from a seeded session (G.711, transcript deltas, per-call usage); the early verdict runs beside
   the fast model, asks how a turn is meant and names the screen form; the screen builds its window in place.
 - v0.76.6: a quick call without an answer goes to the brain, so the person is answered.

@@ -16,6 +16,7 @@
     "speak_partials": "0",
     "release_grace_ms": 2500,
     "emit_usage": false,
+    "emit_first_audio": false,
     "call_marks_s": [],
     "call_mark_every_s": 0,
     "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
@@ -80,6 +81,12 @@
         "secret": false,
         "default": false,
         "description": "Whether a DUPLEX call reports what it used on the `usage` lane (D48): hop `seconds` is the call's total so far over every session it ran on, renewals included -- at each meter reading of the model, when a session the call renewed away from closes, and once with `final` true at the end of the call, whatever ended it: every session counts with what it closed with, or with its last meter reading where its close never arrived, and that `final` then says `complete` false. OFF here, for the reason emit_partials is: without an edge that drains it every reading dead-letters. No price is computed in the cell; the price belongs to whoever reads the lane. Settled at birth; a cascade emits nothing."
+      },
+      "emit_first_audio": {
+        "type": "boolean",
+        "secret": false,
+        "default": false,
+        "description": "Whether the first audio of an answer is stamped on the `first_audio` lane the moment it goes out: one per duplex answer (hop `turn_id`, `t_first_audio_ms` on the session's clock) or one per synthesis (hop `speak_id`, `t_first_audio_ms` since the connection opened, ahead of its `speak_end`). Empty messages, no words: the lane is a measurement. OFF here, for the reason emit_partials is: without an edge that drains it every stamp dead-letters. Whoever measures orders it via override_params, in the same breath as the edge. Settled at birth."
       },
       "call_marks_s": {
         "type": "array",
@@ -200,11 +207,13 @@
             "speak_end",
             "error",
             "delegation",
+            "delegation_cancel",
             "renewed",
             "seed_ask",
             "credential_request",
             "usage",
-            "call_mark"
+            "call_mark",
+            "first_audio"
           ],
           "required": false
         },
@@ -297,6 +306,11 @@
           "required": false,
           "description": "On a duplex `turn`: when the first audible audio frame of the model's answer after the caller's last words went out to the client, in milliseconds of the call's clock (D48) -- the 'time to the first word' beside t_person_end_ms. The sent audio above the barge-in level, not the answer's transcript and not the silence before it; never before t_person_end_ms, after a barge-in the first new block. Missing where no audible answer audio went out inside the turn."
         },
+        "cut": {
+          "type": "boolean",
+          "required": false,
+          "description": "On a duplex `turn` that the end of the connection closed: `true` where that end cut the model off -- its audible audio went out within spoken_quiet_ms of the end, or its transcript reaches past the session's clock -- so the model's part was not said to its end and a reader does not take it for a statement that was made. Absent on every other turn."
+        },
         "happened_at": {
           "type": "number",
           "required": false,
@@ -310,7 +324,22 @@
         "delegation_id": {
           "type": "string",
           "required": false,
-          "description": "Which delegation this emission belongs to. Only on the `delegation` lane: the provider says it has handed work to the client and names the handle, and whatever answers has to send the answer back under the same name."
+          "description": "Which delegation this emission belongs to. On the `delegation` lane: the provider says it has handed work to the client and names the handle, and whatever answers has to send the answer back under the same name. On `delegation_cancel`: the delegation a newer one superseded, whose work is void."
+        },
+        "operation_id": {
+          "type": "string",
+          "required": false,
+          "description": "The operation one `delegation` emission starts, `<call_id>:<delegation_id>:<task_revision>`, unique per emission. On `delegation_cancel` it names the operation of the superseded delegation."
+        },
+        "task_revision": {
+          "type": "number",
+          "required": false,
+          "description": "Only on the `delegation` lane: the running number of this emission in the call, counting from 1."
+        },
+        "superseded_by": {
+          "type": "string",
+          "required": false,
+          "description": "Only on `delegation_cancel`: the newer delegation that superseded `delegation_id`."
         },
         "offset_ms": {
           "type": "number",
@@ -349,7 +378,8 @@
         },
         "error_code": {
           "type": "string",
-          "required": false
+          "required": false,
+          "description": "Only on the `error` lane; the closed list stands in docs/cell-types.en.md, section `voice`. `advise_append_refused`: the duplex provider refused an append this cell sent and named its event id -- `meta.section` (`fact`, `context` or `correction`), `meta.chars`, `meta.detail`, and `meta.provider_code` and `meta.delegation_id` where there is one; a refused answer fails its delegation at once. A refusal that names no append of this cell stays `duplex_warning` with `meta.provider_code`."
         },
         "msg_type": {
           "type": "string",
@@ -410,7 +440,7 @@
         "delegation_id": {
           "type": "string",
           "required": false,
-          "description": "Which delegation an `in_advise` is the answer to, where it is the answer to one. Optional on purpose: advice may also arrive unasked -- a fact somebody wanted said now -- and the provider takes it either way."
+          "description": "Which delegation an `in_advise` or an `in_speak` is the answer to, where it is the answer to one. An answer closes its delegation whichever of the two lanes it comes by: the append carries the delegation, a second answer for it is not said, and the deadline's fallback no longer falls. Optional on purpose: advice may also arrive unasked -- a fact somebody wanted said now -- and the provider takes it either way."
         },
         "call_id": {
           "type": "string",
@@ -433,7 +463,7 @@
     "purpose": "One spoken conversation as one cell. Audio arrives over a WebSocket and leaves the cell as ordinary text turns; a finished assistant turn arriving from the topology is spoken back into the same connection. A connection IS the session, so the cell mints the id at birth and every emission carries it twice: as session_id, and as call_id -- the name a channel addresses it by.",
     "use_when": "Wherever a topology needs a voice surface in front of something ELSE. One instance per mount. Wire the cell itself -- there is no hive and no lane inside it to hit: the emission lane is on hop.route, 'turn' for a finished utterance, 'partial' for an interim one and 'error' for the cell's own failure.",
     "not_in_scope": "No telephony, no SIP, no room: the client brings the audio and takes it back. No resampling either -- the rate a provider declares is the rate on the wire, and a client that sends something else is refused rather than converted. No persona, no memory, no answer of its own: this is the surface, and whatever stands behind it answers.",
-    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, call_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, call_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and, where a session exists, session_id and call_id, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation. Since 2.1.0 a DUPLEX session adds three lanes to the same three shapes and stamps hop.engine 'duplex' on every one of them, which is how an edge tells the two engines apart -- a cascade stamps no engine at all. 'spoken' is shape (b) for the assistant's side of the stream, with hop.speaker 'assistant', and rides on the same emit_partials. 'delegation' is shape (a) with delegation_id and offset_ms: the provider says it has handed work to the client, and the body carries the user text of the open turn so that whatever answers knows what was asked. 'turn' gains happened_at and usage_ratio there, because a duplex turn is cut on the MODEL's clock and the only number a topology can act on -- how full the context window is -- has no lane of its own. A duplex session whose duplex block sets renew_after_ms adds 'renewed': empty messages[], hop carries route, session_id, call_id, platform, mode, engine, renewal_n (counting from 1) and renewed_at (epoch milliseconds) -- the provider session was renewed inside the same call, and the receiver answers with an in_advise 'context' that carries hop.renewal_n. A duplex cell that sets emit_usage adds 'usage' (empty messages[], hop seconds and final, the final one also complete), one that sets call_marks_s or call_mark_every_s adds 'call_mark' (empty messages[], hop elapsed_s); both carry route, session_id, call_id, platform, mode and engine (D48). A `turn` or `delegation` of a session the `in_session` lane named also carries `user_id` and, under the name of a proof, `verified_user`; every other emission, and every session nobody named, carries none (GH #979).",
+    "emits_meaning": "Three emission shapes, hence no required hop key. (a) 'turn' -- one user-origin text turn per finished utterance, hop carries route, session_id, call_id, turn_id ('<session_id>#<n>'), platform and mode. (b) 'partial' -- the same body shape for an interim transcript, hop carries route, session_id, call_id, platform, mode and eager; params.emit_partials ships FALSE, so this shape only appears where a manifest ordered it and drew the edge that drains it. (c) 'error' -- empty messages[], hop carries route 'error', error_code, msg_type 'voice_error' and, where a session exists, session_id and call_id, with the detail in meta. Declaring session_id or platform required would break shape (c) against the substrate emits validation. Since 2.1.0 a DUPLEX session adds three lanes to the same three shapes and stamps hop.engine 'duplex' on every one of them, which is how an edge tells the two engines apart -- a cascade stamps no engine at all. 'spoken' is shape (b) for the assistant's side of the stream, with hop.speaker 'assistant', and rides on the same emit_partials. 'delegation' is shape (a) with delegation_id and offset_ms: the provider says it has handed work to the client, and the body carries the user text of the open turn so that whatever answers knows what was asked. 'turn' gains happened_at and usage_ratio there, because a duplex turn is cut on the MODEL's clock and the only number a topology can act on -- how full the context window is -- has no lane of its own. 'delegation' also carries operation_id and task_revision. A gpt_live block that sets delegation_superseded 'drop' adds 'delegation_cancel': empty messages[], hop carries route, session_id, call_id, platform, mode, engine, delegation_id (the superseded delegation), superseded_by and operation_id -- emitted once, when a newer delegation of the same call opens while the older one is unanswered, so the topology can cancel or discard that work. A duplex session whose duplex block sets renew_after_ms adds 'renewed': empty messages[], hop carries route, session_id, call_id, platform, mode, engine, renewal_n (counting from 1) and renewed_at (epoch milliseconds) -- the provider session was renewed inside the same call, and the receiver answers with an in_advise 'context' that carries hop.renewal_n. A duplex cell that sets emit_usage adds 'usage' (empty messages[], hop seconds and final, the final one also complete), one that sets call_marks_s or call_mark_every_s adds 'call_mark' (empty messages[], hop elapsed_s); both carry route, session_id, call_id, platform, mode and engine (D48). A cell that sets emit_first_audio adds 'first_audio', empty messages[], off as shipped, and the set that orders it draws the edge. A duplex session emits one per answer, the moment its first audible audio went out to the client: hop carries route, session_id, call_id, platform, mode, engine, turn_id (the open turn) and t_first_audio_ms, the time the closed 'turn' later carries. The way through a speech synthesis emits one per synthesis at its first audio frame, ahead of its 'speak_end': hop carries route, session_id, call_id, platform, engine, speak_id and t_first_audio_ms in milliseconds since the connection opened. A duplex 'turn' the end of the connection closed is emitted at once, before the final 'usage', and carries cut true where that end cut the model off. A `turn` or `delegation` of a session the `in_session` lane named also carries `user_id` and, under the name of a proof, `verified_user`; every other emission, and every session nobody named, carries none (GH #979).",
     "consumes_meaning": "messages[]: the last assistant turn is spoken into the connection. context.call_id selects which connection -- promoted onto context by the outbound edge of the level that holds this cell, out of the hop this cell stamped on the way up. context.session_id is read where call_id is absent, so a colony wired before 1.4.0 keeps working; its owner is unchanged, and the second key exists because a member's session-keeper writes the first one for its own generation. A message naming neither is refused as missing_session. Since 2.1.0 there is a second inbound lane, in_advise, and it exists only for a duplex session: hop.section names one of five sections -- a fact, a context, a correction, an interrupt or a renew (consumes.hop.section says what each does), context.delegation_id names the delegation it answers where it answers one, and the text is body.payload, which IS the section value the sidecar splitter writes there, read before the last message and body.text -- those two stay for a sender that writes one of them instead. Where the payload is an object the sentence is found by name: the section's own key, then text, then the first string in sorted key order. A section other than renew that carries no words in any of the three is refused as bad_section rather than dropped. It is not a turn and it is not spoken as one -- it is appended to the running session, so nothing is cut and nobody is interrupted. The `in_session` lane carries no text: `hop.call_id` (or `hop.session_id`) names a session and `hop.user_id` the sender somebody verified for it, which this cell then stamps on the `turn` and `delegation` lanes of that session (GH #979). Only an edge the installing level draws can reach it -- in the telephone hive, the signalling half.",
     "examples": [
       "A finished utterance -> emit body { messages: [{ origin: 'user', type: 'text', text: 'what time is it' }] }, hop { route: 'turn', session_id: '0190...', call_id: '0190...', turn_id: '0190...#1', platform: 'voice', mode: 'auto' }",

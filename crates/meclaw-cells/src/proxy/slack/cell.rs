@@ -499,12 +499,22 @@ impl LongRunningCell for SlackCell {
             // The A-timeout for this call lives inside the client, built from
             // `send_timeout_ms` at construction time.
             let (channel, thread_ts) = split_chat_id(&chat_id);
-            let failure = self
-                .client
-                .chat_post_message(&channel, &text, thread_ts.as_deref())
-                .await
-                .err()
-                .map(|e| format!("{e}"));
+            // GH #1505 (d54g, finding 16): an answer marked `repeat` carries a
+            // text this turn already posted -- the model wrote its sentence
+            // beside a call and wrote it again in the next round, and the person
+            // read the same answer twice in the channel. It is not posted;
+            // booking and settling stay those of a posted answer, so a replay
+            // stays silent.
+            let repeat = msg.headers.hop.get("repeat").and_then(|v| v.as_str()) == Some("1");
+            let failure = if repeat {
+                None
+            } else {
+                self.client
+                    .chat_post_message(&channel, &text, thread_ts.as_deref())
+                    .await
+                    .err()
+                    .map(|e| format!("{e}"))
+            };
             // GH #1043 review: book the answer, so a replay answers like this.
             // A booking that fails leaves the row unconfirmed, and its replay
             // reports `unconfirmed` -- the honest answer without a record.

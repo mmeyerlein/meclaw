@@ -622,7 +622,7 @@ fn the_marks_phase_has_one_writer_and_it_keeps_a_lost_word_seen() {
     }
     for frame in [
         "else if (f.type === \\\"turn\\\") { st.turns++; st.text = f.text; phase(\\\"\\\"); }",
-        "else if (f.type === \\\"speak_start\\\") { phase(\\\"speaking\\\"); }",
+        "else if (f.type === \\\"speak_start\\\") { st.speakStart++; phase(\\\"speaking\\\"); }",
         "else if (f.type === \\\"speak_end\\\") { if (f.reason === \\\"cancelled\\\") hush(); st.speakEnd++; phase(\\\"\\\"); }",
     ] {
         assert!(

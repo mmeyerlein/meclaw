@@ -33,9 +33,27 @@
 //! nothing to say sends silence, and silence is never ducked: the gate closes
 //! only on a model that is audibly speaking.
 //!
+//! # The greeting of a session that took the ring
+//!
+//! A session opened while the line rang greets into the ring, and the caller
+//! picks up into that greeting. Until it is over, the level alone does not
+//! close the gate: noise on a line that has just been picked up (the handset
+//! lifted, a room, a breath) sits at the level of speech, and it took the
+//! greeting away — the greeting is to be played whole and break off only
+//! when the caller speaks (d54g, contract 5). What tells words from noise is
+//! the provider's transcript of the caller, so during the greeting the gate
+//! closes only once a fragment of the caller's own words has come in. The
+//! greeting is the model's first block on its own clock: it ends where the
+//! model starts a new block (`live_turns::opens_new_block`, the turn gap of
+//! the call), the same boundary the park buffer cuts at. A session that did
+//! not take the ring ducks as before.
+//!
 //! Everything is counted in AUDIO milliseconds — frame lengths, not a wall
 //! clock — so the gate is a pure function of the two streams and its locks
 //! need no timer.
+
+use crate::voice::contract::{DuplexEvent, Speaker};
+use crate::voice::live_turns::opens_new_block;
 
 /// The knobs, read from `params.duplex` by the factory. `onset_ms == 0` is
 /// off, which is what every cell has unless its params ask.
@@ -111,6 +129,16 @@ pub struct Duck {
     /// `None` before it ever did.
     model_quiet_ms: Option<u64>,
     closed: bool,
+    /// The greeting of an adopted session is playing and no fragment of the
+    /// caller's words has come in yet: the level alone does not close the
+    /// gate. Off unless [`Duck::greeting_runs`] switched it on.
+    greeting: bool,
+    /// Where the greeting's block last spoke on the model's clock; `None`
+    /// before its first fragment.
+    greeting_end_ms: Option<u64>,
+    /// The call's turn gap: a fragment of the model's starting more than
+    /// this after the greeting's last one opens a new block.
+    gap_ms: u64,
     /// How often the gate closed, for the connection's close log.
     pub ducked: u32,
 }
@@ -128,7 +156,55 @@ impl Duck {
             caller_quiet_ms: 0,
             model_quiet_ms: None,
             closed: false,
+            greeting: false,
+            greeting_end_ms: None,
+            gap_ms: 0,
             ducked: 0,
+        }
+    }
+
+    /// The connection adopted a session that greeted into the ring: until
+    /// the greeting is over, only the caller's words close the gate (see
+    /// *The greeting of a session that took the ring*). `gap_ms` is the
+    /// call's turn gap.
+    pub fn greeting_runs(&mut self, gap_ms: u64) {
+        self.greeting = true;
+        self.gap_ms = gap_ms;
+    }
+
+    /// One event of the session in charge. A fragment of the caller's words
+    /// ends the greeting's hold on the gate, and so does a fragment of the
+    /// model's that opens a new block: the greeting is over.
+    pub fn transcript(&mut self, event: &DuplexEvent) {
+        if !self.greeting {
+            return;
+        }
+        let DuplexEvent::Transcript {
+            speaker,
+            delta,
+            start_ms,
+            end_ms,
+        } = event
+        else {
+            return;
+        };
+        match speaker {
+            // A fragment without a word in it is no more than the noise was.
+            Speaker::User => {
+                if !delta.trim().is_empty() {
+                    self.greeting = false;
+                }
+            }
+            Speaker::Assistant => {
+                if self.greeting_end_ms.is_some()
+                    && opens_new_block(self.greeting_end_ms, *start_ms, self.gap_ms)
+                {
+                    self.greeting = false;
+                } else {
+                    self.greeting_end_ms =
+                        Some(self.greeting_end_ms.map_or(*end_ms, |e| e.max(*end_ms)));
+                }
+            }
         }
     }
 
@@ -184,7 +260,11 @@ impl Duck {
                 self.caller_voiced_ms = 0;
             }
         }
-        if !self.closed && self.caller_voiced_ms >= self.params.onset_ms && self.model_voiced() {
+        if !self.closed
+            && !self.greeting
+            && self.caller_voiced_ms >= self.params.onset_ms
+            && self.model_voiced()
+        {
             self.closed = true;
             self.ducked = self.ducked.saturating_add(1);
             return Some(true);
@@ -465,5 +545,75 @@ mod tests {
         for _ in 0..50 {
             assert_eq!(d.caller(&frame(QUIET)), None);
         }
+    }
+
+    /// A fragment on the model's or the caller's side, as a provider sends it.
+    fn said(speaker: Speaker, delta: &str, start_ms: u64, end_ms: u64) -> DuplexEvent {
+        DuplexEvent::Transcript {
+            speaker,
+            delta: delta.to_string(),
+            start_ms,
+            end_ms,
+        }
+    }
+
+    /// The gate of a connection that adopted a session greeting into the
+    /// ring, its greeting under way (turn gap 1 000 ms).
+    fn greeting() -> Duck {
+        let mut d = Duck::new(on(), RATE);
+        d.greeting_runs(1_000);
+        d.transcript(&said(Speaker::Assistant, "Hello, this is", 0, 1_500));
+        let mut out = frame(LOUD);
+        d.model(&mut out);
+        d
+    }
+
+    #[test]
+    fn gh_d54g_prewarm_noise_over_an_adopted_greeting_does_not_duck_it() {
+        let mut d = greeting();
+        // 400 ms at the level of speech, far over the onset, no word in it.
+        for _ in 0..20 {
+            assert_eq!(d.caller(&frame(LOUD)), None);
+        }
+        let mut out = frame(LOUD);
+        d.model(&mut out);
+        assert_eq!(out, frame(LOUD), "the greeting goes on over the noise");
+        assert_eq!(d.ducked, 0);
+    }
+
+    #[test]
+    fn gh_d54g_prewarm_the_callers_words_duck_an_adopted_greeting() {
+        let mut d = greeting();
+        for _ in 0..8 {
+            assert_eq!(d.caller(&frame(LOUD)), None);
+        }
+        // A fragment without a word in it is noise too.
+        d.transcript(&said(Speaker::User, "  ", 200, 400));
+        assert_eq!(d.caller(&frame(LOUD)), None);
+        // The caller's words: the next voiced frame closes the gate.
+        d.transcript(&said(Speaker::User, "wait", 200, 500));
+        assert_eq!(d.caller(&frame(LOUD)), Some(true));
+        let mut out = frame(LOUD);
+        d.model(&mut out);
+        assert!(
+            out.iter().all(|b| *b == 0),
+            "ducked under the caller's words"
+        );
+    }
+
+    #[test]
+    fn gh_d54g_prewarm_after_the_greeting_the_level_ducks_again() {
+        let mut d = greeting();
+        // Still the greeting's block: 100 ms after its last fragment.
+        d.transcript(&said(Speaker::Assistant, " your companion.", 1_600, 2_000));
+        for _ in 0..8 {
+            assert_eq!(d.caller(&frame(LOUD)), None);
+        }
+        // The model starts a new block, more than the gap after the greeting:
+        // the greeting is over, and the level alone ducks again.
+        d.transcript(&said(Speaker::Assistant, "Anything else?", 3_100, 3_600));
+        let mut out = frame(LOUD);
+        d.model(&mut out);
+        assert_eq!(d.caller(&frame(LOUD)), Some(true));
     }
 }

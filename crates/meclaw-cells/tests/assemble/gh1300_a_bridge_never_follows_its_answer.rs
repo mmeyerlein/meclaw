@@ -113,8 +113,9 @@ fn an_answer_that_may_follow_a_bridge_leaves_through_the_store() {
     let ids: Vec<String> = calls_of(g).into_iter().map(|(id, _)| id).collect();
     assert_eq!(
         ids,
-        ["c-drop-turns", "c-drop-round"],
-        "the round dropped -- the one op the bridge's read queues behind"
+        ["c-said-read", "c-said-row", "c-drop-turns", "c-drop-round"],
+        "the round dropped -- the one op the bridge's read queues behind -- with \
+         the turn's `said` rows read and the answer's own written in front (GH #1505)"
     );
     let kept = gate_of(g);
     assert_eq!(kept["messages"][0]["text"], ANSWER);
@@ -253,37 +254,87 @@ fn a_bridge_the_store_could_not_check_is_never_said() {
     );
 }
 
+/// A store that holds the open round of the turn: its opening row is there.
+fn open_round() -> WindowStore {
+    WindowStore::holding(
+        "round",
+        vec![json!({"turn_id": T, "session_id": SESSION, "iter": 0,
+                    "role": "leg-window", "turn": "{}", "fired": 1,
+                    "recorded_at": ""})],
+    )
+}
+
+/// GH #1505 changed what this case holds. It used to say that a turn's first
+/// answer, a sentence beside the model's own calls and an unstamped answer
+/// leave at once, because no bridge can precede them. Since every interim is a
+/// bridge and no model text leaves without a look at the store, none of the
+/// three leaves at once: each goes through its gate and leaves from there when
+/// nothing went out in its turn; a second interim is held.
 #[test]
-fn an_answer_no_bridge_can_precede_leaves_at_once() {
-    // A turn's first answer with no tool round behind it, and a sentence the
-    // model said beside its own calls: neither has a bridge beside it.
+fn a_send_no_bridge_can_precede_still_leaves_through_its_gate() {
     let first = lane(
         "in_answer",
         json!({"finish_reason": "stop"}),
         json!({"turn_id": T, "iter": "0", "path": "simple", "curator_call": "c-9"}),
         text(ANSWER),
     );
-    assert_eq!(answers(&assemble(&[], first)).len(), 1);
+    let out = assemble(&[], first.clone());
+    assert!(answers(&out).is_empty(), "not at once: {out:?}");
+    assert_eq!(
+        gate_of(in_phase(&out, "answer-gate"))["messages"][0]["text"],
+        ANSWER
+    );
+    let left = drive(&mut open_round(), first);
+    assert_eq!(answers(&left).len(), 1, "it leaves from its gate: {left:?}");
+    assert!(left[0]["header"].get("repeat").is_none(), "{}", left[0]);
+
     let beside = lane(
         "in_answer",
         json!({"interim": "1", "finish_reason": "tool_calls"}),
         json!({"turn_id": T, "iter": "1", "path": "simple", "curator_call": "c-10"}),
         text("Let me look."),
     );
-    assert_eq!(answers(&assemble(&[], beside)).len(), 1);
+    let out = assemble(&[], beside.clone());
+    assert!(answers(&out).is_empty(), "not at once: {out:?}");
+    assert_eq!(
+        gate_of(in_phase(&out, "bridge-gate"))["messages"][0]["text"],
+        "Let me look."
+    );
+    let mut store = open_round();
+    let left = drive(&mut store, beside.clone());
+    assert_eq!(
+        answers(&left).len(),
+        1,
+        "nothing went out in the turn yet, so it leaves: {left:?}"
+    );
+    assert_eq!(hop_str(answers(&left)[0], "interim"), "1");
+    let again = drive(&mut store, beside);
+    assert!(
+        answers(&again).is_empty(),
+        "a second interim of the turn is held: {again:?}"
+    );
+
     let unstamped = lane(
         "in_answer",
         json!({"finish_reason": "stop"}),
         json!({"turn_id": T, "iter": "1"}),
         text(ANSWER),
     );
-    assert_eq!(answers(&assemble(&[], unstamped)).len(), 1);
+    let out = assemble(&[], unstamped.clone());
+    assert!(answers(&out).is_empty(), "not at once: {out:?}");
+    assert_eq!(
+        gate_of(in_phase(&out, "answer-gate"))["messages"][0]["text"],
+        ANSWER
+    );
+    let left = drive(&mut open_round(), unstamped);
+    assert_eq!(answers(&left).len(), 1, "it leaves from its gate: {left:?}");
 }
 
 // D58 target (GH #1483, contract point 11): the collector knows a bridge by
 // a field of its context (`context.bridge`, the composite lifts the curator's
-// `hop.bridge`), not by the ending `-bridge` of its call id. An interim
-// without the field leaves at once, whatever its id says.
+// `hop.bridge`), not by the ending `-bridge` of its call id. Since GH #1505
+// every interim is a bridge, with or without the field: the ending of an id
+// still decides nothing.
 
 fn d58_interim(ctx: Value) -> Value {
     lane(
@@ -319,13 +370,24 @@ fn d58_target_an_interim_with_the_bridge_field_is_a_bridge() {
     assert!(!d58_left_at_once(&out), "{out:?}");
 }
 
+/// GH #1505 changed what this case holds. It used to say that an interim
+/// without the field is no bridge and leaves at once, whatever its id ends in.
+/// Now it goes through the bridge gate like every interim -- and like the same
+/// interim under an id without the ending: the id is still no kind.
 #[test]
-fn d58_target_a_bridge_ending_without_the_field_is_no_bridge() {
-    let out = assemble(
-        &[],
-        d58_interim(json!({"turn_id": T, "iter": "0", "path": "simple",
-                       "curator_call": "c-1-bridge"})),
-    );
-    assert!(!d58_gated(&out), "an id is no kind: {out:?}");
-    assert!(d58_left_at_once(&out), "{out:?}");
+fn d58_target_an_interim_without_the_field_goes_through_the_bridge_gate_too() {
+    for id in ["c-1-bridge", "c-1"] {
+        let interim = d58_interim(json!({"turn_id": T, "iter": "0", "path": "simple",
+                       "curator_call": id}));
+        let out = assemble(&[], interim.clone());
+        assert!(d58_gated(&out), "{id}: every interim is gated: {out:?}");
+        assert!(!d58_left_at_once(&out), "{id}: {out:?}");
+        let left = drive(&mut open_round(), interim);
+        assert_eq!(
+            answers(&left).len(),
+            1,
+            "{id}: nothing went out in the turn yet, so it leaves: {left:?}"
+        );
+        assert_eq!(hop_str(answers(&left)[0], "interim"), "1", "{id}");
+    }
 }

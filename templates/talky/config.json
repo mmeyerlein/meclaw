@@ -97,7 +97,7 @@
         },
         {
           "route": "in_model",
-          "because": "a model package for the brain, pushed by the colony's llm-registry (GH #855): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the brain merges into its live params and answers with nothing. It goes from this path straight to `./brain`, past the collector: a params body is not a turn, and the collector has no business holding, stamping or dropping one. It is the one way a model package reaches the brain; the brain applies package keys only from a params-only message (GH #853), so a turn on any other lane cannot change the model it talks to. Draw it only from the registry's `update` lane, restamped `in_model`. GH #1279: a package whose `hop.subscriber` ends on `/screen_model` takes the screen judge's own door into `./screen_model`; the brain's door lets it pass"
+          "because": "a model package for the brain, pushed by the colony's llm-registry (GH #855): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the brain merges into its live params and answers with nothing. It goes from this path straight to `./brain`, past the collector: a params body is not a turn, and the collector has no business holding, stamping or dropping one. It is the one way a model package reaches the brain; the brain applies package keys only from a params-only message (GH #853), so a turn on any other lane cannot change the model it talks to. Draw it only from the registry's `update` lane, restamped `in_model`. GH #1279: a package whose `hop.subscriber` ends on `/screen_model` takes the screen judge's own door into `./screen_model`; the brain's door lets it pass. D54g GH #1506: a package whose `hop.subscriber` ends on `/second_judge` takes the second judge's own door into `./second_judge` the same way"
         },
         {
           "route": "in_menu",
@@ -122,7 +122,8 @@
             "./quick_bridge",
             "./curator/summarizer",
             "./decide",
-            "./screen_model"
+            "./screen_model",
+            "./second_judge"
           ],
           "because": "the answer half of the same lane (GH #560): the broker's `ack` for `vault.deliver` carrying the sealed box, renamed at the boundary to the name this rim knows it by. It lands on the cell that asked (`./brain` or `./curator/summarizer`) and on nothing else -- the box is sealed against the ephemeral key of the cell that asked, so a delivery anywhere else is a box nobody can open plus a receipt the asker never gets. Address the edge with `hop.grant_id`, which the broker stamps: one grant per consumer, or two brains are handed each other's rounds. A consumer nested in a sealed child names its full path here, because every sealed level an edge crosses must open for it (GH #559 rule table)"
         },
@@ -245,7 +246,8 @@
             "./quick_bridge",
             "./curator/summarizer",
             "./decide",
-            "./screen_model"
+            "./screen_model",
+            "./second_judge"
           ],
           "because": "the ask half of the credential lane (GH #421/#452/#560): the brain that spends a grant holds no bearer of its own, mints an ephemeral X25519 recipient key per ask and sends the grant handle out with it. This is a V-LANE (GH #559) and `at` is what makes it one: `params.ports` stays literally `[]`, and `./brain` is the one address this sealed rim opens for this one lane -- an opening the template pronounces about ITSELF, never one a caller helps itself to. Whoever draws the edge points it at the access hive that owns the person's keys and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1). A consumer nested in a sealed child names its full path here, because every sealed level an edge crosses must open for it (GH #559 rule table)"
         },
@@ -355,7 +357,7 @@
         {
           "from": ".",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick') || hop.subscriber.endsWith('/quick_spec') || hop.subscriber.endsWith('/quick_bridge') || hop.subscriber.endsWith('/screen_model')))"
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick') || hop.subscriber.endsWith('/quick_spec') || hop.subscriber.endsWith('/quick_bridge') || hop.subscriber.endsWith('/screen_model') || hop.subscriber.endsWith('/second_judge')))"
         },
         {
           "from": ".",
@@ -655,6 +657,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "spec",
               "delta",
               "judge_for",
@@ -773,6 +777,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -806,6 +812,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -839,6 +847,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1013,6 +1023,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1043,6 +1055,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1126,6 +1140,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1159,6 +1175,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1192,6 +1210,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1225,6 +1245,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1285,6 +1307,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1315,6 +1339,8 @@
               "tools_refused",
               "inner_source",
               "route_state",
+              "route_second_at",
+              "route_first",
               "turn_notes",
               "spec",
               "delta",
@@ -1350,6 +1376,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1380,6 +1408,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1431,6 +1461,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "spec",
               "delta",
               "judge_for",
@@ -1466,6 +1498,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "spec",
               "delta",
               "judge_for",
@@ -1495,6 +1529,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1525,6 +1561,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1556,6 +1594,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1586,6 +1626,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1619,6 +1661,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1649,6 +1693,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1685,6 +1731,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "spec",
               "delta",
               "judge_for",
@@ -1714,6 +1762,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1754,6 +1804,8 @@
               "tools_refused",
               "inner_source",
               "route_state",
+              "route_second_at",
+              "route_first",
               "turn_notes",
               "spec",
               "delta",
@@ -1784,6 +1836,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1814,6 +1868,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1884,6 +1940,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1914,6 +1972,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1944,6 +2004,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -1968,6 +2030,11 @@
           "from": ".",
           "to": "./screen_model",
           "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/screen_model')"
+        },
+        {
+          "from": ".",
+          "to": "./second_judge",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/second_judge')"
         },
         {
           "from": "./session-keeper",
@@ -2012,10 +2079,12 @@
           "modifier": {
             "set_hop": {
               "route": "'in_decision'",
-              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''"
+              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
+              "state": "has(context.route_state) ? context.route_state : ''"
             },
             "delete_context": [
-              "route_asked_at"
+              "route_asked_at",
+              "route_state"
             ]
           }
         },
@@ -2069,6 +2138,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2102,6 +2173,43 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
+              "inner_source",
+              "spec",
+              "delta",
+              "judge_for",
+              "summarize",
+              "summary_call",
+              "summary_token"
+            ]
+          }
+        },
+        {
+          "from": "./second_judge",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "tool_answerer",
+              "curator_call",
+              "curator_target",
+              "call_kind",
+              "recall_input_soft",
+              "interim",
+              "input_soft",
+              "path",
+              "route_asked_at",
+              "tools_folded",
+              "tools_hinted",
+              "tools_refused",
+              "turn_notes",
+              "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2135,7 +2243,7 @@
         {
           "from": "./route",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'view_ask'",
+          "condition": "has(hop.route) && hop.route == 'view_ask' && !has(hop.first)",
           "modifier": {
             "set_hop": {
               "route": "'in_view_ask'"
@@ -2147,9 +2255,43 @@
           }
         },
         {
+          "from": "./route",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'view_ask' && has(hop.first)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_view_ask'"
+            },
+            "set_context": {
+              "judge_for": "'second_judge'",
+              "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
+              "route_state": "has(hop.state) ? hop.state : ''",
+              "route_first": "hop.first",
+              "route_second_at": "has(hop.second_at) ? hop.second_at : ''"
+            }
+          }
+        },
+        {
+          "from": "./route",
+          "to": "./collector",
+          "condition": "has(hop.route) && hop.route == 'view_ask' && has(hop.first) && has(hop.wait_ms)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_route'",
+              "wait_from": "has(hop.second_at) ? hop.second_at : ''"
+            },
+            "delete_hop": [
+              "state",
+              "first",
+              "second_at",
+              "asked_at"
+            ]
+          }
+        },
+        {
           "from": "./curator",
           "to": "./route",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'view' && !(has(context.judge_for) && context.judge_for == 'screen_judge')",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'view' && !(has(context.judge_for) && (context.judge_for == 'screen_judge' || context.judge_for == 'second_judge'))",
           "modifier": {
             "set_hop": {
               "route": "'in_view'",
@@ -2159,6 +2301,27 @@
             "delete_context": [
               "route_state",
               "route_asked_at"
+            ]
+          }
+        },
+        {
+          "from": "./curator",
+          "to": "./route",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'view' && has(context.judge_for) && context.judge_for == 'second_judge'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_second_view'",
+              "state": "has(context.route_state) ? context.route_state : ''",
+              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
+              "first": "has(context.route_first) ? context.route_first : ''",
+              "second_at": "has(context.route_second_at) ? context.route_second_at : ''"
+            },
+            "delete_context": [
+              "route_state",
+              "route_asked_at",
+              "route_first",
+              "route_second_at",
+              "judge_for"
             ]
           }
         },
@@ -2208,6 +2371,36 @@
         },
         {
           "from": "./route",
+          "to": "./second_judge",
+          "condition": "has(hop.route) && hop.route == 'second_judge'",
+          "modifier": {
+            "set_context": {
+              "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
+              "route_first": "has(hop.first) ? hop.first : ''",
+              "route_second_at": "has(hop.second_at) ? hop.second_at : ''"
+            }
+          }
+        },
+        {
+          "from": "./second_judge",
+          "to": "./route",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_second'",
+              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
+              "first": "has(context.route_first) ? context.route_first : ''",
+              "second_at": "has(context.route_second_at) ? context.route_second_at : ''"
+            },
+            "delete_context": [
+              "route_asked_at",
+              "route_first",
+              "route_second_at"
+            ]
+          }
+        },
+        {
+          "from": "./route",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'stamp_out'",
           "modifier": {
@@ -2232,6 +2425,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2265,6 +2460,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2295,6 +2492,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2351,7 +2550,12 @@
         {
           "from": ".",
           "to": "./session-keeper",
-          "condition": "has(hop.route) && hop.route == 'in_call_end'"
+          "condition": "has(hop.route) && hop.route == 'in_call_end'",
+          "modifier": {
+            "set_context": {
+              "live": "has(hop.engine) && hop.engine == 'duplex' && has(hop.call_id) ? hop.call_id : ''"
+            }
+          }
         },
         {
           "from": ".",
@@ -2381,6 +2585,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2414,6 +2620,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2447,6 +2655,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2477,6 +2687,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",
@@ -2548,6 +2760,8 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_second_at",
+              "route_first",
               "inner_source",
               "spec",
               "delta",

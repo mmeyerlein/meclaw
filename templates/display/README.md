@@ -1,4 +1,4 @@
-# `display@2.12.2`
+# `display@2.13.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
@@ -155,7 +155,14 @@ arrives, a tap, a hold, a stroke of the screen's clock. Twelve steps:
    judge's two values and, with them, the weight of that window's context -- and the
    gestures as they reach the state.
 4. **Presence.** Which applications are present, how presence ends, and what happens when
-   two of them are about the same topic.
+   two of them are about the same topic -- or about the same turn. While the presenter's
+   window of a turn stands (the window with `topic: show:<topic>`), a free card of another
+   application that carries the turn's `turn_id` is a duplicate like a second window on one
+   topic: no window and no tile, whatever its topic and whichever of the two came first.
+   A free card is a canvas window that is neither pinned nor urgent; the mark falls when
+   the presenter's window goes. A pinned tile stays a tile: a write of its own application
+   that carries that `turn_id` is no touch while the tile is not open, so one question
+   gets one window.
 5. **The chat closes.** The canvas window carrying the last turn's `turn_id` closes the
    chat, and what opens it again.
 6. **Score.** Score, decay, linger and the bar. A window whose verdict a touch cleared
@@ -190,6 +197,18 @@ Immediate, deterministic, and without the judge.
   the dock in one short movement, the same one in both directions on every output. It stays
   in the browser: no event, no pass. The initial state is the profile's `dock_default`, the
   toggle is not remembered, and a closed dock never opens by itself.
+
+Behind a live model - a `voice` cell whose `params.duplex` names a provider that hears and
+speaks, which the page reads off `hello.duplex` - the mark does three things more. It says
+`ready` on its topic as soon as a press is likely: the pointer comes onto the mark, a finger
+touches it, a press begins, or the microphone is granted. It says it once per approach, and
+the cell may open the page's next session on it (`duplex.prewarm_ttl_ms`), so the first
+hold does not wait for the model. A hold drops whatever of the model's speech the browser
+still has queued, as it does behind a cascade: the cell has stopped the model and sends
+silence until the release. And the page plays the model's voice at the rate `hello`
+declares. What the model says is not written into the page; the chat application draws it.
+`window.__displayMic.firstAudioMs` is the page's own reading from the lift to the first
+audible frame of the answer.
 
 Two events carry all of it: `tap`, with the object id of the window it is for, and `hold`.
 An application that names an event of its own `tap` or `hold` loses it to the screen, and

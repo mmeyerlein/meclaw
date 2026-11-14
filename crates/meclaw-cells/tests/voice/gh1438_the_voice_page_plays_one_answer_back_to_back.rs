@@ -117,8 +117,10 @@ hook.onFrame({ type: "speak_start" });
 out.after_key = chunks(1)[0].at;
 out.after_key_now = clock;
 out.key_stopped = keyed.filter(function (s) { return s.stopped; }).length;
-// (6) Behind a duplex provider a hold opens the model's ear and cuts no turn, so the
-// press leaves the answer playing.
+// (6) Behind a duplex provider (a live model) a hold into the model's speech stops it
+// too: the cell ends its section and sends silence until the release, and what the
+// page still has queued is that speech (d54g weblive, contract (d); 107 to 161 ms of
+// it measured after the hold). So the press drops the queue there as well.
 tick(0);
 hook.onFrame({ type: "hello", stt: "d", tts: "d", duplex: true, audio_out: { sample_rate: 24000 } });
 hook.onFrame({ type: "speak_start" });
@@ -245,7 +247,8 @@ fn a_barge_in_by_key_after_the_last_chunk_drops_what_is_still_queued() {
     );
     assert_eq!(
         v["duplex_stopped"],
-        serde_json::json!(0),
-        "behind a duplex provider a hold only opens the ear and cuts nothing: {v}"
+        serde_json::json!(3),
+        "behind a duplex provider a hold into the model's speech drops what is still \
+         queued on the page, as it does behind a cascade: {v}"
     );
 }

@@ -5,9 +5,13 @@
 //! the short id of the block it came from, the model can fetch the words
 //! (`history_read`) instead of trusting the line. The pointer comes from the
 //! summarizer, which reads every transcript line under its id, and is checked
-//! in code against the rebuild's `sources`: an id that is no source of this
-//! summary, or none at all, becomes the id of the newest row that went in --
-//! a line never points at nothing and never at a block outside its sources.
+//! in code: with the transcript (GH #1517), a line without an id or with an id
+//! that names no row of the transcript is dropped (`brief_lines` with
+//! `transcript_ids`) and counted in `summary_rejected` -- it names no source
+//! the model read, and pointing it at the newest row made a pointer nobody
+//! wrote. This file pins that: a cited source stays, a line without an id, a
+//! line citing a block outside the transcript and a line with an unknown id
+//! are dropped, and the three are counted. What stays points at a source.
 //! The ids stay out of everything spoken or seeded into a call, as they do
 //! today (GH #1345, `./handover` `without_ids` before a renewed session's
 //! block; the `history.handover` leaf keeps them for the model).
@@ -60,7 +64,8 @@ fn every_line_points_at_its_source_block() {
             "- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
              - person ({day}) garden/size: The garden is small. [asserted]\n\
              - agent:self ({day}) offer/visit: A visit was offered. [#{a3}]\n\
-             - topic ({day}): the garden [#ffffffffffff]"
+             - topic ({day}): the garden [#ffffffffffff]\n\
+             - open ({day}): the garden fence [#{a2}]"
         ),
         "stop",
     );
@@ -69,12 +74,20 @@ fn every_line_points_at_its_source_block() {
         text,
         format!(
             "- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
-             - person ({day}) garden/size: The garden is small. [asserted] [#{a2}]\n\
-             - agent:self ({day}) offer/visit: A visit was offered. [#{a2}]\n\
-             - topic ({day}): the garden [#{a2}]"
+             - open ({day}): the garden fence [#{a2}]"
         ),
-        "a cited source stays; none, a non-source and an unknown id point at the newest \
-         row that went in"
+        "a cited source stays; none, a block outside the transcript and an unknown id \
+         are dropped (GH #1517)"
+    );
+    let marks: Vec<Value> = h
+        .rows("SELECT value FROM marks WHERE kind = 'summary_rejected'")
+        .into_iter()
+        .map(|r| sj::from_str(r[0].as_str().unwrap_or_default()).expect("json"))
+        .collect();
+    assert_eq!(
+        marks,
+        vec![json!({"kept": 2, "dropped": 3})],
+        "the three are counted"
     );
     let sources: Value = sj::from_str(
         h.rows("SELECT sources FROM summaries")[0][0]

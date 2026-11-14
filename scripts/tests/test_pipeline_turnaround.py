@@ -1585,6 +1585,71 @@ class ReleaseRecordTest(unittest.TestCase):
             self.assertFalse(turnaround.release_record_equal(self.repo, core, b)[0])
         self.assertEqual(seen, [("call", core, b)] * 2)
 
+    ROADMAP = ("# Roadmap\n\n## Now\n\n- a stream\n\n## Shipped\n\n- v0.2.0: the second.\n"
+               "- v0.1.0: the first\n  release.\n\n## Notes\n\ntail\n")
+
+    def roadmap_case(self, text):
+        base = commit(self.repo, {"ROADMAP.md": self.ROADMAP}, "roadmap base")
+        b = commit(self.repo, {"ROADMAP.md": text})
+        return turnaround.release_record_equal(self.repo, base, b)
+
+    def test_a_line_added_under_shipped_is_a_release_record(self):
+        # GH #1518: `release.sh prepare` writes the release's line under
+        # ROADMAP.md § Shipped on the cut; the battery measured the cut, so the
+        # lock must take that line, and nothing else in ROADMAP.md.
+        one = self.ROADMAP.replace("- v0.2.0:", "- v0.3.0: the third.\n- v0.2.0:")
+        two = self.ROADMAP.replace("- v0.2.0:", "- v0.3.0: the third, wrapped\n  over two lines.\n"
+                                               "- v0.2.0:")
+        last = self.ROADMAP.replace("  release.\n", "  release.\n- v0.0.9: older.\n")
+        for text in (one, two, last):
+            with self.subTest(text=text):
+                tm.git(self.repo, "checkout", "-q", "--detach", self.a)
+                self.assertEqual(self.roadmap_case(text), (True, {}))
+
+    def test_any_other_roadmap_change_stays_foreign(self):
+        line = "- v0.3.0: the third.\n"
+        cases = {
+            "above shipped": self.ROADMAP.replace("- a stream\n", "- a stream\n- another\n"),
+            "above shipped, with a line": self.ROADMAP.replace(
+                "- a stream\n", "- a stream, changed\n").replace("- v0.2.0:", line + "- v0.2.0:"),
+            "below shipped": self.ROADMAP.replace("tail\n", "tail\n" + line),
+            "a heading inside shipped": self.ROADMAP.replace(
+                "- v0.2.0:", "## Later\n\n" + line + "- v0.2.0:"),
+            "a deleted line": self.ROADMAP.replace("- v0.2.0: the second.\n", ""),
+            "a changed line": self.ROADMAP.replace("the second.", "the 2nd."),
+            "a changed and an added line": self.ROADMAP.replace(
+                "the second.", "the 2nd.").replace("- v0.2.0:", line + "- v0.2.0:"),
+            # Re-check R2 A: inside § Shipped only a new release's own line counts
+            "a new version twice": self.ROADMAP.replace(
+                "- v0.2.0:", line + "- v0.3.0: again.\n- v0.2.0:"),
+            "a twin of an old version": self.ROADMAP.replace(
+                "- v0.2.0:", "- v0.2.0: again.\n- v0.2.0:"),
+            "a copy of an old line": self.ROADMAP.replace(
+                "- v0.2.0:", "- v0.2.0: the second.\n- v0.2.0:"),
+            "prose": self.ROADMAP.replace("- v0.2.0:", "Some prose.\n- v0.2.0:"),
+            "prose after a line": self.ROADMAP.replace("- v0.2.0:", line + "Some prose.\n- v0.2.0:"),
+            "a third-level heading": self.ROADMAP.replace("- v0.2.0:", "### Older\n- v0.2.0:"),
+            "a first-level heading": self.ROADMAP.replace("- v0.2.0:", "# Older\n- v0.2.0:"),
+            "an other bullet": self.ROADMAP.replace("- v0.2.0:", "- a thing\n- v0.2.0:"),
+        }
+        for name, text in cases.items():
+            with self.subTest(name):
+                tm.git(self.repo, "checkout", "-q", "--detach", self.a)
+                ok, bad = self.roadmap_case(text)
+                self.assertFalse(ok, name)
+                self.assertIn("ROADMAP.md", bad)
+        # deleted, or turned executable: foreign as well
+        tm.git(self.repo, "checkout", "-q", "--detach", self.a)
+        base = commit(self.repo, {"ROADMAP.md": self.ROADMAP}, "roadmap base")
+        tm.git(self.repo, "rm", "-q", "ROADMAP.md")
+        b = commit(self.repo, {})
+        self.assertIn("ROADMAP.md", turnaround.release_record_equal(self.repo, base, b)[1])
+        tm.git(self.repo, "checkout", "-q", "--detach", base)
+        tm.write(self.repo, "ROADMAP.md", self.ROADMAP + line)
+        os.chmod(os.path.join(self.repo, "ROADMAP.md"), 0o755)
+        b = commit(self.repo, {})
+        self.assertIn("ROADMAP.md", turnaround.release_record_equal(self.repo, base, b)[1])
+
     def test_post_gate_is_not_the_release_allowlist(self):
         # The strand list stays the strand list; the release set is its own.
         self.assertEqual(turnaround.POST_GATE,

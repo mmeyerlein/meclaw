@@ -1,0 +1,242 @@
+{
+  "cell": {
+    "type": "llm",
+    "message_timeout": 15000
+  },
+  "params": {
+    "provider": "openai",
+    "model": "",
+    "requirement": "Judges one request of a running conversation a second time, after a fast first judge was unsure or would have the person asked back. It reads the conversation so far, the request and the classes it may choose from, and returns one JSON object with the chosen class and its own confidence, no prose. It must tell a plain request from a truly ambiguous one reliably -- its verdict stands -- and answer within a few seconds; it runs only on the turns the first judge could not settle.",
+    "api_key": "",
+    "credential_grant_id": "",
+    "credential_wait_ms": 30000,
+    "base_url": "https://openrouter.ai/api/v1",
+    "base_url_allow": [
+      "https://openrouter.ai"
+    ],
+    "temperature": 0,
+    "reasoning_effort": "medium",
+    "external_timeout_ms": 4000,
+    "system_order": [
+      "instructions"
+    ],
+    "provider_extra": {
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "second_verdict",
+          "strict": false,
+          "schema": {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "object",
+                "required": [
+                  "choice",
+                  "p"
+                ],
+                "properties": {
+                  "choice": {
+                    "type": "string"
+                  },
+                  "p": {
+                    "type": "number"
+                  }
+                }
+              },
+              "move": {
+                "type": "object",
+                "required": [
+                  "choice",
+                  "p"
+                ],
+                "properties": {
+                  "choice": {
+                    "type": "string"
+                  },
+                  "p": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {
+      "reasoning_effort": {
+        "type": "string",
+        "secret": false,
+        "default": "medium",
+        "description": "GH #1300: how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none` = off, or the lowest effort a model that cannot switch thinking off takes; passed through, not checked against a list). It ships `medium`, the effort every shipped llm cell runs at unless its instance says otherwise: an instance sets it through `override_params` on this cell's path, and a registry push that names no effort resets it to this birth value. On the chat-completions wire it goes out as `\"reasoning\": {\"effort\": ...}` (default `reasoning_wire`), on the Anthropic Messages wire as `output_config.effort`; `none` switches thinking off in the form the model takes. A `reasoning` object, where one is set, outranks it; a model whose catalogue `supported_params` omits the field never receives it."
+      },
+      "model": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "Provider model id of the second judge. Empty as shipped, like `./decide`: the model registry's push (`in_model` with `hop.subscriber` ending in `/second_judge`) or the installing set's `override_params` names it -- a model that takes a window and is trusted with the decision to ask a person back."
+      },
+      "api_key": {
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "description": "Provider API key. Deprecated, removed in 0.63.0: name a grant in credential_grant_id instead (#801)."
+      },
+      "credential_grant_id": {
+        "type": "string",
+        "secret": false,
+        "default": "",
+        "description": "GH #801: the grant this judge presents to get its provider credential SEALED from an access hive instead of carrying a key; it ships empty, the level that grows the talky sets it through `override_params`, and the credential arrives over the credential v-lane at `./second_judge`."
+      },
+      "base_url": {
+        "type": "string",
+        "secret": false,
+        "default": "https://openrouter.ai/api/v1",
+        "description": "Provider endpoint."
+      }
+    },
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "credential_request"
+          ],
+          "required": false
+        },
+        "grant_id": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": true,
+          "optional_on_route": [
+            "credential_request"
+          ]
+        },
+        "tokens_prompt": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_completion": {
+          "type": "number",
+          "required": false
+        },
+        "model": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "latency_ms": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cached": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_cache_write": {
+          "type": "number",
+          "required": false
+        },
+        "cost": {
+          "type": "number",
+          "required": false
+        },
+        "cache_expires_at": {
+          "type": "string",
+          "required": false
+        },
+        "context_window": {
+          "type": "number",
+          "required": false
+        },
+        "input_soft": {
+          "type": "number",
+          "required": false
+        },
+        "input_hard": {
+          "type": "number",
+          "required": false
+        },
+        "cost_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cached_in": {
+          "type": "number",
+          "required": false
+        },
+        "cost_cache_write": {
+          "type": "number",
+          "required": false
+        },
+        "price_tiers": {
+          "type": "array",
+          "required": false
+        },
+        "dropped": {
+          "type": "array",
+          "required": false
+        },
+        "unverified": {
+          "type": "array",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false,
+          "description": "Not required (GH #1061): the sealed credential box the access hive delivers on `in_sealed` carries `sealed` and nothing else, and a required key here would refuse it at delivery."
+        },
+        "system": {
+          "type": "object",
+          "required": false
+        },
+        "sealed": {
+          "type": "object",
+          "required": false
+        },
+        "params": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "network:llm",
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "`./route`'s second judge (D54g GH #1506): one structured answer `{\"path\": {\"choice\", \"p\"}}` per sharpened turn, through `provider_extra.response_format` (json_schema). It takes a window: the view `./route` ordered for it, the request as the last message, the question as `system.instructions`.",
+    "use_when": "Inside talky, behind `./route`, which only calls it when its `second_judge` names this cell's route and `sharpen` lists a statement that stayed under its bar.",
+    "not_in_scope": "No tools, no history of its own, no say about the round: its verdict goes back to `./route`, which stamps. Its operation timeout (4000 ms) is the bound of its one call (AGENTS rule 12, A), not an output time and not the wait of a sharpened turn: that wait is `./route` `second_wait_ms` (5000 ms), counted from the moment the sharpening began, and this timeout stays under it, so a judge that does not answer reports its error before the bound."
+  }
+}

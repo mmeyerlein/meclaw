@@ -618,13 +618,15 @@ fn only_the_consult_edges_on_the_road_drop_the_scope() {
 #[test]
 fn a_session_past_its_prune_keeps_its_scope_and_reports_no_change() {
     let cut = assemble(&[], answer_in(TURN, "sunny"));
-    let tables: Vec<Value> = calls_of(in_phase(&cut, "round-drop"))
+    // GH #1505: the drop rides in the answer's gate, behind the read of the
+    // turn's `said` rows and the answer's own row -- both in `round`.
+    let tables: Vec<Value> = calls_of(in_phase(&cut, "answer-gate"))
         .into_iter()
         .map(|(_, a)| a["table"].clone())
         .collect();
     assert_eq!(
         tables,
-        ["turns", "round"],
+        ["round", "round", "turns", "round"],
         "the scope is the channel's policy, not the window's: {cut:?}"
     );
 

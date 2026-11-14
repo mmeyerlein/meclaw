@@ -1,8 +1,8 @@
 {
   "name": "lead",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": {
-    "purpose": "The switch of a composite that chooses between targets, as a hive of its own (GH #1474, R-58-9 Nr. 5): for each call of its curator it names the way, the target and what the window is built on, keeps the turn's speculation and the pending errand in its own store, and decides the early interrupt of a delta stamp. It left the curator, which holds no model choice any more; a composite without a choice runs its curator without one.",
+    "purpose": "The switch of a composite that chooses between targets, as a hive of its own (GH #1474, R-58-9 Nr. 5): for each call of its curator it names the way, the target and what the window is built on, keeps the turn's speculation and the pending errand in its own store, and decides the early interrupt of a delta stamp. It left the curator, which holds no model choice any more; a composite without a choice runs its curator without one. Since 1.1.0 (#1504) the template carries this change; it is the second digit.",
     "use_when": "Wired beside a `curator` by a composite with more than one target (talky). Its targets are knobs of the composite (`path_routes`, `departures`, `fallback`, `spec_target`, `bridge_target`), shipped empty.",
     "not_in_scope": "No window, no ledger, no model call; no default target."
   },

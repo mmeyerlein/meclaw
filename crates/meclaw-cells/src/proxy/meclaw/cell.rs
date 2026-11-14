@@ -453,6 +453,17 @@ impl MeclawCell {
             Err(receipt) => return receipt,
         };
         let boundary = self.params.boundary.clone();
+        // GH #1505 (d54g, finding 16): a message marked `repeat` carries a text
+        // its turn already sent -- the model wrote its sentence beside a call
+        // and wrote it again in the next round, and the same answer was read
+        // twice. The frame carries no hop, so the far side could not tell the
+        // repeat from a new message: it is not booked and not posted. It was
+        // judged like any other (a refusal above stays a refusal), and its one
+        // receipt is the one of a message that went through, without a
+        // delivery id -- the turn ends for whoever waits on the receipt.
+        if msg.headers.hop.get("repeat").and_then(Value::as_str) == Some("1") {
+            return crossed_emission(&c.lane, &boundary, &c.fields);
+        }
         let id = Uuid::now_v7();
         // Review C1: the frame is posted as built (the 0.47.1 frame); the id
         // and this clock go into the headers of every attempt.

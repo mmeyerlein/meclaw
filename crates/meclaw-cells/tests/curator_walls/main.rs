@@ -31,7 +31,9 @@ pub mod gh_d58_bank_research_shrinks_old_results_to_stubs;
 pub mod gh_d58_bank_the_summarizer_request_is_captured;
 pub mod gh_d58_bank_the_talk_survives_byte_for_byte;
 pub mod gh_d58_bank_the_window_lands_at_its_aim;
+pub mod gh_d58_brief_a_line_names_a_row_of_its_transcript;
 pub mod gh_d58_brief_the_summarizer_dates_its_lines;
+pub mod gh_d58_brief_the_written_forms_of_a_kind_line_are_taken;
 pub mod gh_d58_plant_the_old_kinds_stay_as_they_were;
 pub mod gh_d58_plant_third_party_and_superseded_are_planted;
 #[path = "../gh927/harness.rs"]

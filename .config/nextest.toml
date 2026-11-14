@@ -363,7 +363,7 @@ filter = 'binary_id(=meclaw-cells::809_no_header_carries_the_plan) + binary_id(=
 test-group = "colony-boot"
 
 [[profile.default.overrides]]
-filter = 'binary_id(=meclaw-cells::gh959_a_sure_verdict_opens_the_window_and_fills_it) + binary_id(=meclaw-cells::gh959_data_follows_the_verdict_and_builds_up) + binary_id(=meclaw-cells::gh963_a_declared_source_is_read_with_the_round) + binary_id(=meclaw-cells::gh963_a_search_fills_a_window_only_after_a_sure_verdict) + binary_id(=meclaw-cells::gh963_the_work_report_shows_steps_not_contents) + binary_id(=meclaw-cells::gh964_a_map_stands_on_a_running_screen) + binary_id(=meclaw-cells::gh965_the_data_question_names_the_screen_round)'
+filter = 'binary_id(=meclaw-cells::gh959_a_sure_verdict_opens_the_window_and_fills_it) + binary_id(=meclaw-cells::gh959_data_follows_the_verdict_and_builds_up) + binary_id(=meclaw-cells::gh963_a_declared_source_is_read_with_the_round) + binary_id(=meclaw-cells::gh963_a_search_fills_a_window_only_after_a_sure_verdict) + binary_id(=meclaw-cells::gh963_the_work_report_shows_steps_not_contents) + binary_id(=meclaw-cells::gh964_a_map_stands_on_a_running_screen) + binary_id(=meclaw-cells::gh965_the_data_question_names_the_screen_round) + binary_id(=meclaw-cells::gh_d54g_onewindow)'
 test-group = "colony-boot"
 
 [[profile.default.overrides]]

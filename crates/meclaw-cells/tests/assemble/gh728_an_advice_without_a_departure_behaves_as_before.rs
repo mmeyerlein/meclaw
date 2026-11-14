@@ -37,7 +37,7 @@ fn an_empty_lookup_opens_the_round_under_the_provisional_key() {
         stderr.contains("k-7"),
         "and it says which consult: {stderr:?}"
     );
-    let out = assemble(&[], answer_in(&key, "x"));
+    let out = through_store(answer_in(&key, "x"));
     let ans = on_route(&out, "answer");
     assert_eq!(hop_str(ans, "turn_id"), key);
     assert_eq!(hop_str(ans, "late"), "");
@@ -73,7 +73,7 @@ fn a_channel_stamp_with_a_tilde_is_disarmed_on_adoption() {
     );
     let key = hop_str(in_phase(&out, "turn-open"), "turn_id");
     assert_eq!(key, "chat#a_1_deadbeef");
-    let ans = on_route(&assemble(&[], answer_in(&key, "hello")), "answer").clone();
+    let ans = on_route(&through_store(answer_in(&key, "hello")), "answer").clone();
     assert_eq!(hop_str(&ans, "turn_id"), key, "no label was invented");
     assert_eq!(hop_str(&ans, "late"), "");
 }

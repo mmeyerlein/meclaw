@@ -23,25 +23,43 @@ use std::time::Duration;
 const MARKER: Duration = Duration::from_secs(30);
 
 /// In `hold`: shut at the start, open on the key, shut again when it comes up.
+///
+/// Since d54g weblive a page has no session before its first hold (the
+/// provider's clock ran from the page load): "shut at the start" is now that
+/// no session -- and so no ear -- exists until the key goes down. The first
+/// hold opens the first session with the ear open; after the release a second
+/// hold opens the same session's shut ear again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_key_opens_and_closes_the_model_s_ear() {
     let mut live = boot_fake(duplex_params(json!({"default_mode": "hold"}))).await;
     let (mut client, hello) = live.connect("session=hold-1&mode=hold").await;
     assert_eq!(hello["mode"], json!("hold"), "got {hello}");
-    let _session = live.session().await;
-
-    assert_eq!(
-        live.control().await,
-        DuplexControl::Mute,
-        "a hold connection starts with the ear shut: nobody has pressed \
-         anything yet"
-    );
 
     client.hold().await.expect("press the key");
+    let session = live.session().await;
+    assert_eq!(
+        session.index, 1,
+        "a hold connection starts with no ear at all: nobody has pressed \
+         anything yet, and the first session is the one the key opened"
+    );
     assert_eq!(live.control().await, DuplexControl::Unmute);
 
     client.release().await.expect("let the key go");
     assert_eq!(live.control().await, DuplexControl::Mute);
+
+    client.hold().await.expect("press the key again");
+    assert_eq!(
+        live.control().await,
+        DuplexControl::Unmute,
+        "the key opens the shut ear of the running session"
+    );
+    client.release().await.expect("let the key go again");
+    assert_eq!(live.control().await, DuplexControl::Mute);
+    assert_eq!(
+        live.starts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the ear moves within the one session; no key opens a second"
+    );
 }
 
 /// In `auto` the ear is open by definition, and a `hold` is the wrong frame.
@@ -71,7 +89,12 @@ async fn in_auto_a_hold_is_refused_and_reaches_no_ear() {
 async fn a_mode_switch_moves_the_ear() {
     let mut live = boot_fake(duplex_params(json!({"default_mode": "hold"}))).await;
     let (mut client, _hello) = live.connect("session=hold-3&mode=hold").await;
+    // d54g weblive: a page's session opens with the first hold, so the ear to
+    // move is that session's, shut again by the release.
+    client.hold().await.expect("press the key");
     let _session = live.session().await;
+    assert_eq!(live.control().await, DuplexControl::Unmute);
+    client.release().await.expect("let the key go");
     assert_eq!(live.control().await, DuplexControl::Mute);
 
     client.set_mode("auto").await.expect("switch");

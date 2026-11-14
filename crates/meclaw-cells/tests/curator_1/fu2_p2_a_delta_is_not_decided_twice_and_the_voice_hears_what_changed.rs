@@ -481,10 +481,13 @@ fn live_feed_and_delta_switches_read_json_true() {
     assert_eq!(m[0]["verdict"], json!("reused"));
 }
 
-/// live-2 #1370 (K5): only the way `renew` is built. A `context` section
-/// carries no `payload`/`text`, so the voice cell answered it `bad_section`;
-/// the contract names `renew` alone and any other value leaves as `renew`,
-/// said on stderr.
+/// live-2 #1370 (K5): only the way `renew` is built for the param
+/// `live_feed_section`. A `context` section carries no `payload`/`text`, so
+/// the voice cell answered it `bad_section`; the param names `renew` alone and
+/// any other value leaves as `renew`, said on stderr. GH #1507 built the other
+/// ways beside the param, by the target's own profile (`feed_own` `renew`,
+/// `context` with the words under `payload`, `none`): the rim names those
+/// three, and the param still only `renew`.
 #[test]
 fn live_feed_section_is_renew_only() {
     if !shipped() {
@@ -503,9 +506,23 @@ fn live_feed_section_is_renew_only() {
         .cloned()
         .expect("the rim emits `live_feed`");
     let because = feed["because"].as_str().unwrap_or_default();
+    for way in ["`renew`", "`context`", "`none`"] {
+        assert!(
+            because.contains(way) && because.contains("`feed_own`"),
+            "the rim names the ways built by the target's profile ({way}): {because}"
+        );
+    }
+    assert_eq!(
+        because.matches("`live_feed_section`").count(),
+        1,
+        "the param is named once, at the way `renew` it builds: {because}"
+    );
+    let at_param = because.find("`live_feed_section`").unwrap_or(0);
+    let renew_way = because.find("`renew` (").unwrap_or(usize::MAX);
+    let context_way = because.find("`context` --").unwrap_or(0);
     assert!(
-        because.contains("`renew`") && !because.contains("`context`"),
-        "the rim names the built way only: {because}"
+        renew_way < at_param && at_param < context_way,
+        "the param stands at the way `renew`, before `context`: {because}"
     );
     let mut h = Hive::with(&[
         ("policy", "live_feed", json!("1")),

@@ -10,7 +10,8 @@
 //! answered AND mirrored as assistant text, so the connection's `speak_end`
 //! heuristic can be measured without spending a cent on a model; a mute
 //! swallows the input until an unmute; and the end of the audio is the end of
-//! the session.
+//! the session. What the connection has no room for yet is owed, never
+//! dropped, and the guidance is read while it waits (see `run_session`).
 //!
 //! Unlike the cascade echo, the loopback IS here rather than in the connection
 //! task. There it would have measured a channel pair for nothing; here the
@@ -28,6 +29,9 @@ use crate::voice::contract::{
     ProviderTimeouts, Speaker,
 };
 use meclaw_colony::io_liveness::IoLivenessMark;
+use std::collections::VecDeque;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
 
 /// The rates the loopback negotiates (public: `params.rs` refuses any other
@@ -124,45 +128,55 @@ impl DuplexProvider for EchoDuplex {
 
             let mut muted = false;
             let mut items: u64 = 0;
+            // What the session owes the connection and could not hand over yet
+            // (GH #1511). The connection hands guidance over
+            // with `control_tx.send(..).await` and reads this session's outlets
+            // only between its own sends, so a loopback that waited on a full
+            // outlet and read no guidance meanwhile waited on the very
+            // connection that waited on it. Nothing is dropped instead -- a
+            // loopback that dropped would measure the drop, not the wire:
+            // - `owed` holds the events, in order. It grows only with the
+            //   guidance read (an append is two events, a mute one) and by one
+            //   meter reading per `ITEMS_PER_USAGE` echoed frames, and while a
+            //   meter reading waits in it the audio is not read (`usage_owed`).
+            // - `held` is the one echoed frame the audio outlet had no room
+            //   for; while it waits the audio is not read either, so the
+            //   backpressure on the client stays what it was.
+            let mut owed: VecDeque<DuplexEvent> = VecDeque::new();
+            let mut usage_owed: usize = 0;
+            let mut held: Option<Vec<u8>> = None;
             let reason = loop {
                 tokio::select! {
                     // `biased` so a control frame is acted on before the audio
                     // that is already queued behind it — a mute that arrives
-                    // late is a mute that did not happen.
+                    // late is a mute that did not happen. Guidance is read even
+                    // while an outlet is full; the audio is not.
                     biased;
 
                     cmd = control.recv() => match cmd {
                         Some(DuplexControl::Append { kind, event_id, delegation_id, content }) => {
                             let _ = delegation_id;
                             let at = clock();
-                            if events.send(DuplexEvent::Appended { kind, event_id, start_ms: at, end_ms: at }).await.is_err() {
-                                break "handler_gone";
-                            }
+                            owed.push_back(DuplexEvent::Appended { kind, event_id, start_ms: at, end_ms: at });
                             // Mirrored as assistant text, which is what makes
                             // the connection's `speak_end` heuristic (OR-L19)
                             // measurable without a model: the heuristic waits
                             // for assistant fragments to stop, and here they
                             // stop as soon as the mirror is done.
-                            if events.send(DuplexEvent::Transcript {
+                            owed.push_back(DuplexEvent::Transcript {
                                 speaker: Speaker::Assistant,
                                 delta: content,
                                 start_ms: at,
                                 end_ms: at,
-                            }).await.is_err() {
-                                break "handler_gone";
-                            }
+                            });
                         }
                         Some(DuplexControl::Mute) => {
                             muted = true;
-                            if events.send(DuplexEvent::Muted).await.is_err() {
-                                break "handler_gone";
-                            }
+                            owed.push_back(DuplexEvent::Muted);
                         }
                         Some(DuplexControl::Unmute) => {
                             muted = false;
-                            if events.send(DuplexEvent::Unmuted).await.is_err() {
-                                break "handler_gone";
-                            }
+                            owed.push_back(DuplexEvent::Unmuted);
                         }
                         Some(DuplexControl::Close) => break "close_requested",
                         // The loopback opens no model, so it has nothing a
@@ -173,7 +187,29 @@ impl DuplexProvider for EchoDuplex {
                         None => break "close_requested",
                     },
 
-                    frame = audio_in.recv() => match frame {
+                    permit = events.reserve(), if !owed.is_empty() => match (permit, owed.pop_front()) {
+                        (Ok(permit), Some(event)) => {
+                            if matches!(event, DuplexEvent::Usage { .. }) {
+                                usage_owed -= 1;
+                            }
+                            permit.send(event);
+                        }
+                        (Ok(_), None) => {}
+                        (Err(_), _) => break "handler_gone",
+                    },
+
+                    permit = audio_out.reserve(), if held.is_some() => match permit {
+                        Ok(permit) => {
+                            if let Some(bytes) = held.take() {
+                                permit.send(bytes);
+                                items += 1;
+                                usage_owed += owe_usage(&mut owed, items);
+                            }
+                        }
+                        Err(_) => break "client_gone",
+                    },
+
+                    frame = audio_in.recv(), if held.is_none() && usage_owed == 0 => match frame {
                         // The client went away: `audio_in` closing IS the end
                         // of the call (contract § 1.1).
                         None => break "close_requested",
@@ -186,35 +222,92 @@ impl DuplexProvider for EchoDuplex {
                             if muted {
                                 continue;
                             }
-                            // Blocking, never dropping: backpressure is the
-                            // design, and a loopback that dropped a frame
-                            // would measure the drop rather than the wire.
-                            if audio_out.send(bytes).await.is_err() {
-                                break "client_gone";
-                            }
-                            items += 1;
-                            if items.is_multiple_of(ITEMS_PER_USAGE) {
-                                let usage = DuplexEvent::Usage {
-                                    seconds: items as f64 * SECONDS_PER_ITEM,
-                                    usage_ratio: None,
-                                };
-                                if events.send(usage).await.is_err() {
-                                    break "handler_gone";
+                            // Held, never dropping: a full outlet keeps the
+                            // frame (see `held`) and stops the audio until it
+                            // is out.
+                            match audio_out.try_send(bytes) {
+                                Ok(()) => {
+                                    items += 1;
+                                    usage_owed += owe_usage(&mut owed, items);
                                 }
+                                Err(TrySendError::Full(bytes)) => held = Some(bytes),
+                                Err(TrySendError::Closed(_)) => break "client_gone",
                             }
                         }
                     },
                 }
             };
 
-            let _ = events
-                .send(DuplexEvent::Closed {
-                    reason: reason.to_string(),
-                    usage_seconds: items as f64 * SECONDS_PER_ITEM,
-                })
-                .await;
+            // What is still owed goes out before the close, in order; the
+            // session waits for room as long as the connection lives, and
+            // keeps taking what it is handed meanwhile (see `draining`).
+            if reason != "handler_gone" {
+                for event in owed {
+                    if draining(events.send(event), &mut control, &mut audio_in)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+            if let (Some(bytes), true) = (held, reason != "client_gone") {
+                let _ = draining(audio_out.send(bytes), &mut control, &mut audio_in).await;
+            }
+            let closed = DuplexEvent::Closed {
+                reason: reason.to_string(),
+                usage_seconds: items as f64 * SECONDS_PER_ITEM,
+            };
+            let _ = draining(events.send(closed), &mut control, &mut audio_in).await;
             Ok(())
         })
+    }
+}
+
+/// Owes one meter reading when `items` echoed frames make one; returns how
+/// many it added (0 or 1).
+fn owe_usage(owed: &mut VecDeque<DuplexEvent>, items: u64) -> usize {
+    if !items.is_multiple_of(ITEMS_PER_USAGE) {
+        return 0;
+    }
+    owed.push_back(DuplexEvent::Usage {
+        seconds: items as f64 * SECONDS_PER_ITEM,
+        usage_ratio: None,
+    });
+    1
+}
+
+/// Waits for `send` to the connection while still taking what the connection
+/// hands over (GH #1511; the same wait as `gpt_live`'s).
+///
+/// Only used where the session is ending: guidance and caller audio that
+/// arrive meanwhile have no session left to reach and are dropped. What
+/// matters is that they are TAKEN -- a session that stopped reading `control`
+/// or `audio_in` while it waited on an outlet waited on the very connection
+/// that waited on it.
+async fn draining<F: std::future::Future>(
+    send: F,
+    control: &mut mpsc::Receiver<DuplexControl>,
+    audio_in: &mut mpsc::Receiver<Vec<u8>>,
+) -> F::Output {
+    tokio::pin!(send);
+    let mut control_open = true;
+    let mut audio_open = true;
+    loop {
+        tokio::select! {
+            biased;
+            out = &mut send => return out,
+            command = control.recv(), if control_open => {
+                if command.is_none() {
+                    control_open = false;
+                }
+            }
+            chunk = audio_in.recv(), if audio_open => {
+                if chunk.is_none() {
+                    audio_open = false;
+                }
+            }
+        }
     }
 }
 

@@ -12,7 +12,7 @@ use crate::voice::connection::APPEND_MAX_CHARS;
 use crate::voice::contract::{AppendKind, DuplexEvent, SeedMessage, Speaker, SttEvent};
 use crate::voice::io::{VoiceIo, run_io};
 use crate::voice::live_turns::{self, TurnAction, TurnInput, TurnState};
-use crate::voice::params::{CredentialSlot, VoiceOverlay, VoiceParams};
+use crate::voice::params::{CredentialSlot, SupersededAnswer, VoiceOverlay, VoiceParams};
 use crate::voice::turns::{self, Action, Input, SessionState};
 use crate::voice::wire::{ClientFrame, Mode, ServerFrame, SpeakEndReason, WireErrorCode};
 use meclaw_colony::{DbConn, LongRunningCell};
@@ -174,6 +174,36 @@ pub enum VoiceEvent {
         /// carries.
         at_ms: u64,
     },
+    /// The connection sent the first audio of a synthesis to the client
+    /// (d54g callseam): what the `first_audio` lane stamps on the way through
+    /// a speech synthesis. Sent only where `params.emit_first_audio` orders
+    /// it, once per synthesis, and always ahead of that synthesis'
+    /// [`VoiceEvent::SpeakEnded`].
+    SpeakAudioOut {
+        /// The session that is being spoken to.
+        session_id: String,
+        /// The synthesis whose audio this is.
+        speak_id: String,
+        /// When the audio went out, in milliseconds since the connection
+        /// opened (a cascade has no session clock).
+        at_ms: u64,
+    },
+    /// The connection of a duplex session is over (d54g callseam): the
+    /// handler closes the open turn now, from the transcript it holds, and
+    /// emits it. Sent once, before the connection waits for the provider's
+    /// close and so before the call's `final` usage; what the provider still
+    /// delivers after it is no turn.
+    LiveEnded {
+        /// The session whose connection ended.
+        session_id: String,
+        /// Where the call's clock stood then, the clock
+        /// [`VoiceEvent::LiveTick`] carries.
+        at_ms: u64,
+        /// Whether audible audio of the model went to the client inside
+        /// `spoken_quiet_ms` of the end: the model was speaking when the line
+        /// went.
+        model_audible: bool,
+    },
     /// The duplex provider of this connection gave up, and with it the call.
     ///
     /// **There is no reconnect** (OR-L20): the session IS the conversation, and
@@ -224,6 +254,10 @@ pub enum VoiceEvent {
         /// `renewal_n` it will carry on `renewed` (review M1). The answer
         /// gives it back on `hop.renewal_n` and reaches only that session.
         renewal_n: u32,
+        /// What the ask says about its model in `hop.limits`
+        /// ([`crate::voice::io::VoiceIoShared::duplex_limits`]); `None`
+        /// leaves the key out.
+        limits: Option<Value>,
     },
     /// A time mark of this call fell due (`params.call_marks_s` /
     /// `call_mark_every_s`, D48): the handler emits it on the `call_mark`
@@ -404,6 +438,10 @@ pub enum VoiceReconfig {
         /// Sent at the line's first quiet moment, not at once (GH #1400); see
         /// [`crate::voice::io::ToConnection::Advise`].
         when_quiet: bool,
+        /// The cut this append is a part of: one id for every part of one
+        /// text, a new one for every new text; see
+        /// [`crate::voice::io::ToConnection::Advise`].
+        split_id: String,
     },
     /// Hand the seed of a call to the duplex session that is opening (D48).
     Seed {
@@ -503,6 +541,13 @@ pub struct LiveSessionState {
     /// first; this list is how a second one is recognised. Bounded like
     /// [`Self::closed_delegations`], by [`CLOSED_DELEGATIONS_KEPT`].
     pub answered_delegations: Vec<String>,
+    /// The last appends this call handed to the model, oldest first, at most
+    /// [`SENT_APPENDS_KEPT`] (wave d54g): what a refusal is matched against.
+    pub sent_appends: VecDeque<SentAppend>,
+    /// Delegations a refused answer has failed (wave d54g): each hears the
+    /// fallback once, however many of its appends the provider refuses.
+    /// Bounded by [`CLOSED_DELEGATIONS_KEPT`].
+    pub refused_delegations: Vec<String>,
     /// How many times the provider session of this call has been renewed —
     /// the `renewal_n` of the last `renewed` emission, `0` before the first
     /// (GH #896).
@@ -531,7 +576,22 @@ pub struct LiveSessionState {
     /// closes releases nothing into it; what is held goes to the colony as a
     /// `session_ended` dead letter at the disconnect (review M4, GH #1016).
     pub closing: bool,
+    /// The delegations of this call in the order the model opened them, the
+    /// newest [`DELEGATION_ORDER_KEPT`] (POC gpt-live-1, A94): an answer for
+    /// one with a newer one after it answers a superseded request.
+    pub delegation_order: Vec<String>,
+    /// How many `delegation` emissions this call has made: the
+    /// `task_revision` of the last one (POC gpt-live-1, A95).
+    pub delegation_revision: u32,
+    /// The revision each delegation was last emitted with, the newest
+    /// [`DELEGATION_ORDER_KEPT`]: what names its operation on a later
+    /// `delegation_cancel` (A45).
+    pub delegation_revisions: Vec<(String, u32)>,
 }
+
+/// How many delegations a call remembers the order of (A94). A call opens a
+/// handful; the bound keeps a very long one from growing the list.
+pub const DELEGATION_ORDER_KEPT: usize = 32;
 
 /// How many held pieces of advice a session keeps (review K5). A held list
 /// waits for the caller's next turn, and a caller on hold or muted says
@@ -612,6 +672,28 @@ fn hold(
 /// bound keeps a very long call from growing the list without end.
 pub const CLOSED_DELEGATIONS_KEPT: usize = 8;
 
+/// How many appends a session remembers by their event id, so a refusal
+/// that names one can be reported with its section and length (wave d54g).
+/// The provider answers an append within the second; 32 is far more than are
+/// ever unanswered at once, and the oldest leave first.
+pub const SENT_APPENDS_KEPT: usize = 32;
+
+/// One append this cell handed to the model, as far as a refusal needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentAppend {
+    /// The `event_id` it left under -- what a refusal names.
+    pub event_id: String,
+    /// The channel it travelled on.
+    pub kind: AppendKind,
+    /// How long it was, in characters.
+    pub chars: usize,
+    /// The delegation it answered, where it answered one.
+    pub delegation_id: Option<String>,
+    /// Whether it was the fallback sentence itself: a refused fallback is
+    /// reported and closes nothing a second time.
+    pub fallback: bool,
+}
+
 /// How many ended sessions a `voice` cell remembers (GH #1016).
 ///
 /// A late answer comes for the call that just ended, seconds after it: the
@@ -650,6 +732,8 @@ impl LiveSessionState {
             closed_turns: 0,
             closed_delegations: Vec::new(),
             answered_delegations: Vec::new(),
+            sent_appends: VecDeque::new(),
+            refused_delegations: Vec::new(),
             renewals: 0,
             partial_sent_at: None,
             partial_sent_chars: 0,
@@ -658,7 +742,35 @@ impl LiveSessionState {
             interrupted_turns: Vec::new(),
             tool_fact_turns: Vec::new(),
             closing: false,
+            delegation_order: Vec::new(),
+            delegation_revision: 0,
+            delegation_revisions: Vec::new(),
         }
+    }
+
+    /// Remember one append by its event id, the oldest leaving first.
+    pub fn note_append(&mut self, sent: SentAppend) {
+        self.sent_appends.push_back(sent);
+        while self.sent_appends.len() > SENT_APPENDS_KEPT {
+            self.sent_appends.pop_front();
+        }
+    }
+
+    /// Whether a newer delegation of this call opened after `id` (A94).
+    pub fn superseded(&self, id: &str) -> bool {
+        self.delegation_order
+            .iter()
+            .position(|d| d == id)
+            .is_some_and(|at| at + 1 < self.delegation_order.len())
+    }
+
+    /// The revision `id` was last emitted with, if the call remembers it.
+    pub fn revision_of(&self, id: &str) -> Option<u32> {
+        self.delegation_revisions
+            .iter()
+            .rev()
+            .find(|(d, _)| d == id)
+            .map(|(_, n)| *n)
     }
 
     /// `"<session_id>#<n>"` of the turn that is open now.
@@ -737,6 +849,20 @@ pub struct VoiceCell {
     /// The sentence a `horizon` advise becomes (GH #1400), `{seconds}` in
     /// it; empty drops the section. Only read in duplex mode.
     duplex_horizon_text: String,
+    /// Whether the `delegation` lane carries the call so far
+    /// (`duplex.delegation_history`) instead of the open turn alone. The
+    /// history leaves whole: this cell produces it and cuts none of it.
+    duplex_delegation_history: bool,
+    /// What an answer to a superseded delegation becomes
+    /// (`duplex.delegation_superseded`, A94): said, thought or dropped.
+    duplex_superseded: SupersededAnswer,
+    /// Whether a failed answer of an open delegation closes it at once with
+    /// the fallback (`duplex.advise_error_fallback`, A86/A87).
+    duplex_advise_error_fallback: bool,
+    /// The ceiling one append is cut at, in characters: the provider
+    /// block's own (`advise_max_tokens`, `chars_per_token`, lowered by
+    /// `advise_split_chars`), [`APPEND_MAX_CHARS`] where it names none.
+    duplex_append_limit: usize,
     /// The name the I/O half registered on the colony's one listener — the
     /// cell's only door.
     ///
@@ -772,6 +898,11 @@ pub struct VoiceCell {
     /// Whether the model's transcript reaches the `spoken` lane
     /// (`params.duplex.emit_spoken`); `None` follows `emit_partials`.
     duplex_emit_spoken: Option<bool>,
+    /// Whether the first audio of an answer is stamped on the `first_audio`
+    /// lane (`params.emit_first_audio`), on a duplex session and on the way
+    /// through a speech synthesis alike. Settled at birth: the I/O half reads
+    /// the same switch once per life.
+    emit_first_audio: bool,
     /// Whether the end of a synthesis reaches the `speak_end` lane.
     emit_speak_end: bool,
     /// Operation-timeout for I/O this cell initiates.
@@ -877,6 +1008,10 @@ impl VoiceCell {
             duplex_delegation_grace_ms: duplex_delegation_grace_ms(params),
             duplex_delegation_fallback: duplex_delegation_fallback(params),
             duplex_horizon_text: duplex_horizon_text(params),
+            duplex_delegation_history: duplex_delegation_history(params),
+            duplex_superseded: duplex_superseded(params),
+            duplex_advise_error_fallback: duplex_advise_error_fallback(params),
+            duplex_append_limit: duplex_append_limit(params),
             mount: params.mount.clone(),
             default_mode: params.default_mode,
             barge_in: params.barge_in,
@@ -886,6 +1021,7 @@ impl VoiceCell {
             attribution: (params.x_title.clone(), params.http_referer.clone()),
             duplex_delta_min: duplex_delta_min(params),
             duplex_emit_spoken: duplex_emit_spoken(params),
+            emit_first_audio: params.emit_first_audio,
             emit_speak_end: params.emit_speak_end,
             external_timeout_ms: params.external_timeout_ms,
             provider_idle_timeout_ms: params.provider_idle_timeout_ms,
@@ -1033,6 +1169,7 @@ impl VoiceCell {
             call_mark_every_s: self.call_marks.every_s,
             x_title: self.attribution.0.clone(),
             http_referer: self.attribution.1.clone(),
+            emit_first_audio: self.emit_first_audio,
         }
     }
 
@@ -1561,6 +1698,48 @@ impl VoiceCell {
                 // backend needs is the sentence the caller was in the middle of
                 // (contract § 1.4).
                 let text = live_turns::open_user_text(&state.turns).unwrap_or_default();
+                // POC gpt-live-1 (A75-A78): where the cell keeps the call's
+                // history, the lane carries it, frozen at the handoff and
+                // whole. What the target's window takes of it is the
+                // curator's to decide, never this cell's.
+                let history = live_turns::delegation_history(&state.turns, offset_ms);
+                // The delegation this one overtakes, where it is new (A45).
+                let overtaken = if state.delegation_order.contains(&delegation_id) {
+                    None
+                } else {
+                    let before = state.delegation_order.last().cloned();
+                    state.delegation_order.push(delegation_id.clone());
+                    let excess = state
+                        .delegation_order
+                        .len()
+                        .saturating_sub(DELEGATION_ORDER_KEPT);
+                    state.delegation_order.drain(..excess);
+                    before
+                };
+                // A95: every emission is an operation of its own, and the
+                // call's delegations count up as task revisions.
+                state.delegation_revision = state.delegation_revision.saturating_add(1);
+                let task_revision = state.delegation_revision;
+                state
+                    .delegation_revisions
+                    .push((delegation_id.clone(), task_revision));
+                let excess = state
+                    .delegation_revisions
+                    .len()
+                    .saturating_sub(DELEGATION_ORDER_KEPT);
+                state.delegation_revisions.drain(..excess);
+                let op_id = operation_id(session_id, &delegation_id, task_revision);
+                // The cancel names the operation of the overtaken one; a
+                // delegation already answered has no work left to stop.
+                let cancel = overtaken
+                    .filter(|_| self.duplex_superseded == SupersededAnswer::Drop)
+                    .filter(|old| !state.answered_delegations.contains(old))
+                    .map(|old| {
+                        let op = state
+                            .revision_of(&old)
+                            .map(|n| operation_id(session_id, &old, n));
+                        (old, op)
+                    });
                 let turn_id = state.open_turn_id(session_id);
                 state.open_delegations.push(OpenDelegation {
                     id: delegation_id.clone(),
@@ -1572,19 +1751,58 @@ impl VoiceCell {
                     "turn_id": turn_id,
                     "delegation_id": delegation_id,
                     "offset_ms": offset_ms,
+                    "operation_id": op_id,
+                    "task_revision": task_revision,
                 });
                 if let Some(ratio) = usage_ratio
                     && let Some(obj) = extra.as_object_mut()
                 {
                     obj.insert("usage_ratio".into(), json!(ratio));
                 }
-                let content = self.live_body(
-                    "delegation",
-                    session_id,
-                    extra,
-                    json!([{"origin": "user", "type": "text", "text": text}]),
-                );
+                let messages = match history {
+                    Some(entries) => Value::Array(
+                        entries
+                            .into_iter()
+                            .map(|(speaker, text, turn_id)| {
+                                let origin = match speaker {
+                                    Speaker::User => "user",
+                                    Speaker::Assistant => "assistant",
+                                };
+                                let mut entry =
+                                    json!({"origin": origin, "type": "text", "text": text});
+                                // OR-54g-33 b: a reported turn names its
+                                // `turn_id`; the task, still open, has none.
+                                if let (Some(id), Some(obj)) = (turn_id, entry.as_object_mut()) {
+                                    obj.insert("turn_id".into(), json!(id));
+                                }
+                                entry
+                            })
+                            .collect(),
+                    ),
+                    None => json!([{"origin": "user", "type": "text", "text": text}]),
+                };
+                let content = self.live_body("delegation", session_id, extra, messages);
                 self.emit(sink, content).await;
+                if let Some((old, op)) = cancel {
+                    // A45/A94: stopping speech stops no backend; the
+                    // topology is told the overtaken work is void.
+                    tracing::info!(
+                        path = self.path.as_str(),
+                        %session_id, delegation_id = %old, superseded_by = %delegation_id,
+                        "voice: a delegation was superseded -- delegation_cancel"
+                    );
+                    let mut hop = json!({
+                        "delegation_id": old,
+                        "superseded_by": delegation_id,
+                    });
+                    if let Some(op) = op
+                        && let Some(obj) = hop.as_object_mut()
+                    {
+                        obj.insert("operation_id".into(), json!(op));
+                    }
+                    let content = self.live_body("delegation_cancel", session_id, hop, json!([]));
+                    self.emit(sink, content).await;
+                }
             }
             DuplexEvent::Usage {
                 seconds,
@@ -1642,16 +1860,42 @@ impl VoiceCell {
             DuplexEvent::Warning {
                 detail,
                 provider_code,
+                client_event_id,
             } => {
-                self.emit_error_coded(
-                    sink,
-                    "duplex_warning",
-                    &detail,
-                    Some(session_id),
-                    None,
-                    provider_code.as_deref(),
-                )
-                .await;
+                // A refusal that names an append this call sent is reported
+                // as that (wave d54g): three appends of one call were refused
+                // as over 500 tokens, and the error lane said `duplex_warning`
+                // without a word about which. Everything else -- no id, or an
+                // id this call does not remember -- is the warning it was.
+                let refused = client_event_id.as_deref().and_then(|id| {
+                    self.live_sessions
+                        .get(session_id)
+                        .and_then(|state| state.sent_appends.iter().find(|a| a.event_id == id))
+                        .cloned()
+                });
+                match refused {
+                    Some(append) => {
+                        self.on_append_refused(
+                            session_id,
+                            append,
+                            &detail,
+                            provider_code.as_deref(),
+                            sink,
+                        )
+                        .await;
+                    }
+                    None => {
+                        self.emit_error_coded(
+                            sink,
+                            "duplex_warning",
+                            &detail,
+                            Some(session_id),
+                            None,
+                            provider_code.as_deref(),
+                        )
+                        .await;
+                    }
+                }
             }
             DuplexEvent::Closed {
                 reason,
@@ -1758,8 +2002,22 @@ impl VoiceCell {
             .len()
             .saturating_sub(CLOSED_DELEGATIONS_KEPT);
         state.closed_delegations.drain(..excess);
+        let superseded: Vec<bool> = stale
+            .iter()
+            .map(|id| self.duplex_superseded != SupersededAnswer::Speak && state.superseded(id))
+            .collect();
         self.run_live_actions(session_id, actions, sink).await;
-        for delegation_id in stale {
+        for (delegation_id, superseded) in stale.into_iter().zip(superseded) {
+            if superseded {
+                // A94: the request was overtaken by a newer one; its
+                // fallback would speak about something already replaced.
+                tracing::info!(
+                    path = self.path.as_str(),
+                    %session_id, %delegation_id, grace_ms = grace,
+                    "voice: a superseded delegation ran out of time -- no fallback"
+                );
+                continue;
+            }
             // The same shape a `fact` travels in — `Commentary`, spoken,
             // carrying the delegation's own id — because that is the shape
             // measured being taken up and said out loud (S0 b4: appended after
@@ -1804,6 +2062,12 @@ impl VoiceCell {
                     // the curator never saw would leave it speculating on an
                     // older sentence than the one the turn carries.
                     let held = self.live_sessions.get_mut(session_id).and_then(|state| {
+                        // OR-54g-33 b: the history names this turn by its id.
+                        live_turns::name_reported_turn(
+                            &mut state.turns,
+                            turn.index,
+                            turn_id.clone(),
+                        );
                         state.closed_turns = turn.index.saturating_add(1);
                         state.partial_sent_at = None;
                         state.partial_sent_chars = 0;
@@ -1822,14 +2086,15 @@ impl VoiceCell {
                         );
                         self.emit(sink, content).await;
                     }
-                    self.to_client(
-                        session_id,
-                        ServerFrame::Turn {
-                            text: turn.user.clone(),
-                            turn_id: turn_id.clone(),
-                        },
-                    )
-                    .await;
+                    // The client's `turn` frame goes AFTER the lane emission
+                    // (below): the connection reads "the caller's turn has
+                    // closed" off that frame, and a renewal that waited for
+                    // the close must not take over before the colony has the
+                    // turn (d54g callseam).
+                    let frame = ServerFrame::Turn {
+                        text: turn.user.clone(),
+                        turn_id: turn_id.clone(),
+                    };
                     let usage_ratio = self
                         .live_sessions
                         .get(session_id)
@@ -1854,6 +2119,13 @@ impl VoiceCell {
                         if let Some(ms) = turn.first_audio_ms {
                             obj.insert("t_first_audio_ms".into(), json!(ms));
                         }
+                        // The end of the connection cut the model off inside
+                        // this turn (d54g callseam): its part was not said to
+                        // its end, and a reader must not take it for a
+                        // statement that was made. Absent on every other turn.
+                        if turn.cut {
+                            obj.insert("cut".into(), json!(true));
+                        }
                     }
                     // A turn the caller spoke in releases what is held -- not
                     // the one a closing session closes (review M4).
@@ -1873,6 +2145,7 @@ impl VoiceCell {
                     }
                     let content = self.live_body("turn", session_id, extra, Value::Array(messages));
                     self.emit(sink, content).await;
+                    self.to_client(session_id, frame).await;
                     if person_turn {
                         self.release_held_advise(session_id).await;
                     }
@@ -2361,6 +2634,187 @@ impl VoiceCell {
         }
     }
 
+    /// The provider refused one append and named it (wave d54g).
+    ///
+    /// One emission on the error lane, `advise_append_refused`: the section
+    /// of the channel the append travelled on, its length in characters, the
+    /// provider's code and, where it answered one, the delegation. The model
+    /// never got that append, so a delegation it answered has failed
+    /// ([`Self::refused_answer_fails_delegation`]) -- BEFORE the report
+    /// leaves, so whoever reads the report finds the fallback already sent.
+    async fn on_append_refused(
+        &mut self,
+        session_id: &str,
+        append: SentAppend,
+        detail: &str,
+        provider_code: Option<&str>,
+        sink: &OriginSink,
+    ) {
+        tracing::warn!(
+            path = self.path.as_str(),
+            %session_id,
+            event_id = %append.event_id,
+            section = section_name_of(append.kind),
+            chars = append.chars,
+            delegation_id = append.delegation_id.as_deref().unwrap_or(""),
+            provider_code = provider_code.unwrap_or(""),
+            "voice: the provider refused an append -- the model never got it"
+        );
+        if !append.fallback
+            && let Some(delegation_id) = append.delegation_id.as_deref()
+        {
+            self.refused_answer_fails_delegation(session_id, delegation_id)
+                .await;
+        }
+        let mut header = Map::new();
+        header.insert("route".into(), json!("error"));
+        header.insert("error_code".into(), json!("advise_append_refused"));
+        header.insert("msg_type".into(), json!("voice_error"));
+        header.insert("session_id".into(), json!(session_id));
+        header.insert("call_id".into(), json!(session_id));
+        self.stamp_engine(&mut header);
+        let mut meta = Map::new();
+        meta.insert("detail".into(), json!(detail));
+        if let Some(code) = provider_code {
+            meta.insert("provider_code".into(), json!(code));
+        }
+        meta.insert("section".into(), json!(section_name_of(append.kind)));
+        meta.insert("chars".into(), json!(append.chars));
+        if let Some(id) = append.delegation_id.as_deref() {
+            meta.insert("delegation_id".into(), json!(id));
+        }
+        let content = json!({
+            "header": Value::Object(header),
+            "messages": [],
+            "meta": Value::Object(meta),
+        });
+        self.emit(sink, content).await;
+    }
+
+    /// A refused append was the answer to a delegation: the delegation has
+    /// failed, and it hears `delegation_fallback` now, on its own id, instead
+    /// of leaving the model waiting for an answer that never arrived. Once
+    /// per delegation; one the deadline already closed with the fallback, or
+    /// one a newer delegation overtook where such answers are not said,
+    /// hears nothing.
+    async fn refused_answer_fails_delegation(&mut self, session_id: &str, delegation_id: &str) {
+        let superseded_unsaid = self.duplex_superseded != SupersededAnswer::Speak;
+        let Some(state) = self.live_sessions.get_mut(session_id) else {
+            return;
+        };
+        let already = state.refused_delegations.iter().any(|d| d == delegation_id)
+            || state
+                .closed_delegations
+                .iter()
+                .any(|c| c.id == delegation_id)
+            || (superseded_unsaid && state.superseded(delegation_id));
+        if already {
+            tracing::info!(
+                path = self.path.as_str(),
+                %session_id, %delegation_id,
+                "voice: a refused answer for a delegation already closed -- nothing said"
+            );
+            return;
+        }
+        state.refused_delegations.push(delegation_id.to_string());
+        let excess = state
+            .refused_delegations
+            .len()
+            .saturating_sub(CLOSED_DELEGATIONS_KEPT);
+        state.refused_delegations.drain(..excess);
+        // No longer open, whichever way the answer was booked when it was
+        // sent: the deadline must not say the fallback a second time.
+        state
+            .open_delegations
+            .retain(|open| open.id != delegation_id);
+        tracing::info!(
+            path = self.path.as_str(),
+            %session_id, %delegation_id,
+            "voice: a refused answer -- closing the delegation with the fallback now"
+        );
+        let fallback = self.duplex_delegation_fallback.clone();
+        self.push_advise(
+            session_id,
+            AppendKind::Commentary,
+            Some(delegation_id.to_string()),
+            &fallback,
+            true,
+            None,
+        )
+        .await;
+    }
+
+    /// The fast path of a failed answer (`duplex.advise_error_fallback`,
+    /// A86/A87). An `in_advise` or `in_speak` that carries `hop.error_code`
+    /// and names a delegation (`context.delegation_id`) is never said: an
+    /// open delegation is closed now with `delegation_fallback` on its own
+    /// id -- the deadline would say the same after `delegation_grace_ms` --
+    /// and one that is answered, closed or overtaken already hears nothing.
+    /// `false` where the message is not such an answer and goes its way.
+    async fn answer_fails_delegation(&mut self, msg: &Message) -> bool {
+        let route = msg.headers.hop.get("route").and_then(|v| v.as_str());
+        if matches!(route, Some("in_seed" | "in_session")) {
+            return false;
+        }
+        let failed = msg
+            .headers
+            .hop
+            .get("error_code")
+            .and_then(|v| v.as_str())
+            .is_some_and(|c| !c.is_empty());
+        let delegation_id = msg
+            .headers
+            .context
+            .get("delegation_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let (true, Some(delegation_id), Some(session_id)) = (failed, delegation_id, call_of(msg))
+        else {
+            return false;
+        };
+        let Some(state) = self.live_sessions.get(&session_id) else {
+            return false;
+        };
+        let open = state.open_delegations.iter().any(|o| o.id == delegation_id);
+        let superseded =
+            self.duplex_superseded != SupersededAnswer::Speak && state.superseded(&delegation_id);
+        let code = msg
+            .headers
+            .hop
+            .get("error_code")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if !open || superseded {
+            tracing::info!(
+                path = self.path.as_str(),
+                %session_id, %delegation_id, error_code = %code,
+                "voice: a failed answer for a delegation no longer open -- not said"
+            );
+            return true;
+        }
+        tracing::info!(
+            path = self.path.as_str(),
+            %session_id, %delegation_id, error_code = %code,
+            "voice: a failed answer -- closing the delegation with the fallback now"
+        );
+        if !self.settle_delegation(&session_id, Some(&delegation_id), true) {
+            return true;
+        }
+        let fallback = self.duplex_delegation_fallback.clone();
+        self.push_advise(
+            &session_id,
+            AppendKind::Commentary,
+            Some(delegation_id),
+            &fallback,
+            true,
+            None,
+        )
+        .await;
+        true
+    }
+
     /// The curator's `horizon` (GH #1400): how many seconds the answer of a
     /// running tool round or delegation will take, as numbers only (`seconds`,
     /// `way`, `family` in the body, no words). The set's `horizon_text` with
@@ -2400,21 +2854,40 @@ impl VoiceCell {
             .replace("{seconds}", &seconds.to_string());
         // The connection sends it at the line's first quiet moment -- the
         // takeover's rule, which also hears the model's OWN speech (its
-        // audio), not only the sections this cell opened (o8.6). One part:
-        // a newer horizon replaces a waiting one there.
-        let _ = self
-            .to_io
-            .send(VoiceReconfig::Advise {
-                session_id,
-                kind: AppendKind::Instructions,
-                event_id: Uuid::now_v7().to_string(),
-                delegation_id: None,
-                content: text,
-                speak_id: None,
-                takeover: None,
-                when_quiet: true,
-            })
-            .await;
+        // audio), not only the sections this cell opened (o8.6). Cut like
+        // every append (wave d54g): `horizon_text` is held to the provider's
+        // ceiling where the params are read, so more than one part only
+        // happens under a lower `advise_split_chars`.
+        // One id for the whole text: the connection holds ONE waiting append
+        // and a newer one replaces it, so the parts of this text have to be
+        // told from a newer horizon.
+        let split_id = Uuid::now_v7().to_string();
+        for part in split_append(&text, self.duplex_append_limit) {
+            let event_id = Uuid::now_v7().to_string();
+            if let Some(state) = self.live_sessions.get_mut(&session_id) {
+                state.note_append(SentAppend {
+                    event_id: event_id.clone(),
+                    kind: AppendKind::Instructions,
+                    chars: part.chars().count(),
+                    delegation_id: None,
+                    fallback: false,
+                });
+            }
+            let _ = self
+                .to_io
+                .send(VoiceReconfig::Advise {
+                    session_id: session_id.clone(),
+                    kind: AppendKind::Instructions,
+                    event_id,
+                    delegation_id: None,
+                    content: part,
+                    speak_id: None,
+                    takeover: None,
+                    when_quiet: true,
+                    split_id: split_id.clone(),
+                })
+                .await;
+        }
     }
 
     /// Settle the delegation an answer names as it is SENT; `false` where it
@@ -2522,6 +2995,7 @@ impl VoiceCell {
         &mut self,
         session_id: &str,
         text: String,
+        delegation_id: Option<String>,
         reply_target: Path,
         sink: &OutputSink,
     ) {
@@ -2551,8 +3025,25 @@ impl VoiceCell {
             );
             return;
         }
-        self.push_advise(session_id, AppendKind::Commentary, None, &text, true, None)
-            .await;
+        // An answer closes its delegation whichever lane it comes by (wave
+        // d54g, strand deleg): settled here exactly as on `in_advise`, and the
+        // append carries the delegation. Before this, an `in_speak` that
+        // named an open delegation left it open, and the caller heard the
+        // answer and then, after `delegation_grace_ms`, the fallback. A
+        // second answer for it, or one the fallback closed a turn ago, is
+        // not said.
+        if !self.settle_delegation(session_id, delegation_id.as_deref(), true) {
+            return;
+        }
+        self.push_advise(
+            session_id,
+            AppendKind::Commentary,
+            delegation_id,
+            &text,
+            true,
+            None,
+        )
+        .await;
     }
 
     /// Hand one piece of guidance to the connection, split where the provider's
@@ -2565,7 +3056,9 @@ impl VoiceCell {
     /// spoken section on it (contract § 1.3).
     ///
     /// `takeover` marks the handover to a renewed session (GH #896), and every
-    /// part carries it: see [`crate::voice::io::ToConnection::Advise`].
+    /// part carries it: see [`crate::voice::io::ToConnection::Advise`]. Every
+    /// part also carries the `split_id` of this call: one per text, so the
+    /// connection can tell the parts of one text from the next text.
     async fn push_advise(
         &mut self,
         session_id: &str,
@@ -2575,13 +3068,65 @@ impl VoiceCell {
         spoken: bool,
         takeover: Option<u32>,
     ) {
-        for (i, part) in split_append(text).into_iter().enumerate() {
+        let (mut kind, mut spoken) = (kind, spoken);
+        if self.duplex_superseded == SupersededAnswer::Drop
+            && matches!(kind, AppendKind::Commentary | AppendKind::Thinking)
+            && let Some(id) = delegation_id.as_deref()
+            && self
+                .live_sessions
+                .get(session_id)
+                .is_some_and(|state| state.superseded(id))
+        {
+            // A94: "ignore results from the outdated request" -- neither said
+            // nor thought; the topology was told to cancel it when it was
+            // overtaken (`delegation_cancel`).
+            tracing::info!(
+                path = self.path.as_str(),
+                %session_id, delegation_id = %id,
+                "voice: an answer for a superseded delegation -- dropped"
+            );
+            return;
+        }
+        if self.duplex_superseded == SupersededAnswer::Think
+            && kind == AppendKind::Commentary
+            && let Some(id) = delegation_id.as_deref()
+            && self
+                .live_sessions
+                .get(session_id)
+                .is_some_and(|state| state.superseded(id))
+        {
+            // A94 + A81: an answer to a request a newer one overtook is not
+            // said; as thinking it may still shape what the model says next.
+            tracing::info!(
+                path = self.path.as_str(),
+                %session_id, delegation_id = %id,
+                "voice: an answer for a superseded delegation -- sent as thinking, not spoken"
+            );
+            kind = AppendKind::Thinking;
+            spoken = false;
+        }
+        // The fallback sentence itself is marked: refused, it is reported
+        // and closes nothing a second time.
+        let fallback = delegation_id.is_some() && text == self.duplex_delegation_fallback;
+        // One id for every part of this text, a new one for the next text.
+        let split_id = Uuid::now_v7().to_string();
+        for (i, part) in split_append(text, self.duplex_append_limit)
+            .into_iter()
+            .enumerate()
+        {
             let event_id = Uuid::now_v7().to_string();
             let speak_id = (spoken && i == 0).then(|| event_id.clone());
-            if let Some(id) = speak_id.as_ref()
-                && let Some(state) = self.live_sessions.get_mut(session_id)
-            {
-                state.speak_open = Some(id.clone());
+            if let Some(state) = self.live_sessions.get_mut(session_id) {
+                if let Some(id) = speak_id.as_ref() {
+                    state.speak_open = Some(id.clone());
+                }
+                state.note_append(SentAppend {
+                    event_id: event_id.clone(),
+                    kind,
+                    chars: part.chars().count(),
+                    delegation_id: delegation_id.clone(),
+                    fallback,
+                });
             }
             let _ = self
                 .to_io
@@ -2594,6 +3139,7 @@ impl VoiceCell {
                     speak_id,
                     takeover,
                     when_quiet: false,
+                    split_id: split_id.clone(),
                 })
                 .await;
         }
@@ -2663,6 +3209,38 @@ impl VoiceCell {
         header.insert("call_id".into(), json!(session_id));
         header.insert("speak_id".into(), json!(speak_id));
         header.insert("reason".into(), json!(reason));
+        header.insert("platform".into(), json!("voice"));
+        self.stamp_engine(&mut header);
+        let content = json!({
+            "header": Value::Object(header),
+            "messages": [],
+        });
+        self.emit(sink, content).await;
+    }
+
+    /// Stamp the first audio of one synthesis on the `first_audio` lane
+    /// (d54g callseam).
+    ///
+    /// The cascade's half of the stamp a duplex session writes from
+    /// `LiveAudioOut`: until now the way through a speech synthesis had no
+    /// time of its first sound at all, only the `speak_end` at the end of the
+    /// sentence. It names the synthesis (`speak_id`, the id the client's own
+    /// `speak_start`/`speak_end` frames carry) rather than a turn, and its
+    /// time is the connection's clock, never a wall clock. No words: the lane
+    /// is a measurement.
+    async fn emit_first_audio_lane(
+        &self,
+        sink: &OriginSink,
+        session_id: &str,
+        speak_id: &str,
+        at_ms: u64,
+    ) {
+        let mut header = Map::new();
+        header.insert("route".into(), json!("first_audio"));
+        header.insert("session_id".into(), json!(session_id));
+        header.insert("call_id".into(), json!(session_id));
+        header.insert("speak_id".into(), json!(speak_id));
+        header.insert("t_first_audio_ms".into(), json!(at_ms));
         header.insert("platform".into(), json!("voice"));
         self.stamp_engine(&mut header);
         let content = json!({
@@ -3078,27 +3656,72 @@ fn duplex_horizon_text(params: &VoiceParams) -> String {
     }
 }
 
+/// And for the history the `delegation` lane carries (POC gpt-live-1).
+fn duplex_delegation_history(params: &VoiceParams) -> bool {
+    matches!(
+        &params.duplex,
+        Some(crate::voice::params::DuplexParams::GptLive(p)) if p.delegation_history
+    )
+}
+
+/// And for what an answer to a superseded delegation becomes (A94).
+fn duplex_superseded(params: &VoiceParams) -> SupersededAnswer {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => p.delegation_superseded,
+        _ => SupersededAnswer::Speak,
+    }
+}
+
+/// And for the fast path of a failed answer (A86/A87).
+fn duplex_advise_error_fallback(params: &VoiceParams) -> bool {
+    matches!(
+        &params.duplex,
+        Some(crate::voice::params::DuplexParams::GptLive(p)) if p.advise_error_fallback
+    )
+}
+
+/// The operation id of one `delegation` emission (A95): unique per
+/// emission, because the revision counts every one of the call.
+fn operation_id(session_id: &str, delegation_id: &str, task_revision: u32) -> String {
+    format!("{session_id}:{delegation_id}:{task_revision}")
+}
+
+/// And for the ceiling an append is cut at (A83, wave d54g).
+fn duplex_append_limit(params: &VoiceParams) -> usize {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => p.advise_split_limit(),
+        _ => APPEND_MAX_CHARS,
+    }
+}
+
 /// Cut one piece of guidance into appends the provider will take.
 ///
-/// One append may carry about 500 tokens (contract § 1.5,
-/// [`APPEND_MAX_CHARS`]), and a longer one is split at PARAGRAPH boundaries:
-/// a section cut mid-sentence would be read out as two thoughts. A single
-/// paragraph that is itself too long is cut at the last space before the
-/// ceiling — the one place a word boundary has to do, because the alternative
-/// is an append the model refuses whole.
-fn split_append(text: &str) -> Vec<String> {
+/// `max` is the ceiling of one append in characters: for `gpt_live` its
+/// `advise_max_tokens` times `chars_per_token`, less a tenth, lowered by
+/// `advise_split_chars` (1 080 as shipped -- at the old 1 800 the provider
+/// refused three appends of one call as over 500 tokens); for a provider
+/// without a ceiling of its own, [`APPEND_MAX_CHARS`].
+///
+/// A longer text is split at PARAGRAPH boundaries: a section cut
+/// mid-sentence would be read out as two thoughts. A paragraph that is
+/// itself too long is cut at sentence ends, a sentence too long alone at
+/// words, and a run with no space in it hard at the ceiling -- the
+/// alternative is an append the model refuses whole. The parts keep the
+/// order of the text.
+fn split_append(text: &str, max: usize) -> Vec<String> {
+    let max = max.max(1);
     let text = text.trim();
-    if text.chars().count() <= APPEND_MAX_CHARS {
+    if text.chars().count() <= max {
         return vec![text.to_string()];
     }
     let mut parts: Vec<String> = Vec::new();
     let mut current = String::new();
     for paragraph in text.split("\n\n").map(str::trim).filter(|p| !p.is_empty()) {
-        for piece in split_paragraph(paragraph) {
+        for piece in split_sentences(paragraph, max) {
             let joined = current.chars().count() + 2 + piece.chars().count();
             if current.is_empty() {
                 current = piece;
-            } else if joined <= APPEND_MAX_CHARS {
+            } else if joined <= max {
                 current.push_str("\n\n");
                 current.push_str(&piece);
             } else {
@@ -3113,20 +3736,64 @@ fn split_append(text: &str) -> Vec<String> {
     parts
 }
 
-/// One paragraph, cut at word boundaries where it exceeds the ceiling alone.
-fn split_paragraph(paragraph: &str) -> Vec<String> {
-    if paragraph.chars().count() <= APPEND_MAX_CHARS {
+/// One paragraph, cut at sentence ends where it exceeds the ceiling alone;
+/// sentences are packed together up to it, and one too long alone is cut at
+/// words ([`split_paragraph`]).
+fn split_sentences(paragraph: &str, max: usize) -> Vec<String> {
+    if paragraph.chars().count() <= max {
+        return vec![paragraph.to_string()];
+    }
+    let mut sentences: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let mut chars = paragraph.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let ends = matches!(c, '.' | '!' | '?' | '\u{2026}')
+            && chars.peek().is_none_or(|(_, next)| next.is_whitespace());
+        if ends {
+            let end = i + c.len_utf8();
+            sentences.push(paragraph[start..end].trim());
+            start = end;
+        }
+    }
+    if start < paragraph.len() {
+        sentences.push(paragraph[start..].trim());
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for sentence in sentences.into_iter().filter(|s| !s.is_empty()) {
+        for piece in split_paragraph(sentence, max) {
+            if current.is_empty() {
+                current = piece;
+            } else if current.chars().count() + 1 + piece.chars().count() <= max {
+                current.push(' ');
+                current.push_str(&piece);
+            } else {
+                out.push(std::mem::take(&mut current));
+                current = piece;
+            }
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// One paragraph, cut at word boundaries where it exceeds the ceiling alone,
+/// and hard at the ceiling where a run has no space in it.
+fn split_paragraph(paragraph: &str, max: usize) -> Vec<String> {
+    if paragraph.chars().count() <= max {
         return vec![paragraph.to_string()];
     }
     let mut out = Vec::new();
     let mut rest = paragraph;
-    while rest.chars().count() > APPEND_MAX_CHARS {
+    while rest.chars().count() > max {
         // The byte index just past the last character that still fits.
-        let limit = rest
-            .char_indices()
-            .nth(APPEND_MAX_CHARS)
-            .map_or(rest.len(), |(i, _)| i);
-        let cut = rest[..limit].rfind(char::is_whitespace).unwrap_or(limit);
+        let limit = rest.char_indices().nth(max).map_or(rest.len(), |(i, _)| i);
+        let cut = rest[..limit]
+            .rfind(char::is_whitespace)
+            .filter(|&at| at > 0)
+            .unwrap_or(limit);
         let (head, tail) = rest.split_at(cut);
         out.push(head.trim().to_string());
         rest = tail.trim_start();
@@ -3349,6 +4016,12 @@ impl LongRunningCell for VoiceCell {
                 return;
             }
 
+            // A86/A87: a failed answer of an open delegation closes it at
+            // once with the fallback; its words never reach the model.
+            if self.duplex_advise_error_fallback && self.answer_fails_delegation(&msg).await {
+                return;
+            }
+
             // The advise lane, before the text is read: its text may come out
             // of `body.text` rather than out of an assistant turn, and its
             // section decides which of the three append channels it takes
@@ -3469,7 +4142,8 @@ impl LongRunningCell for VoiceCell {
             // `live_sessions`, so the cascade lookup below would answer
             // `unknown_session` for a call that is perfectly live.
             if self.duplex {
-                self.speak_duplex(&session_id, text, reply_target, sink)
+                let delegation_id = addressed("delegation_id");
+                self.speak_duplex(&session_id, text, delegation_id, reply_target, sink)
                     .await;
                 return;
             }
@@ -3644,8 +4318,11 @@ impl LongRunningCell for VoiceCell {
                     // from the params rather than from the event, because the
                     // engine cannot change under a live cell.
                     if self.duplex {
-                        self.live_sessions
-                            .insert(session_id, LiveSessionState::new(mode));
+                        let mut state = LiveSessionState::new(mode);
+                        if self.duplex_delegation_history {
+                            state.turns = live_turns::TurnState::with_history();
+                        }
+                        self.live_sessions.insert(session_id, state);
                         take(ack);
                         return;
                     }
@@ -3770,10 +4447,24 @@ impl LongRunningCell for VoiceCell {
                     )
                     .await;
                 }
+                VoiceEvent::SpeakAudioOut {
+                    session_id,
+                    speak_id,
+                    at_ms,
+                } => {
+                    // The connection sends this only where the switch orders
+                    // it; the handler asks again because the lane is its own.
+                    if self.emit_first_audio {
+                        self.emit_first_audio_lane(sink, &session_id, &speak_id, at_ms)
+                            .await;
+                    }
+                }
                 VoiceEvent::LiveAudioOut { session_id, at_ms } => {
                     let gap = self.duplex_turn_gap_ms;
                     let backchannel = self.duplex_backchannel_max_ms;
+                    let mut stamp = None;
                     if let Some(state) = self.live_sessions.get_mut(&session_id) {
+                        let before = live_turns::open_first_audio_ms(&state.turns);
                         // Never an action: the mark only lands in the open turn.
                         let _ = live_turns::step(
                             &mut state.turns,
@@ -3781,7 +4472,62 @@ impl LongRunningCell for VoiceCell {
                             gap,
                             backchannel,
                         );
+                        // The mark the turn just took is the answer's first
+                        // audio: the stamp carries the time the closed `turn`
+                        // will carry, on the session's clock.
+                        if before.is_none()
+                            && let Some(ms) = live_turns::open_first_audio_ms(&state.turns)
+                        {
+                            stamp = Some((state.open_turn_id(&session_id), ms));
+                        }
                     }
+                    // d54g callseam: until now the time stood only in the
+                    // closed `turn`, so a measurement had it at the END of
+                    // the turn. Ordered, never assumed: a line draws no edge
+                    // for a lane it did not ask for.
+                    if self.emit_first_audio
+                        && let Some((turn_id, ms)) = stamp
+                    {
+                        let content = self.live_body(
+                            "first_audio",
+                            &session_id,
+                            json!({"turn_id": turn_id, "t_first_audio_ms": ms}),
+                            json!([]),
+                        );
+                        self.emit(sink, content).await;
+                    }
+                }
+                VoiceEvent::LiveEnded {
+                    session_id,
+                    at_ms,
+                    model_audible,
+                } => {
+                    // d54g callseam: the open turn closes with the connection,
+                    // from what is held now, and leaves before the call's
+                    // `final` usage. Measured on 2026-11-07: closed by the
+                    // provider's late `Closed`, it left 330 ms and more after
+                    // the line was gone and opened the next conversation.
+                    let gap = self.duplex_turn_gap_ms;
+                    let backchannel = self.duplex_backchannel_max_ms;
+                    let actions = match self.live_sessions.get_mut(&session_id) {
+                        Some(state) => {
+                            // Nothing is released into a call that is over;
+                            // what is held goes out as a dead letter at the
+                            // disconnect (review M4, GH #1016).
+                            state.closing = true;
+                            live_turns::step(
+                                &mut state.turns,
+                                TurnInput::End {
+                                    at_ms,
+                                    model_audible,
+                                },
+                                gap,
+                                backchannel,
+                            )
+                        }
+                        None => Vec::new(),
+                    };
+                    self.run_live_actions(&session_id, actions, sink).await;
                 }
                 VoiceEvent::LiveTick { session_id, now_ms } => {
                     self.on_live_tick(&session_id, now_ms, sink).await;
@@ -3801,16 +4547,20 @@ impl LongRunningCell for VoiceCell {
                     session_id,
                     reason,
                     renewal_n,
+                    limits,
                 } => {
                     // No words, no session check: the call may still be
                     // ringing (GH #1055), and the ask is what lets the colony
                     // answer before the model opens (D48).
-                    let content = self.live_body(
-                        "seed_ask",
-                        &session_id,
-                        json!({"reason": reason.as_str(), "renewal_n": renewal_n}),
-                        json!([]),
-                    );
+                    let mut hop = json!({"reason": reason.as_str(), "renewal_n": renewal_n});
+                    // Wave d54g, strand kprofil: this cell reports no package,
+                    // so the ask itself tells the window's builder how large
+                    // a start window and a later feed may be. Without limits
+                    // the hop is the one it always was.
+                    if let (Some(limits), Some(hop)) = (limits, hop.as_object_mut()) {
+                        hop.insert("limits".into(), limits);
+                    }
+                    let content = self.live_body("seed_ask", &session_id, hop, json!([]));
                     self.emit(sink, content).await;
                 }
                 VoiceEvent::CallMark {
@@ -4110,5 +4860,198 @@ mod tests {
                 .draining,
             "and the new take is still waiting for its own provider"
         );
+    }
+
+    /// Wave d54g: there is one cut, with or without `advise_split_chars` --
+    /// paragraphs, then sentence ends, then words. The old default took the
+    /// last space before 1 800 characters, in the middle of a sentence.
+    #[test]
+    fn the_default_split_cuts_at_sentence_ends() {
+        let sentence = "Word word word word word word word word word. ";
+        let long = sentence.repeat(60);
+        let parts = split_append(&long, APPEND_MAX_CHARS);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        for part in &parts {
+            assert!(part.chars().count() <= APPEND_MAX_CHARS);
+            assert!(part.ends_with('.'), "cut at a sentence end: {part:?}");
+        }
+        assert_eq!(parts.join(" "), long.trim(), "nothing lost");
+        assert_eq!(
+            split_append("short", APPEND_MAX_CHARS),
+            vec!["short".to_string()]
+        );
+        assert_eq!(
+            split_append("one two", 0),
+            vec!["o", "n", "e", "t", "w", "o"],
+            "a ceiling of nothing is read as one character, never a loop"
+        );
+    }
+
+    /// A session remembers its last appends by event id, the oldest leaving
+    /// first, so a refusal can be matched and the list cannot grow.
+    #[test]
+    fn a_session_remembers_its_last_appends() {
+        let mut state = LiveSessionState::new(Mode::Auto);
+        for n in 0..SENT_APPENDS_KEPT + 3 {
+            state.note_append(SentAppend {
+                event_id: format!("ev-{n}"),
+                kind: AppendKind::Thinking,
+                chars: n,
+                delegation_id: None,
+                fallback: false,
+            });
+        }
+        assert_eq!(state.sent_appends.len(), SENT_APPENDS_KEPT);
+        assert_eq!(
+            state.sent_appends.front().map(|a| a.event_id.as_str()),
+            Some("ev-3")
+        );
+        assert_eq!(
+            state.sent_appends.back().map(|a| a.chars),
+            Some(SENT_APPENDS_KEPT + 2)
+        );
+    }
+
+    /// Every command the cell handed to its I/O half so far that is an
+    /// append: the cut it names and its text.
+    fn appends_handed_over(sent: &mut mpsc::Receiver<VoiceReconfig>) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        while let Ok(cmd) = sent.try_recv() {
+            if let VoiceReconfig::Advise {
+                split_id, content, ..
+            } = cmd
+            {
+                out.push((split_id, content));
+            }
+        }
+        out
+    }
+
+    /// The parts of one cut text name the same cut, and the next text names
+    /// a cut of its own -- for an append sent at once and for the
+    /// waiting-time instruction, which waits for a quiet line.
+    ///
+    /// The connection holds ONE waiting append and a newer one replaces it.
+    /// Without the id it cannot tell the second part of a text from a newer
+    /// text, and of a waiting text in three parts only the last arrives.
+    #[tokio::test]
+    async fn the_parts_of_one_cut_share_an_id_and_the_next_text_has_its_own() {
+        let mut cell = parked_cell(5_000);
+        let (to_io, mut sent) = mpsc::channel(16);
+        cell.to_io = to_io;
+        cell.duplex_append_limit = 30;
+        cell.duplex_horizon_text =
+            "Wait about {seconds} seconds. Say that you look it up. Ask nothing new meanwhile."
+                .to_string();
+
+        let first = "Alpha beta gamma delta one. Alpha beta gamma delta two. \
+                     Alpha beta gamma delta three.";
+        cell.push_advise("call-1", AppendKind::Commentary, None, first, false, None)
+            .await;
+        let parts = appends_handed_over(&mut sent);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Alpha beta gamma delta one.",
+                "Alpha beta gamma delta two.",
+                "Alpha beta gamma delta three.",
+            ],
+            "the text leaves in three parts"
+        );
+        let first_cut = parts[0].0.clone();
+        assert!(!first_cut.is_empty(), "a cut has an id: {parts:?}");
+        assert!(
+            parts.iter().all(|(cut, _)| *cut == first_cut),
+            "three parts of one text, one id: {parts:?}"
+        );
+
+        cell.push_advise(
+            "call-1",
+            AppendKind::Commentary,
+            None,
+            "A second text.",
+            false,
+            None,
+        )
+        .await;
+        let second = appends_handed_over(&mut sent);
+        assert_eq!(second.len(), 1, "{second:?}");
+        let second_cut = second[0].0.clone();
+        assert!(!second_cut.is_empty(), "a cut has an id: {second:?}");
+        assert_ne!(second_cut, first_cut, "a new text is a new cut");
+
+        let (out_tx, _out_rx) = mpsc::channel::<meclaw_core::CellEmission>(8);
+        let sink = OutputSink::new(
+            out_tx,
+            Path::new("/voice"),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            10,
+            meclaw_core::Headers::new(),
+            None,
+        );
+        cell.advise_horizon(
+            &json!({"seconds": 4}),
+            Path::new("/caller"),
+            &sink,
+            "call-1".to_string(),
+        )
+        .await;
+        let waiting = appends_handed_over(&mut sent);
+        assert_eq!(
+            waiting
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Wait about 4 seconds.",
+                "Say that you look it up.",
+                "Ask nothing new meanwhile.",
+            ],
+            "the waiting-time instruction leaves in three parts"
+        );
+        let waiting_cut = waiting[0].0.clone();
+        assert!(!waiting_cut.is_empty(), "a cut has an id: {waiting:?}");
+        assert!(
+            waiting.iter().all(|(cut, _)| *cut == waiting_cut),
+            "three parts of one waiting text, one id: {waiting:?}"
+        );
+        assert!(
+            waiting_cut != first_cut && waiting_cut != second_cut,
+            "and it is not the id of a text before it"
+        );
+    }
+
+    /// Set, the ceiling is the operator's: paragraphs first, then sentence
+    /// ends, then words, and a run with no space at all is cut hard.
+    #[test]
+    fn a_set_ceiling_cuts_at_paragraphs_then_sentences_then_hard() {
+        let text = "One two three. Four five six.\n\nSeven.";
+        assert_eq!(
+            split_append(text, 20),
+            vec![
+                "One two three.".to_string(),
+                "Four five six.".to_string(),
+                "Seven.".to_string(),
+            ]
+        );
+        assert_eq!(
+            split_append("Short. Also short.", 20),
+            vec!["Short. Also short.".to_string()],
+            "under the ceiling nothing is cut"
+        );
+        assert_eq!(
+            split_append("alpha beta gamma delta", 12),
+            vec!["alpha beta".to_string(), "gamma delta".to_string()],
+            "a sentence too long alone falls back to words"
+        );
+        let hard = split_append(&"x".repeat(25), 10);
+        assert_eq!(hard, vec!["x".repeat(10), "x".repeat(10), "x".repeat(5)]);
+        for part in split_append(&"A sentence with accents éèñ. ".repeat(40), 400) {
+            assert!(part.chars().count() <= 400, "{part}");
+        }
     }
 }

@@ -17,9 +17,6 @@ pub mod curator_moveout;
 pub mod curator_profiles;
 #[path = "../support/curator_target.rs"]
 pub mod curator_target;
-pub mod gh_d38_v2_a_mentioned_wellbeing_closes;
-pub mod gh_d38_v2_the_carrying_call_is_not_fed_its_line_again;
-pub mod gh_d38_v2_the_next_call_knows_the_open_wellbeing_once;
 pub mod gh_d38_v2_the_seed_books_the_wellbeing_once;
 pub mod gh_d38_v3_the_turn_path_parks_beside_a_delegation_of_another_session;
 pub mod gh_d38_v4_a_persona_after_birth_reaches_the_window;
@@ -75,3 +72,7 @@ pub mod gh_d58_cold_without_a_cold_aim_the_inherited_aim_stands;
 pub mod gh_d58_f1_a_mark_keeps_the_class_only_with_fact_mark_kind_on;
 pub mod gh_d58_f1_the_wellbeing_line_keys_on_the_class_not_the_predicate;
 pub mod gh_d58_form_a_call_sent_while_a_rebuild_ran_is_no_prefix_break;
+pub mod gh_d58_form_a_call_that_leaves_between_check_and_plan_keeps_its_round;
+pub mod gh_d58_form_a_clock_stroke_during_the_first_call_leaves_the_round_its_window;
+pub mod gh_d58_form_a_multiline_quote_that_differs_from_the_wall_stays;
+pub mod gh_d58_form_a_rebuild_that_was_already_running_leaves_the_round_its_window;

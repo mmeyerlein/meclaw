@@ -532,7 +532,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// hive `lead` with its cells `lead` and `state` (2 x 2; the hive root is a
 /// scope marker and holds no row). Measured green in the strand's gate
 /// (107, gate on 6f36dc1).
-const TEMPLATE_BORN_ROWS: usize = 107;
+///
+/// Moved 107 -> 109 with D54g (GH #1506): every `talky` grew `second_judge`,
+/// the model that sharpens an unsure route stamp (2 x 1). COMPUTED in the
+/// strand from the shipped tree (no run there); the first run measures it.
+const TEMPLATE_BORN_ROWS: usize = 109;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -1044,7 +1048,17 @@ const REFERENCED_SUB_UNITS: [&str; 5] = [
 /// every hive `lead` one more (its rim edge `./lead -> .`, inner edges 4 -> 5).
 /// Two talkies, two leads: 2 x 1 + 2 x 1. Measured red in the strand's run
 /// (717 against 713, run on ae8e044c).
-const EDGES: usize = 717;
+/// Moved 717 -> 731 with D54g (GH #1506, the second judge of the route
+/// stamp): every `talky` seven edges more (142 -> 149 in
+/// `templates/talky/README.md`: the second judge's `view_ask`
+/// `./route -> ./curator` with `hop.first` and its view home
+/// `./curator -> ./route`, the call `./route -> ./second_judge` and the
+/// verdict `./second_judge -> ./route`, the model door `. -> ./second_judge`
+/// on `in_model`, the exit `./second_judge -> .` of a refused subscriber,
+/// and the hold `./route -> ./collector` that tells the collector how long
+/// the stamp may take). Two talkies: 2 x 7. COMPUTED in the strand from
+/// `params.graph.edges` (no run there); the first run measures it.
+const EDGES: usize = 731;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

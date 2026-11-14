@@ -484,6 +484,9 @@ fn step_control(state: &mut SessionState, session_id: &str, frame: ClientFrame) 
             state.grace_token = state.grace_token.wrapping_add(1);
             Vec::new()
         }
+        // A word ahead of the key, for a duplex connection's early session
+        // (d54g weblive); the turn machine has nothing to open on it.
+        ClientFrame::Ready => Vec::new(),
         ClientFrame::Cancel => {
             state.queue.clear();
             if state.speaking.is_some() {

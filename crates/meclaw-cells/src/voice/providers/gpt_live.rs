@@ -43,6 +43,7 @@ use meclaw_colony::io_liveness::IoLivenessMark;
 use serde_json::{Value as JsonValue, json};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Bytes;
 use tokio_tungstenite::tungstenite::Error as WsError;
@@ -280,11 +281,23 @@ async fn run_session(
     }
     let seed = match waited.seed.as_deref() {
         Some(messages) => {
-            let trimmed = trim_seed(messages);
+            // OR-d54g.kprofil.14: the seed is cut to the start budget the
+            // `seed_ask` lane named, not to `seed_max_tokens` alone. A
+            // builder that sizes by its own knob, or an older one that reads
+            // no `limits`, may send more than the instructions leave; cut to
+            // the ceiling alone, instructions and seed together went past
+            // the provider's bound again (R-58-28).
+            let budget_tokens = start_budget(&params);
+            let trimmed = trim_seed(
+                messages,
+                budget_tokens,
+                params.seed_max_messages,
+                params.chars_per_token,
+            );
             if trimmed.trimmed > 0 {
                 tracing::info!(
                     seed_trimmed = trimmed.trimmed,
-                    budget_tokens = SEED_MAX_TOKENS,
+                    budget_tokens,
                     "gpt_live: seed_trimmed -- the oldest messages left the seed"
                 );
             }
@@ -429,6 +442,27 @@ async fn run_session(
     );
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // A15: whether this session already sent its one Responses correction.
+    let mut responses_corrected = false;
+    // The control marks of the model's own transcript, and the piece of one
+    // a chunk boundary left behind (d54g callseam).
+    let mut marks = ControlMarks::default();
+    // A45: tracked only when the note is set on a Responses session;
+    // otherwise a Responses delegation is ignored, as it always was.
+    let note_superseded =
+        !params.responses_superseded_note.is_empty() && params.is_responses_delegation();
+    let mut open_responses = OpenResponses::default();
+    // What the model said that the connection has no room for yet (GH
+    // #1511). The connection hands guidance over with
+    // `control_tx.send(..).await` and reads this session's outlets in the same
+    // loop, so it reads nothing while it waits for room on `control`. A session
+    // that waited on a full outlet the same way -- `events.send(..).await` --
+    // and read no guidance meanwhile made each side wait for the other for
+    // ever; neither wait is an operation on the socket, so no A-timeout
+    // covered it. The frame is held here instead: the socket is not read while
+    // it waits (backpressure on the model, as before), guidance and the
+    // caller's audio still are.
+    let mut held: Option<Said> = None;
     let ending = loop {
         // A close, a departed caller or a failed send while the opening
         // waited for its seed ends the session before the first select.
@@ -505,7 +539,7 @@ async fn run_session(
             // Said once on the colony's lane, so a lab tells a forced abort
             // from a real one; the `session.close` is best effort, so the
             // provider stops billing a session nobody uses any more.
-            () = &mut fault_close, if fault_close_at_ms > 0 => {
+            () = &mut fault_close, if fault_close_at_ms > 0 && held.is_none() => {
                 tracing::warn!(
                     fault_close_at_ms,
                     "gpt_live: fault_close_fired -- the lab's forced provider abort"
@@ -514,7 +548,8 @@ async fn run_session(
                     "fault_close_fired: session ended {fault_close_at_ms} ms after its start \
                      as reason=content (fault_close_at_ms, a lab switch)"
                 );
-                if events.send(DuplexEvent::Warning { detail, provider_code: None }).await.is_err() {
+                let warning = DuplexEvent::Warning { detail, provider_code: None, client_event_id: None };
+                if draining(events.send(warning), &mut control, &mut audio_in).await.is_err() {
                     break Ending::HandlerGone;
                 }
                 let _ = send_frame(&mut write, close_frame(), timeouts.external, &mut meter).await;
@@ -524,7 +559,10 @@ async fn run_session(
                 };
             }
 
-            () = &mut idle_deadline => {
+            // Not while a frame waits for the connection: the socket is not
+            // read then, and a stalled outlet is not a dead socket. The
+            // deadline is read again as soon as the frame is handed on.
+            () = &mut idle_deadline, if held.is_none() => {
                 return Err(DuplexError::Closed(format!(
                     "idle for {:?}, no frame — socket presumed dead",
                     timeouts.idle
@@ -552,7 +590,25 @@ async fn run_session(
                 }
             }
 
-            incoming = read.next() => {
+            // The frame the connection had no room for, as soon as it has.
+            permit = events.reserve(), if matches!(held, Some(Said::Event(_))) => match permit {
+                Ok(permit) => {
+                    if let Some(Said::Event(event)) = held.take() {
+                        permit.send(event);
+                    }
+                }
+                Err(_) => break Ending::HandlerGone,
+            },
+            permit = audio_out.reserve(), if matches!(held, Some(Said::Audio(_))) => match permit {
+                Ok(permit) => {
+                    if let Some(Said::Audio(bytes)) = held.take() {
+                        permit.send(bytes);
+                    }
+                }
+                Err(_) => break Ending::ClientGone,
+            },
+
+            incoming = read.next(), if held.is_none() => {
                 let message = match incoming {
                     // A socket that ended before it was asked to is not this
                     // adapter's failure — it is the end of the call, with the
@@ -569,7 +625,8 @@ async fn run_session(
                         // reads as a run of short, ordinary calls.
                         tracing::debug!(error = %e, "gpt_live: socket ended mid-session");
                         let detail = format!("socket ended mid-session: {e}");
-                        if events.send(DuplexEvent::Warning { detail, provider_code: None }).await.is_err() {
+                        let warning = DuplexEvent::Warning { detail, provider_code: None, client_event_id: None };
+                        if draining(events.send(warning), &mut control, &mut audio_in).await.is_err() {
                             break Ending::HandlerGone;
                         }
                         break Ending::ConnectionLost;
@@ -619,34 +676,102 @@ async fn run_session(
                     .as_mut()
                     .reset(tokio::time::Instant::now() + timeouts.idle);
                 liveness.mark_success();
-                match map_event(&text) {
+                match marks.spoken(map_event(&text)) {
                     Mapped::Emit(event) => {
                         meter.note(&event);
-                        // A full channel blocks: backpressure, never drop.
-                        if events.send(event).await.is_err() {
-                            break Ending::HandlerGone;
+                        // A15: the provider rejected the session's Responses
+                        // settings and kept them; one correction per session,
+                        // where the block names one. A second rejection is the
+                        // correction failing, and only the warning reports it.
+                        if let DuplexEvent::Warning { provider_code: Some(code), .. } = &event
+                            && code == RESPONSES_VALIDATION_FAILED
+                            && !responses_corrected
+                            && let Some(fallback) = &params.responses_fallback
+                        {
+                            responses_corrected = true;
+                            tracing::info!(
+                                fallback = %fallback,
+                                "gpt_live: responses settings rejected -- sending the \
+                                 responses_fallback as session.update"
+                            );
+                            let frame = responses_correction_frame(fallback);
+                            if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
+                                break Ending::SendFailed(e);
+                            }
+                        }
+                        // A full channel holds the frame (see `held`):
+                        // backpressure on the model, never a drop, and never
+                        // a wait that stops the guidance.
+                        match events.try_send(event) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(event)) => held = Some(Said::Event(event)),
+                            Err(TrySendError::Closed(_)) => break Ending::HandlerGone,
                         }
                     }
                     Mapped::Audio(bytes) => {
                         meter.saw_output(Instant::now());
-                        if audio_out.send(expand_out(law, bytes)).await.is_err() {
-                            break Ending::ClientGone;
+                        match audio_out.try_send(expand_out(law, bytes)) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(bytes)) => held = Some(Said::Audio(bytes)),
+                            Err(TrySendError::Closed(_)) => break Ending::ClientGone,
                         }
                     }
                     Mapped::Finished { reason, usage_seconds } => {
                         break Ending::Reported { reason, usage_seconds };
                     }
-                    Mapped::Ignore => {}
+                    Mapped::ResponsesCreated(id) if note_superseded => {
+                        let mut failed = None;
+                        for old in open_responses.created(&id) {
+                            tracing::info!(
+                                superseded = %old,
+                                superseded_by = %id,
+                                "gpt_live: responses delegation overtaken -- sending the \
+                                 responses_superseded_note as thinking"
+                            );
+                            let frame =
+                                superseded_note_frame(&old, &params.responses_superseded_note);
+                            if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
+                                failed = Some(e);
+                                break;
+                            }
+                        }
+                        if let Some(e) = failed {
+                            break Ending::SendFailed(e);
+                        }
+                    }
+                    Mapped::ResponsesDone(id) if note_superseded => open_responses.done(&id),
+                    Mapped::ResponsesCreated(_) | Mapped::ResponsesDone(_) | Mapped::Ignore => {}
                 }
             }
         }
     };
+    // A close can overtake a frame that waited for room: it is still what the
+    // model said, and it goes first. An outlet that is gone takes nothing.
+    match held.take() {
+        Some(Said::Event(event)) => {
+            let _ = draining(events.send(event), &mut control, &mut audio_in).await;
+        }
+        Some(Said::Audio(bytes)) => {
+            let _ = draining(audio_out.send(bytes), &mut control, &mut audio_in).await;
+        }
+        None => {}
+    }
     let grace = Duration::from_millis(params.close_grace_ms);
     let mut failure = None;
     let (reason, usage_seconds, report) = match ending {
         Ending::Finalise => {
             let (reason, seconds) = finalise(
-                &mut read, &audio_out, &events, &liveness, &mut meter, grace, law,
+                &mut read,
+                Outlets {
+                    audio_out: &audio_out,
+                    events: &events,
+                    control: &mut control,
+                    audio_in: &mut audio_in,
+                },
+                &liveness,
+                &mut meter,
+                grace,
+                law,
             )
             .await;
             (reason, seconds, true)
@@ -666,12 +791,11 @@ async fn run_session(
         }
     };
     if report {
-        let _ = events
-            .send(DuplexEvent::Closed {
-                reason: reason.clone(),
-                usage_seconds,
-            })
-            .await;
+        let closed = DuplexEvent::Closed {
+            reason: reason.clone(),
+            usage_seconds,
+        };
+        let _ = draining(events.send(closed), &mut control, &mut audio_in).await;
     }
     // The measurement points of the wave, one line per session: L9's B-6 reads
     // the three audio counters off it, and `usage_seconds` is what the session
@@ -690,6 +814,58 @@ async fn run_session(
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+/// A frame of the model that waited for room on its outlet.
+enum Said {
+    /// For `events`.
+    Event(DuplexEvent),
+    /// For `audio_out`, already expanded to the session's wire format.
+    Audio(Vec<u8>),
+}
+
+/// Waits for `send` to the connection while still taking what the connection
+/// hands over (GH #1511).
+///
+/// Only used where the session is over or ending: guidance and caller audio
+/// that arrive meanwhile have no session left to reach and are dropped. What
+/// matters is that they are TAKEN -- the connection reads this session's
+/// outlets only between its own sends, so a session that stopped reading
+/// `control` or `audio_in` while it waited on an outlet waited on the very
+/// connection that waited on it.
+async fn draining<F: std::future::Future>(
+    send: F,
+    control: &mut mpsc::Receiver<DuplexControl>,
+    audio_in: &mut mpsc::Receiver<Vec<u8>>,
+) -> F::Output {
+    tokio::pin!(send);
+    let mut control_open = true;
+    let mut audio_open = true;
+    loop {
+        tokio::select! {
+            biased;
+            out = &mut send => return out,
+            command = control.recv(), if control_open => match command {
+                Some(_) => tracing::debug!("gpt_live: guidance after the session ended is dropped"),
+                None => control_open = false,
+            },
+            chunk = audio_in.recv(), if audio_open => {
+                if chunk.is_none() {
+                    audio_open = false;
+                }
+            }
+        }
+    }
+}
+
+/// The session's channels as [`finalise`] needs them: the two outlets it
+/// hands the model's last words to, and the two inlets it keeps taking from
+/// while it waits on an outlet (see [`draining`]).
+struct Outlets<'a> {
+    audio_out: &'a mpsc::Sender<Vec<u8>>,
+    events: &'a mpsc::Sender<DuplexEvent>,
+    control: &'a mut mpsc::Receiver<DuplexControl>,
+    audio_in: &'a mut mpsc::Receiver<Vec<u8>>,
 }
 
 /// Why the streaming loop stopped.
@@ -790,13 +966,18 @@ async fn await_started(
 /// that was reported, because no better one is coming.
 async fn finalise(
     read: &mut Reader,
-    audio_out: &mpsc::Sender<Vec<u8>>,
-    events: &mpsc::Sender<DuplexEvent>,
+    outlets: Outlets<'_>,
     liveness: &IoLivenessMark,
     meter: &mut SessionMeter,
     grace: Duration,
     law: Option<Law>,
 ) -> (String, f64) {
+    let Outlets {
+        audio_out,
+        events,
+        control,
+        audio_in,
+    } = outlets;
     let deadline = tokio::time::Instant::now() + grace;
     loop {
         let message = match tokio::time::timeout_at(deadline, read.next()).await {
@@ -824,17 +1005,24 @@ async fn finalise(
             } => return (reason, usage_seconds),
             Mapped::Emit(event) => {
                 meter.note(&event);
-                if events.send(event).await.is_err() {
+                if draining(events.send(event), control, audio_in)
+                    .await
+                    .is_err()
+                {
                     return ("handler_gone".to_string(), meter.usage_seconds);
                 }
             }
             Mapped::Audio(bytes) => {
                 meter.saw_output(Instant::now());
-                if audio_out.send(expand_out(law, bytes)).await.is_err() {
+                let chunk = expand_out(law, bytes);
+                if draining(audio_out.send(chunk), control, audio_in)
+                    .await
+                    .is_err()
+                {
                     return ("client_gone".to_string(), meter.usage_seconds);
                 }
             }
-            Mapped::Ignore => {}
+            Mapped::ResponsesCreated(_) | Mapped::ResponsesDone(_) | Mapped::Ignore => {}
         }
     }
 }
@@ -859,6 +1047,11 @@ enum Mapped {
         /// The final meter reading.
         usage_seconds: f64,
     },
+    /// The provider opened a Responses delegation it runs itself (A45).
+    ResponsesCreated(String),
+    /// A Responses delegation reached its end: completed, failed or
+    /// incomplete (A45).
+    ResponsesDone(String),
     /// A frame this adapter does not translate.
     Ignore,
 }
@@ -891,6 +1084,7 @@ fn map_event(text: &str) -> Mapped {
                 None => Mapped::Emit(DuplexEvent::Warning {
                     detail: "session.output_audio.delta was not base64".to_string(),
                     provider_code: None,
+                    client_event_id: None,
                 }),
             }
         }
@@ -902,7 +1096,7 @@ fn map_event(text: &str) -> Mapped {
                 .and_then(|d| d.get("target"))
                 .and_then(|t| t.as_str())
                 .unwrap_or_default();
-            if target != "client" {
+            if target != "client" && target != "responses" {
                 // Work the model handed to somebody else is not this colony's
                 // to answer (R-25-4).
                 tracing::debug!(target, "gpt_live: delegation for another target ignored");
@@ -916,10 +1110,37 @@ fn map_event(text: &str) -> Mapped {
                 tracing::debug!("gpt_live: delegation without an id ignored");
                 return Mapped::Ignore;
             };
+            // The provider answers a Responses delegation itself; the session
+            // only tracks it, never the cell (A45).
+            if target == "responses" {
+                return Mapped::ResponsesCreated(delegation_id.to_string());
+            }
             Mapped::Emit(DuplexEvent::DelegationCreated {
                 delegation_id: delegation_id.to_string(),
                 offset_ms: ms(&event, "offset_ms"),
             })
+        }
+        // A45: the end of a Responses delegation's backend stream, correlated
+        // by the OUTER `delegation_id`; every other nested event is the
+        // provider's own business.
+        "response.event" => {
+            let inner = event
+                .get("event")
+                .and_then(|e| e.get("type"))
+                .and_then(|t| t.as_str())
+                .unwrap_or_default();
+            let terminal = matches!(
+                inner,
+                "response.completed" | "response.failed" | "response.incomplete"
+            );
+            match event
+                .get("delegation_id")
+                .and_then(|i| i.as_str())
+                .filter(|id| !id.is_empty())
+            {
+                Some(id) if terminal => Mapped::ResponsesDone(id.to_string()),
+                _ => Mapped::Ignore,
+            }
         }
         "session.commentary.appended" => appended(&event, AppendKind::Commentary),
         "session.thinking.appended" => appended(&event, AppendKind::Thinking),
@@ -950,15 +1171,86 @@ fn map_event(text: &str) -> Mapped {
         // reached — `session.started` came first — so an error is about one
         // item and the session survives it (R-V17). The fatal case lives in
         // `await_started`.
-        "error" => Mapped::Emit(DuplexEvent::Warning {
-            detail: error_message(&event),
-            provider_code: provider_code(&event),
-        }),
+        // Logged as well as reported: a Responses delegation's settings are
+        // validated after the start (`responses_validation_failed`), and the
+        // session stays open with them -- an operator reading the log has to
+        // see why the backend never answers.
+        "error" => {
+            let detail = error_message(&event);
+            let provider_code = provider_code(&event);
+            let client_event_id = refused_client_event(&event);
+            tracing::warn!(
+                provider_code = provider_code.as_deref().unwrap_or(""),
+                client_event_id = client_event_id.as_deref().unwrap_or(""),
+                %detail,
+                "gpt_live: provider error, the session carries on"
+            );
+            Mapped::Emit(DuplexEvent::Warning {
+                detail,
+                provider_code,
+                client_event_id,
+            })
+        }
         other => {
             tracing::debug!(event = other, "gpt_live: event not translated");
             Mapped::Ignore
         }
     }
+}
+
+/// The provider's code for Responses settings it rejected after the start
+/// (A15): the session stays open and the settings are not rolled back.
+pub const RESPONSES_VALIDATION_FAILED: &str = "responses_validation_failed";
+
+/// The `session.update` that replaces a session's Responses settings with
+/// `fallback` (A15, A36: the one field set a running session may change).
+/// The delegation `type` must match the session's, so it is named.
+pub fn responses_correction_frame(fallback: &JsonValue) -> JsonValue {
+    json!({
+        "type": "session.update",
+        "session": {
+            "delegation": {
+                "type": "responses",
+                "responses": fallback,
+            }
+        }
+    })
+}
+
+/// The Responses delegations of one session that are open and not yet
+/// named as overtaken (A45). Each is named at most once: the moment a newer
+/// one opens, every one still here is handed back and forgotten.
+#[derive(Debug, Default)]
+struct OpenResponses {
+    /// Open, unnamed delegation ids, oldest first.
+    open: Vec<String>,
+}
+
+impl OpenResponses {
+    /// `id` opened: returns the older open ones it overtakes.
+    fn created(&mut self, id: &str) -> Vec<String> {
+        let overtaken = std::mem::take(&mut self.open);
+        self.open.push(id.to_string());
+        overtaken
+    }
+
+    /// `id` reached its end; an unknown or already named id is a no-op.
+    fn done(&mut self, id: &str) {
+        self.open.retain(|open| open != id);
+    }
+}
+
+/// The note that tells the model an overtaken Responses delegation's result
+/// is outdated (A45). General thinking: the reference refuses a non-null
+/// `delegation_id` under a Responses delegation. The `event_id` names the
+/// overtaken delegation, so its acknowledgement or refusal reads in a log.
+fn superseded_note_frame(overtaken: &str, note: &str) -> JsonValue {
+    append_frame(
+        AppendKind::Thinking,
+        &format!("superseded:{overtaken}"),
+        None,
+        note,
+    )
 }
 
 /// One transcript fragment on the model's clock. An empty fragment is not a
@@ -977,6 +1269,130 @@ fn transcript(event: &JsonValue, speaker: Speaker) -> Mapped {
         start_ms: ms(event, "start_ms"),
         end_ms: ms(event, "end_ms"),
     })
+}
+
+/// The longest piece of text held back as a possible control mark, in
+/// characters. A mark is a short name between `<|` and `|>`; a run longer
+/// than this is not one, and holding it would hold speech.
+const MARK_HELD_MAX_CHARS: usize = 64;
+
+/// Takes this provider's control marks out of the model's output transcript
+/// before a turn is made of it (d54g callseam).
+///
+/// Measured on 2026-11-07: a turn carried `... is due.|message|>Today ...`,
+/// a piece of a mark of the form `<|name|>` in the middle of what the model
+/// had said; the delegation mark has the same form. The transcript arrives in
+/// chunks, so a mark can be whole in one chunk or split over two: the piece at
+/// the end of a chunk that may be the beginning of a mark is held until the
+/// next chunk says what it was. The pattern is the FORM of this provider's
+/// marks and judges no meaning: `<|name|>`, the measured `|name|>` without
+/// its opening, a `<|name` that never closes, and a bare `|>`. What is still
+/// held when the session ends was the beginning of a mark and is dropped
+/// with it. The caller's transcript is not touched.
+#[derive(Debug, Default)]
+struct ControlMarks {
+    /// The end of the last chunk, where it may be the beginning of a mark.
+    held: String,
+}
+
+impl ControlMarks {
+    /// A mapped event with the marks taken out of the model's transcript; a
+    /// fragment that was nothing but a mark is no fragment.
+    fn spoken(&mut self, mapped: Mapped) -> Mapped {
+        match mapped {
+            Mapped::Emit(DuplexEvent::Transcript {
+                speaker: Speaker::Assistant,
+                delta,
+                start_ms,
+                end_ms,
+            }) => {
+                let delta = self.feed(&delta);
+                if delta.is_empty() {
+                    return Mapped::Ignore;
+                }
+                Mapped::Emit(DuplexEvent::Transcript {
+                    speaker: Speaker::Assistant,
+                    delta,
+                    start_ms,
+                    end_ms,
+                })
+            }
+            other => other,
+        }
+    }
+
+    /// The next chunk without its marks. What may be the beginning of a mark
+    /// at its end is kept for the chunk after it.
+    fn feed(&mut self, delta: &str) -> String {
+        let mut text = std::mem::take(&mut self.held);
+        text.push_str(delta);
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        // Where the run of name characters that starts at `from` ends.
+        let name_end = |from: usize| {
+            let mut j = from;
+            while j < n && is_name(chars[j]) {
+                j += 1;
+            }
+            j
+        };
+        // Whether the text from `i` to the end is short enough to be the
+        // beginning of a mark.
+        let may_hold = |i: usize| n - i <= MARK_HELD_MAX_CHARS;
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < n {
+            let c = chars[i];
+            if c == '<' {
+                if i + 1 == n {
+                    break;
+                }
+                if chars[i + 1] != '|' {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                let j = name_end(i + 2);
+                if (j == n || (chars[j] == '|' && j + 1 == n)) && may_hold(i) {
+                    break;
+                }
+                if j + 1 < n && chars[j] == '|' && chars[j + 1] == '>' {
+                    // A whole mark.
+                    i = j + 2;
+                } else {
+                    // `<|name` that does not close: the piece of a mark.
+                    i = j;
+                }
+                continue;
+            }
+            if c == '|' {
+                if i + 1 == n {
+                    break;
+                }
+                if chars[i + 1] == '>' {
+                    // A closing with nothing before it.
+                    i += 2;
+                    continue;
+                }
+                let j = name_end(i + 1);
+                if j > i + 1 {
+                    if (j == n || (chars[j] == '|' && j + 1 == n)) && may_hold(i) {
+                        break;
+                    }
+                    if j + 1 < n && chars[j] == '|' && chars[j + 1] == '>' {
+                        // The measured piece: a mark without its opening.
+                        i = j + 2;
+                        continue;
+                    }
+                }
+            }
+            out.push(c);
+            i += 1;
+        }
+        self.held = chars[i..].iter().collect();
+        out
+    }
 }
 
 /// The acknowledgement of one append. The identity that matters is the one
@@ -1043,6 +1459,22 @@ fn provider_code(event: &JsonValue) -> Option<String> {
     identifier.then(|| code.to_string())
 }
 
+/// The id of the client event an error is about, where the provider names
+/// it: `client_event_id`, the spelling the acknowledgement of an append
+/// carries (`appended`), on the event's root or inside `error`. It is only
+/// ever compared with ids this side chose, so anything that is not a short
+/// string is no id.
+fn refused_client_event(event: &JsonValue) -> Option<String> {
+    let at = |parent: &JsonValue| {
+        parent
+            .get("client_event_id")
+            .and_then(|i| i.as_str())
+            .filter(|id| (1..=128).contains(&id.len()))
+            .map(str::to_string)
+    };
+    at(event).or_else(|| event.get("error").and_then(at))
+}
+
 /// A refused handshake: 401/403 is a credential verdict, everything else is a
 /// transport one. The message carries the status, never the request.
 fn classify_connect(error: WsError) -> DuplexError {
@@ -1070,8 +1502,11 @@ fn classify_connect(error: WsError) -> DuplexError {
 /// `audio/pcm` at 24000 or 16000, `audio/pcmu` and `audio/pcma` at 8000). A
 /// `seed` adds `session.input` in the shape the live-conversations guide
 /// gives: one `message` per entry with one text part, `input_text` for
-/// developer and user, `output_text` for assistant. Without a seed the frame
-/// is byte for byte the one it always was.
+/// developer and user, `output_text` for assistant. Without a seed the
+/// block's `start_input` opens the session in the same shape. The block's
+/// `delegation` replaces the client default and its `safety_identifier` is
+/// added; without the three keys and a seed the frame is byte for byte the
+/// one it always was.
 pub fn session_start_frame(
     params: &GptLiveParams,
     format: AudioFormat,
@@ -1092,12 +1527,41 @@ pub fn session_start_frame(
                 "format": wire,
                 "output": { "voice": params.voice },
             },
-            "delegation": { "type": "client" },
+            "delegation": params
+                .delegation
+                .clone()
+                .unwrap_or_else(|| json!({ "type": "client" })),
         }
     });
-    if let Some(messages) = seed.filter(|m| !m.is_empty())
-        && let Some(session) = frame.get_mut("session").and_then(|s| s.as_object_mut())
+    let Some(session) = frame.get_mut("session").and_then(|s| s.as_object_mut()) else {
+        return frame;
+    };
+    if let Some(id) = params
+        .safety_identifier
+        .as_deref()
+        .filter(|i| !i.is_empty())
     {
+        session.insert("safety_identifier".to_string(), json!(id));
+    }
+    // A seed wins over the configured start; the configured start drops empty
+    // texts the way the seed's parse does.
+    let start: Vec<SeedMessage>;
+    let opening = match seed.filter(|m| !m.is_empty()) {
+        Some(messages) => Some(messages),
+        None => {
+            start = params
+                .start_input
+                .iter()
+                .filter(|m| !m.text.trim().is_empty())
+                .map(|m| SeedMessage {
+                    role: m.role.clone(),
+                    text: m.text.clone(),
+                })
+                .collect();
+            (!start.is_empty()).then_some(start.as_slice())
+        }
+    };
+    if let Some(messages) = opening {
         let input: Vec<JsonValue> = messages
             .iter()
             .map(|m| {
@@ -1139,11 +1603,17 @@ fn expand_out(law: Option<Law>, bytes: Vec<u8>) -> Vec<u8> {
     }
 }
 
-/// The most messages a seed may carry (live-conversations guide: "up to 128
-/// messages and 8,192 combined tokens").
+/// The most messages the provider takes as a start input (live-conversations
+/// guide: "up to 128 messages and 8,192 combined tokens"): the default and
+/// the upper bound of `duplex.seed_max_messages`.
 pub const SEED_MAX_MESSAGES: usize = 128;
-/// The most tokens a seed may carry, by the cell's own estimate.
+/// The most tokens the provider takes as a start input: the default of
+/// `duplex.seed_max_tokens`.
 pub const SEED_MAX_TOKENS: u64 = 8_192;
+/// The most tokens of instructions the provider takes ("Limited to 16,384
+/// client-supplied tokens"). The cell holds the WHOLE start window under it:
+/// instructions, greeting and seed together (wave d54g, strand kprofil).
+pub const INSTRUCTIONS_MAX_TOKENS: u64 = 16_384;
 
 /// A seed cut to the model's budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1156,20 +1626,73 @@ pub struct TrimmedSeed {
     pub est_tokens: u64,
 }
 
-/// The cell's own token estimate of one text: characters / 4, rounded up —
-/// the rule the route uses (its Python is not callable from here), and the
-/// sender's own `est_tokens` is not trusted.
-pub fn est_tokens(text: &str) -> u64 {
-    (text.chars().count() as u64).div_ceil(4)
+/// The cell's own token estimate of one text: its characters divided by
+/// `chars_per_token` (the block's param), rounded up. The sender's own
+/// `est_tokens` is not trusted.
+///
+/// It was characters / 4, fixed, while the window's builder counted bytes / 3
+/// and the appends of this same cell `chars_per_token`: three rules for one
+/// model (wave d54g, strand kprofil). Now the one rate of the block counts
+/// everywhere, and the `seed_ask` lane names it, so both sides agree. The
+/// rate is counted in thousandths of a character, as
+/// [`GptLiveParams::append_limit_chars`] counts it, so the numbers are the
+/// same on every machine.
+pub fn est_tokens(text: &str, chars_per_token: f64) -> u64 {
+    let milli_chars = ((chars_per_token * 1_000.0).round() as u64).max(1);
+    (text.chars().count() as u64)
+        .saturating_mul(1_000)
+        .div_ceil(milli_chars)
 }
 
-/// Cut a seed to [`SEED_MAX_MESSAGES`] and [`SEED_MAX_TOKENS`], oldest
-/// first: the latest turns are the ones a call continues from.
-pub fn trim_seed(messages: &[SeedMessage]) -> TrimmedSeed {
-    let mut start = messages.len().saturating_sub(SEED_MAX_MESSAGES);
-    let mut total: u64 = messages[start..].iter().map(|m| est_tokens(&m.text)).sum();
-    while total > SEED_MAX_TOKENS && start < messages.len() {
-        total -= est_tokens(&messages[start].text);
+/// The most tokens the start window of a session may carry besides its
+/// instructions and its greeting: the smaller of `seed_max_tokens` and what
+/// those two leave of [`INSTRUCTIONS_MAX_TOKENS`], `0` where they leave
+/// nothing.
+///
+/// The instructions were never counted, so a long front-end prompt and a
+/// full seed together went past the provider's bound (R-58-28: the whole
+/// start window stays under it).
+pub fn start_budget(params: &GptLiveParams) -> u64 {
+    let rate = params.chars_per_token;
+    let room = INSTRUCTIONS_MAX_TOKENS
+        .saturating_sub(est_tokens(&params.instructions, rate))
+        .saturating_sub(est_tokens(&params.greeting, rate));
+    params.seed_max_tokens.min(room)
+}
+
+/// What the `seed_ask` lane says about this cell's model in `hop.limits`
+/// (wave d54g, strand kprofil): the cell reports no package, so whoever
+/// builds its start window could not know how large it may be. Five neutral
+/// fields: the model, the tokens a start window and one later feed may
+/// carry, the rate this cell estimates with, and `window_profile` as the
+/// param holds it.
+pub fn ask_limits(params: &GptLiveParams) -> JsonValue {
+    json!({
+        "model": params.model,
+        "start_budget": start_budget(params),
+        "feed_budget": params.advise_max_tokens,
+        "chars_per_token": params.chars_per_token,
+        "profile": params.window_profile,
+    })
+}
+
+/// Cut a seed to `max_messages` and `max_tokens`, estimated at
+/// `chars_per_token`, oldest first: the latest turns are the ones a call
+/// continues from. The caller passes the param `seed_max_messages` and the
+/// session's [`start_budget`] -- `seed_max_tokens`, less where the
+/// instructions and the greeting leave less (OR-d54g.kprofil.14). A budget
+/// of `0` keeps no message.
+pub fn trim_seed(
+    messages: &[SeedMessage],
+    max_tokens: u64,
+    max_messages: usize,
+    chars_per_token: f64,
+) -> TrimmedSeed {
+    let est = |m: &SeedMessage| est_tokens(&m.text, chars_per_token);
+    let mut start = messages.len().saturating_sub(max_messages);
+    let mut total: u64 = messages[start..].iter().map(est).sum();
+    while total > max_tokens && start < messages.len() {
+        total -= est(&messages[start]);
         start += 1;
     }
     TrimmedSeed {
@@ -1352,6 +1875,55 @@ impl SessionMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// d54g callseam: a whole mark, a mark split over two chunks and the
+    /// measured piece without its opening all leave the transcript, and
+    /// nothing else does.
+    #[test]
+    fn control_marks_leave_the_transcript_and_speech_stays() {
+        let mut marks = ControlMarks::default();
+        assert_eq!(marks.feed("Booked.<|message|>"), "Booked.");
+        assert_eq!(marks.feed(" On Friday.<|mes"), " On Friday.");
+        assert_eq!(marks.feed("sage|> At nine."), " At nine.");
+        assert_eq!(marks.feed(" Due.|message|>Today."), " Due.Today.");
+        // Split inside the opening, and inside the closing.
+        assert_eq!(marks.feed("One <"), "One ");
+        assert_eq!(marks.feed("|tool|"), "");
+        assert_eq!(marks.feed("> two."), " two.");
+        // A `<` that opens no mark is speech, one chunk late at most.
+        assert_eq!(marks.feed("3 <"), "3 ");
+        assert_eq!(marks.feed(" 4."), "< 4.");
+        // A mark that never closes is a piece of one; a bare closing too.
+        assert_eq!(marks.feed("a <|tool b |> c"), "a  b  c");
+        assert_eq!(marks.feed("plain | text, a|b."), "plain | text, a|b.");
+    }
+
+    /// d54g callseam: only the model's transcript is filtered, and a fragment
+    /// that was nothing but a mark is no fragment.
+    #[test]
+    fn only_the_models_transcript_loses_its_marks() {
+        let mut marks = ControlMarks::default();
+        let fragment = |speaker: Speaker, delta: &str| {
+            Mapped::Emit(DuplexEvent::Transcript {
+                speaker,
+                delta: delta.to_string(),
+                start_ms: 0,
+                end_ms: 100,
+            })
+        };
+        assert!(matches!(
+            marks.spoken(fragment(Speaker::User, "I typed <|x|>.")),
+            Mapped::Emit(DuplexEvent::Transcript { delta, .. }) if delta == "I typed <|x|>."
+        ));
+        assert!(matches!(
+            marks.spoken(fragment(Speaker::Assistant, "<|message|>")),
+            Mapped::Ignore
+        ));
+        assert!(matches!(
+            marks.spoken(fragment(Speaker::Assistant, "Yes.<|x|>")),
+            Mapped::Emit(DuplexEvent::Transcript { delta, .. }) if delta == "Yes."
+        ));
+    }
 
     /// The URL is built, not configured: an operator names a host, and the path
     /// is this adapter's own knowledge (R-V10).
@@ -1571,17 +2143,18 @@ mod tests {
                 )
             })
             .collect();
-        let cut = trim_seed(&messages);
+        let cut = trim_seed(&messages, SEED_MAX_TOKENS, SEED_MAX_MESSAGES, 4.0);
         assert_eq!(cut.trimmed, 1, "one message over budget, the oldest one");
         assert_eq!(cut.kept, messages[1..].to_vec());
         assert!(cut.est_tokens <= SEED_MAX_TOKENS);
         // Over 128 messages the oldest go even under the token budget.
         let many: Vec<SeedMessage> = (0..130).map(|i| seed("user", &i.to_string())).collect();
-        let cut = trim_seed(&many);
+        let cut = trim_seed(&many, SEED_MAX_TOKENS, SEED_MAX_MESSAGES, 4.0);
         assert_eq!((cut.trimmed, cut.kept.len()), (2, SEED_MAX_MESSAGES));
         assert_eq!(cut.kept[0].text, "2");
-        // Characters, not bytes: the estimate is the route's chars/4.
-        assert_eq!(est_tokens("\u{e9}\u{e8}\u{ea}\u{eb}"), 1);
+        // Characters, not bytes, at the rate the block names.
+        assert_eq!(est_tokens("\u{e9}\u{e8}\u{ea}\u{eb}", 4.0), 1);
+        assert_eq!(est_tokens("\u{e9}\u{e8}\u{ea}\u{eb}", 2.4), 2);
     }
 
     /// A gap is counted between two chunks, never before the first one.
@@ -1598,5 +2171,223 @@ mod tests {
             meter.out_gaps_over_250, 1,
             "one of the two gaps was long enough to hear"
         );
+    }
+
+    fn live_params(extra: JsonValue) -> GptLiveParams {
+        let mut raw = json!({"api_key": "k", "instructions": "Be brief."});
+        if let (Some(obj), Some(more)) = (raw.as_object_mut(), extra.as_object()) {
+            for (k, v) in more {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        serde_json::from_value(raw).expect("params parse")
+    }
+
+    fn pcm24() -> AudioFormat {
+        AudioFormat::pcm16_mono(24_000)
+    }
+
+    /// POC gpt-live-1: without the three new keys the opening is the one it
+    /// always was -- client delegation, no `safety_identifier`, no `input`.
+    #[test]
+    fn gpt_live_start_frame_without_the_new_keys_is_unchanged() {
+        let frame = session_start_frame(&live_params(json!({})), pcm24(), None);
+        let session = &frame["session"];
+        assert_eq!(session["delegation"], json!({"type": "client"}));
+        assert!(session.get("safety_identifier").is_none());
+        assert!(session.get("input").is_none());
+    }
+
+    /// POC gpt-live-1 (A08/A11): a named delegation goes out as it was written.
+    #[test]
+    fn gpt_live_start_frame_carries_the_named_delegation() {
+        let delegation = json!({
+            "type": "responses",
+            "responses": {"model": "gpt-6-luna", "instructions": "Think."}
+        });
+        let frame = session_start_frame(
+            &live_params(json!({"delegation": delegation.clone(), "safety_identifier": "h-1"})),
+            pcm24(),
+            None,
+        );
+        assert_eq!(frame["session"]["delegation"], delegation);
+        assert_eq!(frame["session"]["safety_identifier"], "h-1");
+    }
+
+    /// POC gpt-live-1 (A39/A59): `start_input` opens the session in the seed's
+    /// shape, empty texts stay out, and a seed wins over it.
+    #[test]
+    fn gpt_live_start_input_opens_the_session_unless_a_seed_came() {
+        let params = live_params(json!({"start_input": [
+            {"role": "developer", "text": "Greet the caller."},
+            {"role": "user", "text": "  "},
+            {"role": "assistant", "text": "Hello."}
+        ]}));
+        let frame = session_start_frame(&params, pcm24(), None);
+        assert_eq!(
+            frame["session"]["input"],
+            json!([
+                {"type": "message", "role": "developer",
+                 "content": [{"type": "input_text", "text": "Greet the caller."}]},
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "Hello."}]}
+            ])
+        );
+        let seeded = session_start_frame(&params, pcm24(), Some(&[seed("user", "hi")]));
+        assert_eq!(
+            seeded["session"]["input"],
+            json!([{"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]}])
+        );
+    }
+
+    /// POC gpt-live-1: a delegation the provider runs itself (Responses
+    /// delegation) is not this colony's to answer.
+    #[test]
+    fn gpt_live_a_responses_delegation_is_ignored() {
+        let frame = json!({
+            "type": "session.delegation.created",
+            "delegation": {"id": "dlg_9", "type": "delegation", "target": "responses"}
+        });
+        assert!(matches!(
+            map_event(&frame.to_string()),
+            Mapped::ResponsesCreated(id) if id == "dlg_9"
+        ));
+        // Another target, or one without an id, stays out entirely.
+        let decisions = json!({
+            "type": "session.delegation.created",
+            "delegation": {"id": "dlg_8", "type": "delegation", "target": "decisions"}
+        });
+        assert!(matches!(map_event(&decisions.to_string()), Mapped::Ignore));
+        let nameless = json!({
+            "type": "session.delegation.created",
+            "delegation": {"type": "delegation", "target": "responses"}
+        });
+        assert!(matches!(map_event(&nameless.to_string()), Mapped::Ignore));
+    }
+
+    /// POC gpt-live-1 (A45): a terminal Responses event closes the delegation
+    /// its outer `delegation_id` names; anything else on the stream does not.
+    #[test]
+    fn gpt_live_a_terminal_responses_event_closes_its_delegation() {
+        for inner in [
+            "response.completed",
+            "response.failed",
+            "response.incomplete",
+        ] {
+            let frame = json!({
+                "type": "response.event",
+                "event_id": "ev_1",
+                "delegation_id": "dlg_9",
+                "event": {"type": inner, "response": {"id": "resp_1"}}
+            });
+            assert!(
+                matches!(map_event(&frame.to_string()), Mapped::ResponsesDone(id) if id == "dlg_9"),
+                "{inner} ends the delegation"
+            );
+        }
+        let delta = json!({
+            "type": "response.event",
+            "delegation_id": "dlg_9",
+            "event": {"type": "response.output_text.delta", "delta": "Ham"}
+        });
+        assert!(matches!(map_event(&delta.to_string()), Mapped::Ignore));
+        let uncorrelated = json!({
+            "type": "response.event",
+            "delegation_id": null,
+            "event": {"type": "response.completed"}
+        });
+        assert!(matches!(
+            map_event(&uncorrelated.to_string()),
+            Mapped::Ignore
+        ));
+    }
+
+    /// POC gpt-live-1 (A45): a new Responses delegation names every older one
+    /// still open, each exactly once; a finished one is never named.
+    #[test]
+    fn gpt_live_a_new_responses_delegation_supersedes_the_open_ones_once() {
+        let mut open = OpenResponses::default();
+        assert!(open.created("dlg_1").is_empty(), "nothing was open");
+        assert_eq!(open.created("dlg_2"), vec!["dlg_1".to_string()]);
+        assert!(
+            open.created("dlg_3").contains(&"dlg_2".to_string()),
+            "the newer one is overtaken in turn"
+        );
+        // dlg_1 was named already; it is not named twice.
+        open.done("dlg_3");
+        assert!(open.created("dlg_4").is_empty(), "dlg_3 finished first");
+        open.done("dlg_4");
+        open.done("dlg_unknown");
+        assert!(open.created("dlg_5").is_empty());
+    }
+
+    /// POC gpt-live-1 (A45): the note goes out as general thinking -- the
+    /// reference refuses a non-null `delegation_id` under a Responses
+    /// delegation -- under an `event_id` that names the overtaken delegation.
+    #[test]
+    fn gpt_live_the_superseded_note_is_general_thinking() {
+        let frame = superseded_note_frame("dlg_1", "That request is outdated.");
+        assert_eq!(frame["type"], "session.thinking.append");
+        assert_eq!(frame["delegation_id"], JsonValue::Null);
+        assert_eq!(frame["content"], "That request is outdated.");
+        assert_eq!(frame["event_id"], "superseded:dlg_1");
+    }
+
+    /// POC gpt-live-1 (A15): a refused Responses setting is a warning with its
+    /// code; the session stays open.
+    #[test]
+    fn gpt_live_responses_validation_failed_is_a_coded_warning() {
+        let frame = json!({
+            "type": "error",
+            "error": {"code": "responses_validation_failed", "message": "bad tool schema"}
+        });
+        let Mapped::Emit(DuplexEvent::Warning {
+            detail,
+            provider_code,
+            ..
+        }) = map_event(&frame.to_string())
+        else {
+            panic!("an error after the start is a warning, not an end");
+        };
+        assert_eq!(detail, "bad tool schema");
+        assert_eq!(
+            provider_code.as_deref(),
+            Some("responses_validation_failed")
+        );
+    }
+
+    /// Wave d54g, strand deleg: the id of the refused client event travels
+    /// with the warning -- on the root, where the acknowledgement of an
+    /// append carries it, or inside `error`; an event that names none, or
+    /// names something that is not an id, carries none.
+    #[test]
+    fn gpt_live_a_refused_client_event_is_named_on_the_warning() {
+        let named = |frame: JsonValue| match map_event(&frame.to_string()) {
+            Mapped::Emit(DuplexEvent::Warning {
+                client_event_id, ..
+            }) => client_event_id,
+            _ => panic!("an error after the start is a warning"),
+        };
+        let error = json!({"code": "invalid_value", "message": "too long"});
+        assert_eq!(
+            named(json!({"type": "error", "client_event_id": "ev-1", "error": error})).as_deref(),
+            Some("ev-1")
+        );
+        assert_eq!(
+            named(json!({"type": "error", "error": {
+                "code": "invalid_value", "message": "too long", "client_event_id": "ev-2"
+            }}))
+            .as_deref(),
+            Some("ev-2")
+        );
+        assert_eq!(named(json!({"type": "error", "error": error})), None);
+        for bad in [json!(null), json!(""), json!(7), json!("x".repeat(129))] {
+            assert_eq!(
+                named(json!({"type": "error", "client_event_id": bad, "error": error})),
+                None,
+                "{bad}"
+            );
+        }
     }
 }

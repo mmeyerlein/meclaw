@@ -74,7 +74,11 @@ const HIVES: &[Hive] = &[
         porter: "templates/session-keeper/porter/config.json",
         store: "templates/session-keeper/sessions/config.json",
         format: "meclaw-session-export/1",
-        left_behind: &["port_scratch"],
+        // `ended_lives` (d54g callseam): the ends of live sessions, of use only
+        // within `close_grace_ms` of an end, where the voice cell's own guard
+        // holds; a move in that window, also within one colony, loses only the
+        // second guard.
+        left_behind: &["port_scratch", "ended_lives"],
         store_owned: &[],
     },
 ];

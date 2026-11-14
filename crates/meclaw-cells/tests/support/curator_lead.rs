@@ -133,3 +133,159 @@ pub fn contract_routes(cfg: &Value, key: &str) -> Vec<String> {
         })
         .collect()
 }
+
+// ack
+// D54g ack (GH #1504): the three knobs this strand gives the lead and the
+// lead's pure decision under them, written once here for the eight pins of
+// `gh_d54g_ack_lead`.
+
+/// The knob that lists the conditions the lead orders a side call for
+/// (contract point 1): `must_call` and `external`, shipped both.
+pub const SIDE_WHEN: &str = "side_when";
+
+/// The knob that says what the turn of a running session gets (contract
+/// point 4): `call` (shipped, as before) or `listen`.
+pub const LIVE_TURN: &str = "live_turn";
+
+/// The knob that names the target of an event round by its kind (contract
+/// point 6): `kind:target` pairs, shipped empty.
+pub const EVENT_ROUTES: &str = "event_routes";
+
+/// The handle of the running session the pins' turns belong to.
+pub const ACK_LIVE: &str = "call-live-9";
+
+/// The round key of an event round (`<label>~<deadline_ms>~<hex8>`).
+pub const ACK_EVENT_TURN: &str = "voice-turn-1~4102444800000~ab12cd34";
+
+/// The keys of a verdict as the lead gives it before this strand: with
+/// fresh knobs it gains none (contract point 8).
+pub const ACK_VERDICT_KEYS: [&str; 16] = [
+    "deny",
+    "departs",
+    "escalate",
+    "fallback",
+    "feed",
+    "from",
+    "pending",
+    "pending_end",
+    "reason",
+    "side",
+    "speak_check",
+    "spec",
+    "spec_held",
+    "spec_row",
+    "target",
+    "wait",
+];
+
+/// The shipped value of a knob of the lead: declared under `params` and
+/// under `contract.settings`, with the same default at both places.
+pub fn ack_shipped(knob: &str) -> Value {
+    let lead = lead_hive_cell("lead");
+    let declared = lead["params"]
+        .get(knob)
+        .unwrap_or_else(|| panic!("{LEAD_TEMPLATE}/lead declares `{knob}` under params"))
+        .clone();
+    let setting = &lead["contract"]["settings"][knob];
+    assert!(
+        setting.is_object(),
+        "{LEAD_TEMPLATE}/lead declares `{knob}` under contract.settings"
+    );
+    assert_eq!(
+        setting["default"], declared,
+        "`{knob}`: the default of contract.settings is the value of params"
+    );
+    declared
+}
+
+/// The names of a list knob: a comma separated string or a JSON list.
+pub fn ack_names(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> = match v {
+        Value::String(s) => s
+            .split(',')
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect(),
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|n| n.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    };
+    out.sort();
+    out
+}
+
+/// talky's wiring of the lead (`LEAD_WIRING`) with a target for every
+/// other turn (`*:brain`, as a set renders it), `extra` on top.
+pub fn ack_knobs(extra: Value) -> Value {
+    let mut k = meclaw_core::serde_json::Map::new();
+    for (key, value) in LEAD_WIRING {
+        k.insert(key.to_string(), json!(value));
+    }
+    k.insert(
+        "path_routes".to_string(),
+        json!("talk:brain,simple:quick,complex:consult,research:research,*:brain"),
+    );
+    for (key, value) in obj(extra) {
+        k.insert(key, value);
+    }
+    Value::Object(k)
+}
+
+/// The head of a call's question to the lead: a first iteration, no handle,
+/// no speculation, no event; `extra` on top.
+pub fn ack_head(extra: Value) -> Value {
+    let mut h = json!({"channel": "test", "live": "", "session": "s1", "turn": "t1",
+                       "call": "c-t1", "iter": "0", "consult_id": "", "consult_class": "",
+                       "spec": "", "escalate": "", "at": "2026-11-12T10:00:00.000000Z"});
+    for (k, v) in obj(extra) {
+        h[k.as_str()] = v;
+    }
+    h
+}
+
+/// A route stamp.
+pub fn ack_stamp(path: &str, needs: &[&str], families: &[&str]) -> Value {
+    json!({"path": path, "needs": needs, "families": families})
+}
+
+/// `lead_verdict` of the shipped lead under `knobs`, for a session that has
+/// decided nothing yet.
+pub fn ack_verdict(knobs: Value, stamp: Value, head: Value) -> Value {
+    assert!(lead_shipped(), "the lead cell is shipped");
+    let (v, err) = cell_scope(
+        "lead",
+        knobs,
+        "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
+        json!([stamp, head,
+               {"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}}]),
+    );
+    assert!(v.is_object(), "a verdict: {v} {err}");
+    v
+}
+
+/// The entries of a verdict's `side` under the condition `when`.
+pub fn ack_sides(v: &Value, when: &str) -> Vec<Value> {
+    v["side"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e["when"] == json!(when))
+        .collect()
+}
+
+/// A verdict without the field `key`.
+pub fn ack_without(v: &Value, key: &str) -> Value {
+    let mut o = obj(v.clone());
+    o.remove(key);
+    Value::Object(o)
+}
+
+/// The keys of a verdict, sorted.
+pub fn ack_keys(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = obj(v.clone()).keys().cloned().collect();
+    k.sort();
+    k
+}

@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.4.8"
+            "template": "meclaw-os@2.4.9"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.2.23"
+            "template": "org@2.2.24"
           }
         ],
         "add_edges": [
@@ -161,7 +161,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.10.1",
+            "template": "member@2.10.2",
             "override_params": {
               "access/vault": {
                 "key_source": "plainfile",
@@ -315,7 +315,7 @@
         "add_nodes": [
           {
             "name": "assistants/scribe",
-            "template": "assistant@4.0.1",
+            "template": "assistant@4.0.2",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2,
@@ -344,6 +344,9 @@
               "talky/screen_model": {
                 "credential_grant_id": "grant:openrouter@member-alex/talky-screen_model"
               },
+              "talky/second_judge": {
+                "credential_grant_id": "grant:openrouter@member-alex/talky-second_judge"
+              },
               "talky-chat/brain": {
                 "api_key": "",
                 "credential_grant_id": "grant:openrouter@member-alex/talky-chat"
@@ -365,6 +368,9 @@
               },
               "talky-chat/screen_model": {
                 "credential_grant_id": "grant:openrouter@member-alex/talky-chat-screen_model"
+              },
+              "talky-chat/second_judge": {
+                "credential_grant_id": "grant:openrouter@member-alex/talky-chat-second_judge"
               },
               "cogny/curator/summarizer": {
                 "credential_grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer"
@@ -818,6 +824,31 @@
             }
           },
           {
+            "from": "./assistants/scribe/talky/second_judge",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:scribe/talky-second_judge'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky/second_judge",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-second_judge'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
             "from": "./assistants/scribe/talky-chat/brain",
             "to": "./access",
             "lane": "credential_request",
@@ -986,6 +1017,31 @@
             "to": "./assistants/scribe/talky-chat/screen_model",
             "lane": "in_sealed",
             "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-screen_model'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./assistants/scribe/talky-chat/second_judge",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:scribe/talky-chat-second_judge'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky-chat/second_judge",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-second_judge'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -1189,6 +1245,26 @@
                 }
               },
               {
+                "grant_id": "grant:openrouter@member-alex/talky-second_judge",
+                "requester": "agent:scribe/talky-second_judge",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's talky/second_judge against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
                 "grant_id": "grant:openrouter@member-alex/talky-chat",
                 "requester": "agent:scribe/talky-chat",
                 "capability": "credential.read",
@@ -1329,6 +1405,26 @@
                 }
               },
               {
+                "grant_id": "grant:openrouter@member-alex/talky-chat-second_judge",
+                "requester": "agent:scribe/talky-chat-second_judge",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's talky-chat/second_judge against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
                 "grant_id": "grant:openrouter@member-alex/cogny",
                 "requester": "agent:scribe/cogny",
                 "capability": "credential.read",
@@ -1453,7 +1549,7 @@
               },
               {
                 "id": "ev-organism-0000000008",
-                "grant_id": "grant:openrouter@member-alex/talky-chat",
+                "grant_id": "grant:openrouter@member-alex/talky-second_judge",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1464,7 +1560,7 @@
               },
               {
                 "id": "ev-organism-0000000009",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
+                "grant_id": "grant:openrouter@member-alex/talky-chat",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1475,7 +1571,7 @@
               },
               {
                 "id": "ev-organism-0000000010",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1486,7 +1582,7 @@
               },
               {
                 "id": "ev-organism-0000000011",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-quick",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1497,7 +1593,7 @@
               },
               {
                 "id": "ev-organism-0000000012",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-quick_spec",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-quick",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1508,7 +1604,7 @@
               },
               {
                 "id": "ev-organism-0000000013",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-quick_bridge",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-quick_spec",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1519,7 +1615,7 @@
               },
               {
                 "id": "ev-organism-0000000014",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-screen_model",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-quick_bridge",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1530,7 +1626,7 @@
               },
               {
                 "id": "ev-organism-0000000015",
-                "grant_id": "grant:openrouter@member-alex/cogny",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-screen_model",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1541,6 +1637,28 @@
               },
               {
                 "id": "ev-organism-0000000016",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-second_judge",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000017",
+                "grant_id": "grant:openrouter@member-alex/cogny",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000018",
                 "grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
@@ -1579,7 +1697,7 @@
         "add_nodes": [
           {
             "name": "telegram",
-            "template": "telegram-connector@2.2.7",
+            "template": "telegram-connector@2.2.8",
             "birth": "inactive"
           }
         ],

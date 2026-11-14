@@ -2,7 +2,7 @@
   "script-src": [
     "'self'",
     "'sha256-gDsvPtR3RsRHPEEiYSd1DqldKQllB4bMSkcr7VXl19A='",
-    "'sha256-rmfQFQQ08YQF7wNGM4p90eR7ldGXuRXDz4m7t8YcIH8='",
+    "'sha256-LjZtfQcfZ8Byt/qYeZMyFqaVstTprCpPghgzWomSbYE='",
     "'sha256-oYgfXRuAJjWyiKN0OdOvZQn7ENoVUd/RZDPJFZTPTU0='"
   ],
   "style-src": [

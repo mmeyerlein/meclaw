@@ -23,7 +23,7 @@ fn two_advices_of_one_turn_open_two_rounds_with_one_label() {
     let (b, _) = open_advice("k-7", departs);
     assert_ne!(a, b, "two rounds, two keys");
     for key in [&a, &b] {
-        let out = assemble(&[], answer_in(key, "x"));
+        let out = through_store(answer_in(key, "x"));
         assert_eq!(hop_str(on_route(&out, "answer"), "turn_id"), T);
     }
 }

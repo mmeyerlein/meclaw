@@ -253,6 +253,19 @@ pub(crate) fn duplex_close_grace_ms(p: &VoiceParams) -> u64 {
     }
 }
 
+/// How long a page session in `hold` may stay idle before its provider session
+/// ends, in milliseconds (`params.duplex.hold_idle_ms`, d54g weblive).
+///
+/// Beside [`duplex_close_grace_ms`] and the same shape: the loopback's params
+/// block has no knob, and a cascade has no provider session to end, so both
+/// keep `0`, which never ends a session before its connection.
+pub(crate) fn duplex_hold_idle_ms(p: &VoiceParams) -> u64 {
+    match &p.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(g)) => g.hold_idle_ms,
+        _ => 0,
+    }
+}
+
 /// How often a duplex connection hands the turn machine the time, in
 /// milliseconds (`params.duplex.tick_ms`, R-L7).
 ///
@@ -538,6 +551,9 @@ fn make_build(
         // Read here, like the two timeouts: this life frames at the value it
         // was born with, and a moved one takes effect on the next respawn.
         io.audio_out_frame_ms = parsed.audio_out_frame_ms;
+        // The `first_audio` lane's switch, for the connection's half of it:
+        // a cascade reports the first audio of a synthesis only where ordered.
+        io.emit_first_audio = parsed.emit_first_audio;
         // The duplex half of this life, read here for the same reason the
         // frame length is: the I/O half is built from the effective params of
         // the life about to start.
@@ -546,6 +562,7 @@ fn make_build(
         io.spoken_quiet_ms = quiet_ms;
         io.spoken_cap_ms = cap_ms;
         io.close_grace_ms = duplex_close_grace_ms(&parsed);
+        io.duplex_hold_idle_ms = duplex_hold_idle_ms(&parsed);
         io.duplex_tick_ms = duplex_tick_ms(&parsed);
         let (renew_after_ms, renew_grace_ms) = duplex_renewal_ms(&parsed);
         io.duplex_renew_after_ms = renew_after_ms;
@@ -554,9 +571,19 @@ fn make_build(
         io.credential_backoff_max_ms = parsed.credential_backoff_max_ms;
         let (prewarm_ttl_ms, duck) = duplex_edge(&parsed);
         io.duplex_prewarm_ttl_ms = prewarm_ttl_ms;
+        io.duplex_turn_gap_ms = match &parsed.duplex {
+            Some(crate::voice::params::DuplexParams::GptLive(g)) => g.turn_gap_ms,
+            _ => crate::voice::params::DEFAULT_TURN_GAP_MS,
+        };
         io.duplex_seed_wait_ms = match &parsed.duplex {
             Some(crate::voice::params::DuplexParams::GptLive(g)) => g.seed_wait_ms,
             _ => 0,
+        };
+        io.duplex_limits = match &parsed.duplex {
+            Some(crate::voice::params::DuplexParams::GptLive(g)) => {
+                Some(crate::voice::providers::gpt_live::ask_limits(g))
+            }
+            _ => None,
         };
         // GH #1377: the loopback has no knob and a cascade no duplex session,
         // so both keep the shipped `0`.
@@ -817,6 +844,7 @@ mod tests {
             "stt": {"provider": "echo"},
             "emit_partials": true,
             "emit_usage": true,
+            "emit_first_audio": true,
             "call_marks_s": [60, 120],
             "call_mark_every_s": 600
         });
@@ -835,6 +863,10 @@ mod tests {
         );
         assert_eq!(effective.call_marks.marks_s, vec![60, 120]);
         assert_eq!(effective.call_marks.every_s, 600);
+        assert!(
+            effective.emit_first_audio,
+            "emit_first_audio was lost between birth and the life the cell runs"
+        );
 
         // Every top-level key of THIS birth is still there after the replay.
         // That covers only the keys named here; the class (a `VoiceParams`

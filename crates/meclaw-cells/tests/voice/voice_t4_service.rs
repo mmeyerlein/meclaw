@@ -582,6 +582,8 @@ fn label(event: &VoiceEvent) -> &'static str {
         VoiceEvent::Live { .. } => "Live",
         VoiceEvent::LiveTick { .. } => "LiveTick",
         VoiceEvent::LiveAudioOut { .. } => "LiveAudioOut",
+        VoiceEvent::LiveEnded { .. } => "LiveEnded",
+        VoiceEvent::SpeakAudioOut { .. } => "SpeakAudioOut",
         VoiceEvent::DuplexFailed { .. } => "DuplexFailed",
         VoiceEvent::Renewed { .. } => "Renewed",
         // GH #1059: the I/O half's credential clock (a vaulted slot only;

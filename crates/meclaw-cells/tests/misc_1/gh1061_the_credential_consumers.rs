@@ -284,6 +284,9 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
         // GH #1279: the screen judge's model takes its grant like quick.
         "assistants/scribe/talky/screen_model",
         "assistants/scribe/talky-chat/screen_model",
+        // D54g (GH #1506): the route stamp's second judge takes its grant.
+        "assistants/scribe/talky/second_judge",
+        "assistants/scribe/talky-chat/second_judge",
         "assistants/scribe/cogny/brain",
         "assistants/scribe/cogny/curator/summarizer",
         "apps/presenter/decide",
@@ -906,7 +909,7 @@ fn gh1273_a_member_grown_from_a_derived_class_is_granted() {
     // Whatever else a renderer raises on the grow path is a refusal with an
     // error_code, never a traceback without an answer.
     let broken = with_screen(
-        "display@2.12.2",
+        "display@2.13.0",
         json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
                "template": "member", "credential": "not-an-object"}),
     );

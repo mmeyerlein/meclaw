@@ -361,6 +361,13 @@ pub struct DuplexSession {
     /// Everything the model said about itself. A full channel blocks.
     pub events: mpsc::Sender<DuplexEvent>,
     /// What the colony tells the model between two turns.
+    ///
+    /// A provider keeps reading this while `events` or `audio_out` is full:
+    /// the connection hands guidance over with a blocking send and reads the
+    /// two outlets in the same loop, so a provider that waited for room
+    /// without taking guidance would wait on the connection forever. It holds
+    /// what it could not hand over yet and reads no more input meanwhile, so
+    /// backpressure stays and nothing is dropped.
     pub control: mpsc::Receiver<DuplexControl>,
 }
 
@@ -429,6 +436,10 @@ pub enum DuplexEvent {
         /// `meta.provider_code`, so a reader can tell a spent quota from a
         /// bad request without parsing the detail.
         provider_code: Option<String>,
+        /// The id of the client event the provider refused, when it named
+        /// one (`client_event_id`, as on the acknowledgement of an append).
+        /// It is how the cell finds the append a refusal is about.
+        client_event_id: Option<String>,
     },
     /// The session is over and this is the final meter reading.
     Closed {

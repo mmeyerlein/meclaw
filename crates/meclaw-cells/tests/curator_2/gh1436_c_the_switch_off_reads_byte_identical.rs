@@ -48,7 +48,18 @@ fn bytes(run: &Run) -> Vec<(Value, Value)> {
 /// the strand renamed the seed's write phase `judge-write` to `state-write` (contract point 9:
 /// no role name in a phase) -- the only moved byte: the shipped history with the old phase name
 /// gives the old digest, old `d61ede91d26a2e1f08201a1dc36767697a30ba277f480808abdf124433b556e6`.
-const MASTER_OFF_DIGEST: &str = "7095d791f95210cd03fe967f56fa71b6fda641778f2773e99ba71f9497da1b48";
+/// Re-blessed for GH #1436 carried notes (GH #1517, `carry_notes`): history reads the column
+/// `not_session` of `notes` in its seeds -- a carried note is never shown in the session that bore
+/// it, and history reads the column whatever the knob says, since a set that switches
+/// `carry_notes` off leaves its rows standing -- so the seed's read of `notes` names one column
+/// more; the only moved bytes: the shipped history without that column gives the old digest, old
+/// `7095d791f95210cd03fe967f56fa71b6fda641778f2773e99ba71f9497da1b48`. The carried note names the
+/// handle of the running session it was born in as well (`not_live`): a seed names a call by its
+/// handle, its turns by the session of their generation, so the session alone let the note into
+/// the renewed start window of its own call -- the seed's read of `notes` names one column more
+/// again; the only moved bytes: the shipped history without that column gives the digest before,
+/// old `2cee5b217179ebed444ea1b8f7b11e9b568a6ee25bb6581adc47f30dc6b9cbd3`.
+const MASTER_OFF_DIGEST: &str = "5e3c3e0b44993c24c03105c1a0a33f6338a5da76eb97e96ad78d3c22317ddf0c";
 
 fn digest(runs: &[&Run]) -> String {
     let all: Vec<Value> = runs

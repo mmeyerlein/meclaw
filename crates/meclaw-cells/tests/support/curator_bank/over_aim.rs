@@ -357,9 +357,64 @@ pub fn planted() -> Vec<Planted> {
     build().1
 }
 
+/// The matter the person settles behind the last turn of the wall
+/// (`sow_settled`): every `open` point planted about it is a closed point
+/// where the state is sown (`closed_by_state`).
+pub const SETTLED: &str = THINGS[4];
+
+/// The claim the state of the round names the settled matter with
+/// (`set today` of the state line): the matter in words, no keyword of a
+/// planted row, so a request that carries it names no planted point.
+pub fn settled_claim() -> String {
+    format!("{SETTLED} is settled now and no longer open")
+}
+
+/// Whether `p` is a point the state sown by `sow_settled` closes: an `open`
+/// point about the settled matter.
+pub fn closed_by_state(p: &Planted) -> bool {
+    p.kind == "open" && p.text.contains(SETTLED)
+}
+
+/// GH #1517 (d58rest, OR-54g-45): sows the settling of `SETTLED` behind the
+/// last turn of the last day, the way `./intake` files it -- the open point
+/// as a `gap` mark, the `addendum` that closes it (a closed gap is no errand
+/// of the state, `state_of_rows`), and the person's fact that it is settled
+/// (`set today`). WHY: the capture planted no closed point, so "closed shown
+/// open" of the summary bank had a ground set of 0 and stood not measured
+/// (OR-d58-2.o28.4); a state condition the summarizer is handed now says the
+/// matter is settled while the transcript holds it open.
+pub fn sow_settled(h: &mut Hive) {
+    let (wall, _) = build();
+    let s = session(0);
+    let last = wall
+        .pieces
+        .iter()
+        .rfind(|p| p.session == s)
+        .expect("over_aim: a row on the last day");
+    let id = "gap-upper-market-list";
+    let gap = canonical(&json!({"id": id, "text": format!("{SETTLED} is not settled")}));
+    let addendum = canonical(&json!({"id": id, "text": settled_claim()}));
+    let fact = canonical(&json!({
+        "subject": "upper_market_list", "predicate": "is_settled",
+        "claim": settled_claim(), "source": "person", "stance": "asserted"}));
+    for (secs, kind, value) in [
+        (10, "gap", gap),
+        (20, "addendum", addendum),
+        (40, "fact", fact),
+    ] {
+        h.mark(
+            last.at + Duration::seconds(secs),
+            &s,
+            &last.turn,
+            kind,
+            &value,
+        );
+    }
+}
+
 /// Sows the facts planted on the last day as `fact` marks of that day, the
 /// way `./intake` files what a sidecar states: the state of the round then
-/// holds them as set today.
+/// holds them as set today; and the settled matter (`sow_settled`).
 fn sow_state(h: &mut Hive) {
     let (wall, planted) = build();
     for p in planted.iter().filter(|p| p.day == 0 && p.kind == "fact") {
@@ -369,6 +424,7 @@ fn sow_state(h: &mut Hive) {
             "source": "person", "stance": "asserted"}));
         h.mark(row.at, &row.session, &row.turn, "fact", &value);
     }
+    sow_settled(h);
 }
 
 /// Sows one `topic` per day of the wall: `start` on the first turn of a
@@ -395,16 +451,23 @@ fn sow_topics(h: &mut Hive) {
     }
 }
 
+/// The topics of `sow_topics` and the settled matter of `sow_settled`.
+fn sow_topics_settled(h: &mut Hive) {
+    sow_topics(h);
+    sow_settled(h);
+}
+
 /// The two variants of the wall, the rows and the planted points of
 /// `over_aim` in both: `over_aim_state` holds the facts of the last day as
 /// state of the round as well, `over_aim_topics` names every day a topic of
-/// its own, the last one running. They are no walls of the bank (no seat
-/// registers them): whoever reads what a rebuild hands the summarizer runs
-/// them beside the wall.
+/// its own, the last one running. Both sow the settled matter
+/// (`sow_settled`), so each carries a state and a closed point. They are no
+/// walls of the bank (no seat registers them): whoever reads what a rebuild
+/// hands the summarizer runs them beside the wall.
 pub fn variants() -> Vec<Wall> {
     let mut state = build().0.prepare(sow_state);
     state.name = "over_aim_state";
-    let mut topics = build().0.prepare(sow_topics);
+    let mut topics = build().0.prepare(sow_topics_settled);
     topics.name = "over_aim_topics";
     vec![state, topics]
 }

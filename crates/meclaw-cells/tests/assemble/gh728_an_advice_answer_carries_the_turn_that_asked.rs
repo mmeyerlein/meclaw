@@ -74,7 +74,7 @@ fn stage_b_opens_the_round_under_a_key_that_carries_the_members_turn() {
 #[test]
 fn the_answer_of_that_round_carries_the_members_turn_and_its_own_round() {
     let (key, _) = open_advice("k-7", future_depart());
-    let out = assemble(&[], answer_in(&key, "It is 21C and sunny in Berlin."));
+    let out = through_store(answer_in(&key, "It is 21C and sunny in Berlin."));
     let ans = on_route(&out, "answer");
     assert_eq!(
         hop_str(ans, "turn_id"),
@@ -84,8 +84,10 @@ fn the_answer_of_that_round_carries_the_members_turn_and_its_own_round() {
     assert_eq!(hop_str(ans, "round_id"), key, "and names the round it left");
     assert_eq!(hop_str(ans, "late"), "0", "inside the deadline it is a leg");
     // GH #889: the answer is no longer stored; the drop of the round's rows
-    // that leaves with it stays on the round key.
-    let w = in_phase(&out, "round-drop");
+    // stays on the round key. GH #1505: it rides in the answer's gate
+    // (`answer-gate`), the one message the answer's arrival sends.
+    let sent = assemble(&[], answer_in(&key, "It is 21C and sunny in Berlin."));
+    let w = in_phase(&sent, "answer-gate");
     assert_eq!(call(w, "c-drop-turns")["where"]["turn_id"], key.as_str());
     assert_eq!(call(w, "c-drop-round")["where"]["turn_id"], key.as_str());
 }

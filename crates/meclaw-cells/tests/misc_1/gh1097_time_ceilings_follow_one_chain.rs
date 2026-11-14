@@ -46,11 +46,16 @@ use std::path::{Path, PathBuf};
 /// `./route` reads a verdict after `late_ms` as `talk`, so its 3 s is a deadline.
 /// `talky/screen_model` (#1279) judges the screen form beside the route stamp: a
 /// form later than the turn is about a screen the person no longer sees.
+/// `talky/second_judge` (D54g GH #1506) sharpens an unsure route stamp: its
+/// operation timeout bounds its one call and stays under the wait of a
+/// sharpened turn (`./route` `second_wait_ms`), after which a verdict stamps
+/// nothing.
 const DEADLINE_CELLS: &[&str] = &[
     "presenter/decide",
     "display/judge",
     "talky/decide",
     "talky/screen_model",
+    "talky/second_judge",
 ];
 
 /// The slowest measured decision of the decisions road (its measurement,

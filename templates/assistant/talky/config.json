@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "talky@7.0.1"
+    "template": "talky@7.1.0"
   },
   "override_params": {
     "brain": {

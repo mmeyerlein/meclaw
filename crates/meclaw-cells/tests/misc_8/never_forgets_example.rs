@@ -112,7 +112,12 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// thirty-three from `talky`, thirty-eight in all. MEASURED (38 against 36
 /// in the strand's gate). GH #1474 moves the two into a hive of their own
 /// beside the curator (`lead`, `state`): still thirty-eight.
-const CELLS_AFTER_GROW: usize = 38;
+/// D54g (GH #1506): the second judge (`second_judge`), the model that
+/// sharpens an unsure route stamp -- thirty-four from `talky`, thirty-nine
+/// in all. COMPUTED in the strand from the shipped tree (one `llm` cell more
+/// under `templates/talky/`, one `talky` in this example: 38 + 1); no run
+/// there, the first run measures it.
+const CELLS_AFTER_GROW: usize = 39;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

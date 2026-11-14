@@ -39,6 +39,11 @@ pub enum ClientFrame {
         /// The mode to switch to.
         mode: Mode,
     },
+    /// The key is about to go down: the pointer is on it, or the microphone
+    /// was just granted. Behind a duplex provider in `hold`, the connection
+    /// may open the page's next session on it, ahead of the hold
+    /// (`params.duplex.prewarm_ttl_ms`); everywhere else it changes nothing.
+    Ready,
 }
 
 /// Frames the cell sends.

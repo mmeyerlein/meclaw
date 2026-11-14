@@ -16,7 +16,8 @@
 //!    fragment against the `start_ms` of the next one, or against the `now_ms`
 //!    of a [`TurnInput::Tick`]. Strictly greater than the gap, never equal
 //!    (OR-L10): the reference run has two fragments exactly `gap_ms` apart and
-//!    they are one sentence.
+//!    they are one sentence. A tick closes it only once the model's block is
+//!    over too (rule 3): a model that answered is silent for the gap first.
 //! 2. Assistant fragments up to the next user fragment belong to the open turn.
 //! 3. A user run inside an agent block that stays at or under
 //!    `backchannel_max_ms` is a backchannel: it joins the open turn and closes
@@ -168,7 +169,26 @@ impl OpenTurn {
 
     /// Take a user fragment into the open turn and grow the run it belongs to.
     /// Outside a running block it is the caller's latest word to answer.
+    ///
+    /// The caller's words stand in the order they were spoken, not the order
+    /// their transcripts arrived (d54g callseam). One session stamps in order;
+    /// across a takeover two do not: the session that was replaced still
+    /// reports a word it heard before the takeover after the new one reported
+    /// the next (a live model's transcript lags its audio). Such a late word
+    /// goes where it lies on the call's timeline and moves no anchor: it is
+    /// not the caller's latest word.
     fn push_user(&mut self, frag: Frag, in_block: bool) {
+        let at = self.user.partition_point(|f| f.start_ms <= frag.start_ms);
+        if at < self.user.len() {
+            let run_from = self.user.len().saturating_sub(self.user_run_frags);
+            if at > run_from {
+                self.user_run_ms += frag.end_ms.saturating_sub(frag.start_ms);
+                self.user_run_frags += 1;
+            }
+            self.user_last_end_ms = self.user_last_end_ms.max(frag.end_ms);
+            self.user.insert(at, frag);
+            return;
+        }
         if !in_block {
             self.person_end_ms = Some(frag.end_ms);
             self.awaiting = Awaiting::NextFragment;
@@ -196,8 +216,11 @@ impl OpenTurn {
     /// FS02 plays the answer it already holds over the caller — while the
     /// model keeps speaking 4.4–11.0 s after a disturbance (S0).
     fn push_assistant(&mut self, frag: Frag, gap_ms: u64) {
-        let new_block = self.agent_block_start_ms.is_none()
-            || frag.start_ms.saturating_sub(self.agent_block_end_ms) > gap_ms;
+        let new_block = opens_new_block(
+            self.agent_block_start_ms.map(|_| self.agent_block_end_ms),
+            frag.start_ms,
+            gap_ms,
+        );
         if new_block {
             self.agent_block_start_ms = Some(frag.start_ms);
             self.agent_block_end_ms = frag.end_ms;
@@ -259,7 +282,23 @@ impl OpenTurn {
             happened_at_ms: fragment_end(&self.user).max(fragment_end(&self.assistant)),
             person_end_ms: self.person_end_ms,
             first_audio_ms: self.first_audio_ms,
+            cut: false,
         }
+    }
+}
+
+/// Whether a fragment of the model's that starts at `start_ms` opens a NEW
+/// block: no block is running (`block_end_ms` is `None`), or the model was
+/// silent for longer than `gap_ms` since the running one last spoke (rule 3,
+/// OR-L18). Strictly greater than the gap, like rule 1.
+///
+/// One function for its two readers: the open turn, and a session parked
+/// while its line rings, where the second block is what the model says
+/// after its greeting to a caller who is not there yet (GH #1055).
+pub(crate) fn opens_new_block(block_end_ms: Option<u64>, start_ms: u64, gap_ms: u64) -> bool {
+    match block_end_ms {
+        None => true,
+        Some(end_ms) => start_ms.saturating_sub(end_ms) > gap_ms,
     }
 }
 
@@ -281,12 +320,47 @@ pub struct TurnState {
     last_closed_user_text: Option<String>,
     /// How many turns this session has closed; the next one's `index`.
     index: u64,
+    /// The closed turns of the call, kept for a delegation's history where
+    /// `duplex.delegation_history` asks for it; `None` keeps nothing.
+    history: Option<CallHistory>,
+}
+
+/// The closed turns of one call, as fragments. Whole: this cell produces the
+/// history and cuts none of it; what fits the target's window is the
+/// curator's to decide, on the way to the target.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct CallHistory {
+    /// The closed turns, oldest first.
+    turns: Vec<HistoryTurn>,
+}
+
+/// One closed turn of the call, as the history keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HistoryTurn {
+    /// The turn's `index` in the session ([`FinishedTurn::index`]).
+    index: u64,
+    /// The id the turn carried on the `turn` lane, once it was reported
+    /// ([`name_reported_turn`]); `None` before that.
+    turn_id: Option<String>,
+    /// The caller's part.
+    user: Vec<Frag>,
+    /// The model's part.
+    assistant: Vec<Frag>,
 }
 
 impl TurnState {
     /// A session that has heard nothing yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The same, keeping the call's closed turns for a delegation's history
+    /// (`duplex.delegation_history`), all of them.
+    pub fn with_history() -> Self {
+        Self {
+            history: Some(CallHistory::default()),
+            ..Self::default()
+        }
     }
 }
 
@@ -322,6 +396,16 @@ pub enum TurnInput {
     },
     /// The session is over; close what is open.
     Close,
+    /// The connection is over: close what is open from what is held now,
+    /// without waiting for the provider (d54g callseam). Measured on
+    /// 2026-11-07: the turn a provider's late close produced left 330 ms and
+    /// more after the line was gone and opened the next conversation.
+    End {
+        /// Where the call's clock stood when the connection ended.
+        at_ms: u64,
+        /// Whether the model's audio was still going out to the client then.
+        model_audible: bool,
+    },
 }
 
 /// What the machine decides.
@@ -365,6 +449,10 @@ pub struct FinishedTurn {
     /// one. Never before `person_end_ms`. `None` where no answer audio went
     /// out inside the turn.
     pub first_audio_ms: Option<u64>,
+    /// Whether the end of the connection cut the model off inside this turn
+    /// ([`TurnInput::End`]): the model's part was not said to its end, so a
+    /// reader does not take it for a statement that was made.
+    pub cut: bool,
 }
 
 /// Feed one input to the machine and read its verdict.
@@ -408,7 +496,17 @@ pub fn step(
             Vec::new()
         }
         TurnInput::Close => close(state).into_iter().collect(),
+        TurnInput::End {
+            at_ms,
+            model_audible,
+        } => end(state, at_ms, model_audible).into_iter().collect(),
     }
+}
+
+/// When the first audio of the answer in the open turn went out, where it
+/// has: what the `first_audio` lane stamps while the turn is still open.
+pub fn open_first_audio_ms(state: &TurnState) -> Option<u64> {
+    state.open.as_ref().and_then(|open| open.first_audio_ms)
 }
 
 /// The user text of the turn that is open, or the last one that closed.
@@ -422,6 +520,63 @@ pub fn open_user_text(state: &TurnState) -> Option<String> {
     match state.open.as_ref().map(OpenTurn::user_text) {
         Some(text) if !text.is_empty() => Some(text),
         _ => state.last_closed_user_text.clone(),
+    }
+}
+
+/// The call up to a delegation's handoff (A75-A78), where the state keeps a
+/// history ([`TurnState::with_history`]); `None` where it does not.
+///
+/// The closed turns in order, each speaker's part of a turn as one entry (the
+/// caller's first), with every fragment that starts after `offset_ms` left
+/// out; last, the text the `delegation` lane always carried
+/// ([`open_user_text`]): the task. Nothing is cut here, whatever the length.
+///
+/// Each entry of a closed turn carries the `turn_id` that turn was reported
+/// under on the `turn` lane, where it was ([`name_reported_turn`]); the task
+/// carries none, because its turn is still open and no lane has seen it yet
+/// (OR-54g-33 b).
+pub fn delegation_history(
+    state: &TurnState,
+    offset_ms: u64,
+) -> Option<Vec<(Speaker, String, Option<String>)>> {
+    let history = state.history.as_ref()?;
+    let joined = |frags: &[Frag]| -> String {
+        frags
+            .iter()
+            .filter(|f| f.start_ms <= offset_ms)
+            .map(|f| f.text.as_str())
+            .collect()
+    };
+    let mut entries: Vec<(Speaker, String, Option<String>)> = Vec::new();
+    for turn in &history.turns {
+        for (speaker, text) in [
+            (Speaker::User, joined(&turn.user)),
+            (Speaker::Assistant, joined(&turn.assistant)),
+        ] {
+            if !text.trim().is_empty() {
+                entries.push((speaker, text, turn.turn_id.clone()));
+            }
+        }
+    }
+    entries.push((
+        Speaker::User,
+        open_user_text(state).unwrap_or_default(),
+        None,
+    ));
+    Some(entries)
+}
+
+/// Remember the id a closed turn was reported under on the `turn` lane, so
+/// the history can name it (OR-54g-33 b): a reader that already holds that
+/// turn can tell the second copy in a delegation from a new one. Does nothing
+/// where the state keeps no history or no turn has that index.
+pub fn name_reported_turn(state: &mut TurnState, index: u64, turn_id: String) {
+    if let Some(turn) = state
+        .history
+        .as_mut()
+        .and_then(|h| h.turns.iter_mut().rev().find(|t| t.index == index))
+    {
+        turn.turn_id = Some(turn_id);
     }
 }
 
@@ -497,10 +652,21 @@ fn assistant_fragment(state: &mut TurnState, frag: Frag, gap_ms: u64) -> Vec<Tur
 /// Rule 1 against the clock instead of against a fragment.
 fn tick(state: &mut TurnState, now_ms: u64, gap_ms: u64) -> Vec<TurnAction> {
     // Silence measured from a fragment that does not exist is not silence, and
-    // neither is a pause while the model is still talking.
+    // neither is a pause while the model is still talking. The model talks
+    // until its block is over -- silent for longer than the gap, the line rule
+    // 3 draws between two blocks -- not until the clock passes the end of its
+    // last word (d54g weblive, lab run of 2026-11-13): a live model stamps the
+    // first words of an answer where the caller's ended and sends them ahead
+    // of their audio, the clock overtook them, and the turn closed 4 ms before
+    // the answer's first audible frame, in the middle of its sentence. Four of
+    // five first answers of a session lost their `first_audio` that way.
     let closes = state.open.as_ref().is_some_and(|open| {
         !open.user.is_empty()
-            && !open.model_speaks_at(now_ms)
+            && opens_new_block(
+                open.agent_block_start_ms.map(|_| open.agent_block_end_ms),
+                now_ms,
+                gap_ms,
+            )
             && now_ms.saturating_sub(open.user_last_end_ms) > gap_ms
     });
     if closes {
@@ -510,13 +676,291 @@ fn tick(state: &mut TurnState, now_ms: u64, gap_ms: u64) -> Vec<TurnAction> {
     }
 }
 
+/// The end of the connection: the open turn closes now. Its model part is
+/// `cut` where the model was still speaking -- its audio was still going out,
+/// or its transcript reaches past the clock.
+fn end(state: &mut TurnState, at_ms: u64, model_audible: bool) -> Option<TurnAction> {
+    let cut = state.open.as_ref().is_some_and(|open| {
+        !open.assistant.is_empty() && (model_audible || open.model_speaks_at(at_ms))
+    });
+    close_as(state, cut)
+}
+
 /// Rules 6 and 7: hand over what is open and count it.
 fn close(state: &mut TurnState) -> Option<TurnAction> {
+    close_as(state, false)
+}
+
+/// [`close`], saying whether the end of the connection cut the model off.
+fn close_as(state: &mut TurnState, cut: bool) -> Option<TurnAction> {
     let open = state.open.take()?;
-    let finished = open.finish(state.index);
+    let mut finished = open.finish(state.index);
+    finished.cut = cut;
     state.index += 1;
     if !finished.user.is_empty() {
         state.last_closed_user_text = Some(finished.user.clone());
     }
+    if let Some(history) = state.history.as_mut() {
+        history.turns.push(HistoryTurn {
+            index: finished.index,
+            turn_id: None,
+            user: open.user,
+            assistant: open.assistant,
+        });
+    }
     Some(TurnAction::Emit(finished))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GAP: u64 = 700;
+    const BACK: u64 = 900;
+
+    fn say(state: &mut TurnState, speaker: Speaker, text: &str, start_ms: u64, end_ms: u64) {
+        let _ = step(
+            state,
+            TurnInput::Fragment {
+                speaker,
+                text: text.to_string(),
+                start_ms,
+                end_ms,
+            },
+            GAP,
+            BACK,
+        );
+    }
+
+    fn entries(list: &[(Speaker, &str)]) -> Vec<(Speaker, String, Option<String>)> {
+        list.iter()
+            .map(|(s, t)| (*s, (*t).to_string(), None))
+            .collect()
+    }
+
+    /// OR-54g-33 b: a closed turn's entries carry the id it was reported
+    /// under, a turn not reported yet carries none, and the task never does.
+    #[test]
+    fn a_reported_turn_is_named_in_the_history_and_the_task_is_not() {
+        let mut state = TurnState::with_history();
+        say(&mut state, Speaker::User, "First.", 0, 1_000);
+        say(&mut state, Speaker::Assistant, "One.", 1_100, 1_800);
+        say(&mut state, Speaker::User, "Second.", 5_000, 6_000);
+        say(&mut state, Speaker::User, "Third.", 9_000, 10_000);
+        name_reported_turn(&mut state, 0, "s#0".to_string());
+        name_reported_turn(&mut state, 7, "s#7".to_string());
+        assert_eq!(
+            delegation_history(&state, 10_100),
+            Some(vec![
+                (Speaker::User, "First.".to_string(), Some("s#0".to_string())),
+                (
+                    Speaker::Assistant,
+                    "One.".to_string(),
+                    Some("s#0".to_string())
+                ),
+                (Speaker::User, "Second.".to_string(), None),
+                (Speaker::User, "Third.".to_string(), None),
+            ])
+        );
+    }
+
+    /// d54g callseam: a word whose transcript arrives late stands where it
+    /// was spoken, and the turn still closes on the caller's latest word.
+    #[test]
+    fn a_late_fragment_stands_where_it_was_spoken() {
+        let mut state = TurnState::new();
+        say(&mut state, Speaker::User, "one ", 1_000, 1_100);
+        say(&mut state, Speaker::User, "three.", 1_400, 1_600);
+        say(&mut state, Speaker::User, "two ", 1_100, 1_200);
+        assert_eq!(open_user_text(&state).as_deref(), Some("one two three."));
+        // 700 ms after the latest word, not after the late one.
+        assert!(step(&mut state, TurnInput::Tick { now_ms: 2_300 }, GAP, BACK).is_empty());
+        let closed = step(&mut state, TurnInput::Tick { now_ms: 2_301 }, GAP, BACK);
+        match closed.as_slice() {
+            [TurnAction::Emit(turn)] => {
+                assert_eq!(turn.user, "one two three.");
+                assert_eq!(turn.happened_at_ms, 1_600);
+                assert_eq!(turn.person_end_ms, Some(1_600));
+            }
+            other => panic!("one closed turn, got {other:?}"),
+        }
+    }
+
+    /// The one turn an input closed.
+    fn closed(actions: Vec<TurnAction>) -> FinishedTurn {
+        match actions.as_slice() {
+            [TurnAction::Emit(turn)] => turn.clone(),
+            other => panic!("expected one closed turn, got {other:?}"),
+        }
+    }
+
+    /// d54g callseam: the end of the connection closes the open turn at
+    /// once, and a turn without a part of the model's has nothing cut.
+    #[test]
+    fn the_end_of_the_connection_closes_the_open_turn() {
+        let mut state = TurnState::new();
+        say(&mut state, Speaker::User, "Remind me at six.", 0, 900);
+        let turn = closed(step(
+            &mut state,
+            TurnInput::End {
+                at_ms: 950,
+                model_audible: true,
+            },
+            GAP,
+            BACK,
+        ));
+        assert_eq!(turn.user, "Remind me at six.");
+        assert!(!turn.cut, "no sentence of the model's, nothing cut");
+        assert!(
+            step(&mut state, TurnInput::Close, GAP, BACK).is_empty(),
+            "the provider's late close finds nothing open"
+        );
+    }
+
+    /// d54g callseam: a model part is cut where the model's audio was still
+    /// going out, or its transcript reaches past the clock; a model that had
+    /// finished is not cut.
+    #[test]
+    fn a_model_part_is_cut_only_where_the_model_still_spoke() {
+        let ended = |at_ms: u64, model_audible: bool| {
+            let mut state = TurnState::new();
+            say(&mut state, Speaker::User, "What is on?", 0, 900);
+            say(
+                &mut state,
+                Speaker::Assistant,
+                "At ten you have",
+                1_000,
+                2_400,
+            );
+            closed(step(
+                &mut state,
+                TurnInput::End {
+                    at_ms,
+                    model_audible,
+                },
+                GAP,
+                BACK,
+            ))
+        };
+        assert!(ended(2_500, true).cut, "its audio was still going out");
+        assert!(
+            ended(2_000, false).cut,
+            "its transcript reaches past the clock"
+        );
+        let said = ended(2_500, false);
+        assert!(!said.cut, "the model had finished");
+        assert_eq!(said.assistant.as_deref(), Some("At ten you have"));
+        assert!(
+            !closed({
+                let mut state = TurnState::new();
+                say(&mut state, Speaker::User, "What is on?", 0, 900);
+                say(&mut state, Speaker::Assistant, "At ten.", 1_000, 2_400);
+                step(&mut state, TurnInput::Close, GAP, BACK)
+            })
+            .cut,
+            "a provider's own close cuts nothing"
+        );
+    }
+
+    /// d54g callseam: the open turn's first-audio time is readable while the
+    /// turn is open, and only once audio went out.
+    #[test]
+    fn the_open_turn_says_when_its_first_audio_went_out() {
+        let mut state = TurnState::new();
+        assert_eq!(open_first_audio_ms(&state), None);
+        say(&mut state, Speaker::User, "Is it raining?", 0, 900);
+        assert_eq!(open_first_audio_ms(&state), None);
+        let _ = step(&mut state, TurnInput::AudioOut { at_ms: 1_600 }, GAP, BACK);
+        assert_eq!(open_first_audio_ms(&state), Some(1_600));
+    }
+
+    /// POC gpt-live-1 round 2 (A75-A78): without the switch there is no
+    /// history at all -- the lane carries what it always carried.
+    #[test]
+    fn no_history_without_the_switch() {
+        let mut state = TurnState::new();
+        say(&mut state, Speaker::User, "Hello", 0, 500);
+        assert_eq!(delegation_history(&state, 600), None);
+    }
+
+    /// The closed turns of the call in order, each speaker's part as one
+    /// entry, and the open turn's caller text last.
+    #[test]
+    fn the_history_is_the_call_up_to_the_handoff() {
+        let mut state = TurnState::with_history();
+        say(
+            &mut state,
+            Speaker::Assistant,
+            "Hello, this is the assistant.",
+            0,
+            1_000,
+        );
+        say(&mut state, Speaker::User, "Book the doctor", 2_000, 3_000);
+        say(&mut state, Speaker::User, " for Friday.", 3_000, 3_600);
+        say(
+            &mut state,
+            Speaker::Assistant,
+            "Friday it is.",
+            3_800,
+            4_600,
+        );
+        say(
+            &mut state,
+            Speaker::User,
+            "Thursday, not Friday.",
+            6_000,
+            7_000,
+        );
+        assert_eq!(
+            delegation_history(&state, 7_100),
+            Some(entries(&[
+                (Speaker::Assistant, "Hello, this is the assistant."),
+                (Speaker::User, "Book the doctor for Friday."),
+                (Speaker::Assistant, "Friday it is."),
+                (Speaker::User, "Thursday, not Friday."),
+            ]))
+        );
+    }
+
+    /// Fragments that start after the delegation's offset stay out (A78).
+    #[test]
+    fn fragments_after_the_offset_stay_out() {
+        let mut state = TurnState::with_history();
+        say(&mut state, Speaker::User, "First question.", 0, 1_000);
+        say(&mut state, Speaker::Assistant, "Answer", 1_100, 1_800);
+        say(&mut state, Speaker::Assistant, " and more.", 5_000, 5_600);
+        say(&mut state, Speaker::User, "Second question.", 7_000, 8_000);
+        assert_eq!(
+            delegation_history(&state, 4_000),
+            Some(entries(&[
+                (Speaker::User, "First question."),
+                (Speaker::Assistant, "Answer"),
+                (Speaker::User, "Second question."),
+            ]))
+        );
+    }
+
+    /// The history is never cut in this cell: a call far over 50 KB reaches
+    /// the delegation whole, oldest turn included.
+    #[test]
+    fn a_history_over_50_kb_is_carried_whole() {
+        let mut state = TurnState::with_history();
+        let mut expected: Vec<(Speaker, String, Option<String>)> = Vec::new();
+        let mut at = 0_u64;
+        for n in 0..40 {
+            let asked = format!("question {n} {}", "q".repeat(900));
+            let told = format!("answer {n} {}", "a".repeat(900));
+            say(&mut state, Speaker::User, &asked, at, at + 500);
+            say(&mut state, Speaker::Assistant, &told, at + 600, at + 1_000);
+            expected.push((Speaker::User, asked, None));
+            expected.push((Speaker::Assistant, told, None));
+            at += 3_000;
+        }
+        say(&mut state, Speaker::User, "the task", at, at + 500);
+        expected.push((Speaker::User, "the task".to_string(), None));
+        let got = delegation_history(&state, at + 600);
+        let bytes: usize = got.iter().flatten().map(|(_, t, _)| t.len()).sum();
+        assert!(bytes > 50_000, "the fixture is over 50 KB, got {bytes}");
+        assert_eq!(got, Some(expected));
+    }
 }

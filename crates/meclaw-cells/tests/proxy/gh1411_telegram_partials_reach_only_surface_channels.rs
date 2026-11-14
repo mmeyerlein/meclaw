@@ -171,7 +171,7 @@ fn levels() -> Vec<(&'static str, Vec<Value>)> {
             grown(
                 "grow_level",
                 json!({"scope": MEMBER, "level": "channel", "name": CHANNEL,
-                       "template": "telegram-connector@2.2.7", "assistant": AGENT,
+                       "template": "telegram-connector@2.2.8", "assistant": AGENT,
                        "bind_chat": "4711", "ctx": {"member_person": "alex"}}),
             ),
         ),

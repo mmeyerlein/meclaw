@@ -169,8 +169,11 @@ fn tool_double() -> Value {
             "script_inline": "import sys, json\nsys.stdin.read()\nsys.stdout.write(json.dumps([]))\n",
             "external_timeout_ms": 10000
         },
+        // The stand-in's own contract version, not a template's: it is kept off
+        // every shipped template version so `cascade-dry` does not read it as a
+        // stale literal of `templates/lead` (named above) when that bumps.
         "contract": {
-            "version": "1.0.0",
+            "version": "0.0.1",
             "settings": {},
             "emits": {"body": {"messages": {"type": "array", "required": true}},
                       "hop": {"operation": {"type": "string", "required": false}}},

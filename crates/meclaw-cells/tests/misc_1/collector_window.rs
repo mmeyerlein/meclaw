@@ -1559,29 +1559,39 @@ fn the_first_assembly_of_a_turn_is_never_the_capped_one() {
 fn the_answer_leaves_and_takes_its_round_with_it() {
     // GH #889: the answer used to be written into the window before it left.
     // The history is the curator's now (it hears the brain's answer on its own
-    // tap, R-27-1), so no turn row is written here; what leaves beside the
-    // answer is the `round-drop` bundle -- the round's rows fall when its
-    // answer leaves (OR-KX-V2), and the `depart` rows stay for a late consult
-    // (GH #728).
+    // tap, R-27-1), so no turn row is written here; the round's rows fall when
+    // its answer leaves (OR-KX-V2), and the `depart` rows stay for a late
+    // consult (GH #728). GH #1505: the answer leaves through its gate -- ONE
+    // message to the store, the drop behind the read of the turn's `said` rows
+    // and the answer's own `said` row -- and goes out on the store's reply.
     let out = emit(lane_doc(
         "in_answer",
         serde_json::json!([{"origin": "assistant", "type": "text", "text": "you said first"}]),
     ));
-    assert_eq!(out.len(), 2, "the way out and the drop, in one multi-send");
+    assert_eq!(out.len(), 1, "the answer's gate, one message: {out:?}");
     let dropped = out
         .iter()
         .find(|m| m["header"]["route"] == "cstore")
         .expect("the round is dropped");
-    assert_eq!(dropped["header"]["phase"], "round-drop");
+    assert_eq!(dropped["header"]["phase"], "answer-gate");
     let calls: Vec<serde_json::Value> = dropped["messages"]
         .as_array()
         .expect("calls")
         .iter()
         .map(|t| serde_json::from_str(t["text"].as_str().expect("op text")).expect("args"))
         .collect();
+    assert_eq!(calls[0]["operation"], "select", "{calls:?}");
+    assert_eq!(calls[0]["where"]["role"], "said", "{calls:?}");
+    assert_eq!(calls[1]["operation"], "insert", "{calls:?}");
+    assert_eq!(calls[1]["table"], "round", "{calls:?}");
+    assert_eq!(
+        calls[1]["row"]["role"], "said",
+        "the one row written is what was said, never a turn: {calls:?}"
+    );
+    let calls = &calls[2..];
     assert!(
         calls.iter().all(|a| a["operation"] == "delete"),
-        "nothing is written, only dropped: {calls:?}"
+        "nothing else is written, only dropped: {calls:?}"
     );
     assert_eq!(calls[0]["table"], "turns");
     assert_eq!(
@@ -1594,7 +1604,8 @@ fn the_answer_leaves_and_takes_its_round_with_it() {
         serde_json::json!({"neq": "depart"}),
         "the departures stay for a late consult (GH #728)"
     );
-    let answer = out
+    let left = emit(gate_reply(dropped, serde_json::json!([])));
+    let answer = left
         .iter()
         .find(|m| m["header"]["route"] == "answer")
         .expect("the answer leaves");
@@ -2136,10 +2147,12 @@ fn a_message_without_a_lane_and_without_a_step_is_terminal() {
         "messages": [{"origin": "assistant", "type": "text", "text": "done"}]
     });
     let out = emit(stale);
-    // The answer and, since GH #889, the `round-drop` beside it (it used to be
-    // the answer's write into the window).
-    assert_eq!(out.len(), 2, "the lane wins over the stale step");
-    assert!(out.iter().any(|m| m["header"]["route"] == "answer"));
+    // GH #1505: the answer's gate -- the drop of its round (GH #889) rides in
+    // it -- and the answer on the store's reply.
+    assert_eq!(out.len(), 1, "the lane wins over the stale step");
+    assert_eq!(out[0]["header"]["phase"], "answer-gate", "{out:?}");
+    let left = emit(gate_reply(&out[0], serde_json::json!([])));
+    assert!(left.iter().any(|m| m["header"]["route"] == "answer"));
 }
 
 #[test]
@@ -2291,6 +2304,47 @@ fn lane_with(
         doc["header"]["context"][k] = v.clone();
     }
     doc
+}
+
+/// The store's reply to a gate of `in_answer` (GH #1505): the context the
+/// hive's `cstore` edge hands back -- the step and the sentence the gate
+/// carried -- and one result per call. `round` is what a read of the round's
+/// rows finds; the turn's `said` rows are read as none and every insert as
+/// written.
+fn gate_reply(gate: &serde_json::Value, round: serde_json::Value) -> serde_json::Value {
+    let head = &gate["header"];
+    let calls: Vec<(String, serde_json::Value)> = gate["messages"]
+        .as_array()
+        .expect("calls")
+        .iter()
+        .map(|m| {
+            (
+                m["id"].as_str().expect("call id").to_string(),
+                serde_json::from_str(m["text"].as_str().expect("op text")).expect("args"),
+            )
+        })
+        .collect();
+    let read = |args: &serde_json::Value| {
+        if args["operation"] == "select" && args["where"]["role"].is_null() {
+            round.clone()
+        } else {
+            serde_json::json!([])
+        }
+    };
+    serde_json::json!({
+        "header": {"context": {"session_id": "s1", "turn_id": head["turn_id"],
+                               "iter": head["iter"], "col_phase": head["phase"],
+                               "col_gate": head["gate"], "store_origin": "collector"},
+                   "hop": {"operation": "bundle", "rows_affected": calls.len(),
+                           "bundle_errors": 0}},
+        "messages": calls.iter().map(|(id, args)| serde_json::json!(
+            {"origin": "tool", "type": "tool_result", "id": id,
+             "text": read(args).to_string()})).collect::<Vec<_>>(),
+        "results": calls.iter().map(|(id, args)| serde_json::json!(
+            {"tool_call_id": id, "operation": args["operation"],
+             "rows_affected": i64::from(args["operation"] == "insert"),
+             "duration_ms": 0})).collect::<Vec<_>>()
+    })
 }
 
 fn call_bundle(ids: &[&str]) -> serde_json::Value {
@@ -2934,27 +2988,41 @@ fn an_interim_answer_does_not_travel_twice_and_never_splits_a_round() {
 
 #[test]
 fn an_interim_answer_stays_an_interim_answer_on_its_way_out() {
-    let out = emit(lane_with(
+    let gate = emit(lane_with(
         "in_answer",
         serde_json::json!({"interim": "1"}),
         serde_json::json!({}),
         serde_json::json!([{"origin": "assistant", "type": "text",
                             "text": "one moment, asking"}]),
     ));
+    // GH #1505: every interim goes through `bridge-gate` and leaves on the
+    // store's reply while its round is open.
+    assert_eq!(gate.len(), 1, "the gate alone: {gate:?}");
+    assert_eq!(gate[0]["header"]["phase"], "bridge-gate", "{gate:?}");
+    let out = emit(gate_reply(
+        &gate[0],
+        serde_json::json!([leg_window_row(serde_json::json!([]))]),
+    ));
     // GH #889: `in_answer` no longer writes the answer into a window, and an
-    // interim ends no round (its calls are still out), so the reply is all.
-    assert_eq!(out.len(), 1, "the reply alone: {out:?}");
+    // interim ends no round (its calls are still out), so the reply is all --
+    // behind it only the bridge's own row `said`, turned from its claim into
+    // the row of a text that went out (GH #1505, review M-3).
+    assert_eq!(out.len(), 2, "the reply and its row `said`: {out:?}");
     assert_eq!(out[0]["header"]["route"], "answer");
+    assert_eq!(out[1]["header"]["phase"], "said-out", "{out:?}");
     assert_eq!(
         out[0]["header"]["interim"], "1",
         "a channel must be able to tell the two apart: {}",
         out[0]
     );
-    // A final answer ends its round: the reply first, the `round-drop` behind it.
-    let plain = emit(lane_doc(
+    // A final answer ends its round: the drop rides in its gate (GH #1505),
+    // the reply leaves behind it.
+    let gate = emit(lane_doc(
         "in_answer",
         serde_json::json!([{"origin": "assistant", "type": "text", "text": "42"}]),
     ));
+    assert_eq!(gate[0]["header"]["phase"], "answer-gate", "{gate:?}");
+    let plain = emit(gate_reply(&gate[0], serde_json::json!([])));
     assert_eq!(plain[0]["header"]["route"], "answer", "{plain:?}");
     assert!(
         plain[0]["header"].get("interim").is_none(),

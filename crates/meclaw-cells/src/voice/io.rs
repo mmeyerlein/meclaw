@@ -128,6 +128,11 @@ pub enum ToConnection {
         /// over at -- at the latest `spoken_cap_ms` after it came. A newer one
         /// replaces one that still waits; `false` for every other append.
         when_quiet: bool,
+        /// The cut this append is a part of. A text over the append ceiling
+        /// leaves the cell in parts: every part of ONE text carries the same
+        /// id, and every new text a new one. It is what tells the next part
+        /// of a waiting text from a newer text that replaces it.
+        split_id: String,
     },
     /// Open the next session of this duplex call now (D48, `in_advise`
     /// section `renew`), unless one is already opening.
@@ -199,6 +204,11 @@ pub struct VoiceIoShared {
     /// `final` say `complete: false`) -- so an operator who raises the number
     /// must raise this wait with it, not run into a constant.
     pub close_grace_ms: u64,
+    /// How long a page session in `hold` may stay idle before the connection
+    /// ends its provider session, in milliseconds
+    /// (`params.duplex.hold_idle_ms`, d54g weblive); `0` never ends it before
+    /// the connection ends.
+    pub duplex_hold_idle_ms: u64,
     /// How often a duplex connection hands the turn machine the time, in
     /// milliseconds (`params.duplex.tick_ms`, R-L7).
     ///
@@ -228,12 +238,22 @@ pub struct VoiceIoShared {
     /// media connection, in milliseconds (`params.duplex.prewarm_ttl_ms`,
     /// GH #1055); `0` never opens one early.
     pub duplex_prewarm_ttl_ms: u64,
+    /// How long the model's timeline may stay quiet before a turn closes, in
+    /// milliseconds (`params.duplex.turn_gap_ms`). The handler forms turns
+    /// with it; a parked session reads it to tell where the greeting ends
+    /// while nobody is there to form turns for (GH #1055).
+    pub duplex_turn_gap_ms: u64,
     /// How long a duplex session that opens waits for its seed, in
     /// milliseconds (`params.duplex.seed_wait_ms`, D48); `0` asks for none.
     ///
     /// The connection reads it to know whether to emit `seed_ask` when it
     /// opens a session; the wait itself is the provider's.
     pub duplex_seed_wait_ms: u64,
+    /// What the `seed_ask` lane says about the session's model in
+    /// `hop.limits` (wave d54g, strand kprofil): built once per life from
+    /// `params.duplex`. `None` where the duplex provider names no limits;
+    /// the ask then leaves as it always did.
+    pub duplex_limits: Option<meclaw_core::serde_json::Value>,
     /// When a duplex call is marked on the `call_mark` lane
     /// (`params.call_marks_s` / `call_mark_every_s`, D48). Here because the
     /// connection owns the call's clock: one timer per call, in its own loop,
@@ -303,6 +323,11 @@ pub struct VoiceIoShared {
     ///
     /// `None` in a fixture built by hand: nothing watches, nothing closes.
     shutdown: Option<watch::Receiver<()>>,
+    /// Whether a connection reports the first audio of a synthesis
+    /// (`params.emit_first_audio`, d54g callseam). Read once per life, like
+    /// the frame length. Off, the connection sends the handler exactly the
+    /// events it sent before the lane existed.
+    pub emit_first_audio: bool,
 }
 
 /// The connection table: who is connected, under which session identity.
@@ -342,6 +367,13 @@ impl VoiceIoShared {
             .prewarm
             .insert(session_id.to_string(), (token, open()));
         Some(token)
+    }
+
+    /// Whether an early session waits for `session_id` (d54g weblive, review
+    /// M-3): a page asks before it opens the session the early one was for,
+    /// and counts past the name of one that ran out.
+    pub(crate) async fn prewarm_parked(&self, session_id: &str) -> bool {
+        self.sessions.lock().await.prewarm.contains_key(session_id)
     }
 
     /// Take the early session parked for `session_id`, where there is one —
@@ -568,12 +600,15 @@ impl VoiceIoShared {
             spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
             spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
             close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            duplex_hold_idle_ms: 0,
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
             duplex_recover_max: crate::voice::params::DEFAULT_RECOVER_MAX,
             duplex_prewarm_ttl_ms: 0,
+            duplex_turn_gap_ms: crate::voice::params::DEFAULT_TURN_GAP_MS,
             duplex_seed_wait_ms: 0,
+            duplex_limits: None,
             duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
@@ -586,6 +621,7 @@ impl VoiceIoShared {
             liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
             sessions: Mutex::new(Registry::default()),
             shutdown: None,
+            emit_first_audio: false,
         })
     }
 
@@ -649,6 +685,9 @@ pub struct VoiceIo {
     /// How long the connection waits for the duplex provider's verdict, in
     /// milliseconds. See [`VoiceIoShared::close_grace_ms`].
     pub close_grace_ms: u64,
+    /// The idle end of a page session, in milliseconds. See
+    /// [`VoiceIoShared::duplex_hold_idle_ms`].
+    pub duplex_hold_idle_ms: u64,
     /// The duplex tick, in milliseconds. See
     /// [`VoiceIoShared::duplex_tick_ms`].
     pub duplex_tick_ms: u64,
@@ -663,8 +702,12 @@ pub struct VoiceIo {
     pub duplex_recover_max: u32,
     /// See [`VoiceIoShared::duplex_prewarm_ttl_ms`] (GH #1055).
     pub duplex_prewarm_ttl_ms: u64,
+    /// See [`VoiceIoShared::duplex_turn_gap_ms`].
+    pub duplex_turn_gap_ms: u64,
     /// See [`VoiceIoShared::duplex_seed_wait_ms`] (D48).
     pub duplex_seed_wait_ms: u64,
+    /// See [`VoiceIoShared::duplex_limits`].
+    pub duplex_limits: Option<meclaw_core::serde_json::Value>,
     /// See [`VoiceIoShared::duplex_call_marks`] (D48).
     pub duplex_call_marks: crate::voice::call_marks::CallMarks,
     /// See [`VoiceIoShared::duck`] (GH #1055).
@@ -742,6 +785,10 @@ pub struct VoiceIo {
     /// GH #1059: ceiling of the doubling wait between two credential rounds of
     /// one slot (`params.credential_backoff_max_ms`), read once per life.
     pub credential_backoff_max_ms: u64,
+    /// See [`VoiceIoShared::emit_first_audio`] (d54g callseam). A field
+    /// rather than an argument of [`VoiceIo::new`], for the reason the frame
+    /// length is one: only the factory names it.
+    pub emit_first_audio: bool,
 }
 
 impl VoiceIo {
@@ -771,12 +818,15 @@ impl VoiceIo {
             spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
             spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
             close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            duplex_hold_idle_ms: 0,
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
             duplex_recover_max: crate::voice::params::DEFAULT_RECOVER_MAX,
             duplex_prewarm_ttl_ms: 0,
+            duplex_turn_gap_ms: crate::voice::params::DEFAULT_TURN_GAP_MS,
             duplex_seed_wait_ms: 0,
+            duplex_limits: None,
             duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             audio_out_frame_ms: crate::voice::params::DEFAULT_AUDIO_OUT_FRAME_MS,
@@ -793,6 +843,7 @@ impl VoiceIo {
             vaulted: Vec::new(),
             credential_backoff_max_ms: crate::credential_rounds::default_credential_backoff_max_ms(
             ),
+            emit_first_audio: false,
         }
     }
 }
@@ -828,12 +879,15 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         spoken_quiet_ms: io.spoken_quiet_ms,
         spoken_cap_ms: io.spoken_cap_ms,
         close_grace_ms: io.close_grace_ms,
+        duplex_hold_idle_ms: io.duplex_hold_idle_ms,
         duplex_tick_ms: io.duplex_tick_ms,
         duplex_renew_after_ms: io.duplex_renew_after_ms,
         duplex_renew_grace_ms: io.duplex_renew_grace_ms,
         duplex_recover_max: io.duplex_recover_max,
         duplex_prewarm_ttl_ms: io.duplex_prewarm_ttl_ms,
+        duplex_turn_gap_ms: io.duplex_turn_gap_ms,
         duplex_seed_wait_ms: io.duplex_seed_wait_ms,
+        duplex_limits: io.duplex_limits,
         duplex_call_marks: io.duplex_call_marks,
         duck: io.duck,
         default_mode: io.default_mode,
@@ -846,6 +900,7 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         liveness: io.liveness,
         sessions: Mutex::new(Registry::default()),
         shutdown: Some(shutdown_rx),
+        emit_first_audio: io.emit_first_audio,
     });
     let mount = io.mount;
     let cell_path = io.cell_path;
@@ -1016,6 +1071,7 @@ async fn serve_until_the_handler_goes(
                 speak_id,
                 takeover,
                 when_quiet,
+                split_id,
             }) => {
                 // The same one hop as every other command: `send_to` hands it
                 // to the connection's `deliver` task and never waits on the
@@ -1031,6 +1087,7 @@ async fn serve_until_the_handler_goes(
                             speak_id,
                             takeover,
                             when_quiet,
+                            split_id,
                         },
                     )
                     .await;
@@ -1310,8 +1367,16 @@ pub(crate) fn new_connection_slot() -> (
     mpsc::Sender<ToConnection>,
     mpsc::Receiver<ToConnection>,
 ) {
-    let (tx, rx) = mpsc::channel(64);
+    let (tx, rx) = new_session_way();
     (next_conn_id(), tx, rx)
+}
+
+/// The channel one session of a connection is reached on: the connection's
+/// own for a call, one of its own for each session of a page (d54g weblive,
+/// OR-d54g.weblive.20) -- so that the session's delivery is its one strong
+/// holder, and its giving up ends the session.
+pub(crate) fn new_session_way() -> (mpsc::Sender<ToConnection>, mpsc::Receiver<ToConnection>) {
+    mpsc::channel(64)
 }
 
 #[cfg(test)]
@@ -1790,12 +1855,15 @@ mod tests {
             spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
             spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
             close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            duplex_hold_idle_ms: 0,
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
             duplex_recover_max: crate::voice::params::DEFAULT_RECOVER_MAX,
             duplex_prewarm_ttl_ms: 0,
+            duplex_turn_gap_ms: crate::voice::params::DEFAULT_TURN_GAP_MS,
             duplex_seed_wait_ms: 0,
+            duplex_limits: None,
             duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
@@ -1808,6 +1876,7 @@ mod tests {
             liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
             sessions: Mutex::new(Registry::default()),
             shutdown: None,
+            emit_first_audio: false,
         });
 
         // A connection nobody reads: the receiver is held and never polled, so
@@ -1882,7 +1951,7 @@ mod tests {
     ///
     /// What is measured is the mapping and the hop, not the model: a
     /// `VoiceReconfig::Advise` goes in on the handler's seam and a
-    /// `ToConnection::Advise` with the same seven fields comes out at the
+    /// `ToConnection::Advise` with the same eight fields comes out at the
     /// connection, through the same `deliver` task every other command takes
     /// (GH #593).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1895,12 +1964,15 @@ mod tests {
             spoken_quiet_ms: crate::voice::params::DEFAULT_SPOKEN_QUIET_MS,
             spoken_cap_ms: crate::voice::params::DEFAULT_SPOKEN_CAP_MS,
             close_grace_ms: crate::voice::params::DEFAULT_CLOSE_GRACE_MS,
+            duplex_hold_idle_ms: 0,
             duplex_tick_ms: crate::voice::params::DEFAULT_DUPLEX_TICK_MS,
             duplex_renew_after_ms: crate::voice::params::DEFAULT_RENEW_AFTER_MS,
             duplex_renew_grace_ms: crate::voice::params::DEFAULT_RENEW_GRACE_MS,
             duplex_recover_max: crate::voice::params::DEFAULT_RECOVER_MAX,
             duplex_prewarm_ttl_ms: 0,
+            duplex_turn_gap_ms: crate::voice::params::DEFAULT_TURN_GAP_MS,
             duplex_seed_wait_ms: 0,
+            duplex_limits: None,
             duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             default_mode: Mode::Auto,
@@ -1913,6 +1985,7 @@ mod tests {
             liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
             sessions: Mutex::new(Registry::default()),
             shutdown: None,
+            emit_first_audio: false,
         });
 
         let (conn_id, to_conn, mut to_conn_rx) = new_connection_slot();
@@ -1933,6 +2006,7 @@ mod tests {
                 speak_id: Some("s9".to_string()),
                 takeover: Some(1),
                 when_quiet: true,
+                split_id: "c3".to_string(),
             })
             .await
             .expect("the handler seam is open");
@@ -1965,8 +2039,10 @@ mod tests {
                 speak_id,
                 takeover,
                 when_quiet,
+                split_id,
             } => {
                 assert!(when_quiet, "the flag travels");
+                assert_eq!(split_id, "c3", "and the cut the append is a part of");
                 assert_eq!(kind, AppendKind::Commentary);
                 assert_eq!(event_id, "e1");
                 assert_eq!(

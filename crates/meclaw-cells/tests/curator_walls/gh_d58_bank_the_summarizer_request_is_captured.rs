@@ -42,6 +42,15 @@
 //! The forms and the roles are parameters of the runs (`FORMS`,
 //! `TALK_RUNS`, `TASK_RUNS`); a role the policy does not know is said, never
 //! replaced by another.
+//! STATE AND A CLOSED POINT (GH #1517, d58rest, OR-54g-45): every wall of
+//! talk sows a state of the round (`over_aim::sow_settled`, the variant of
+//! state its facts beside) and runs every role with a cap of state lines, so
+//! the form `brief_state_cond` hands every role a state condition of its own
+//! -- before, one wall of three sowed state and the second role has a cap of
+//! 0 by preset, its request was the brief's byte for byte and the summary
+//! bank could not measure it. The state settles one matter the transcript
+//! holds open; its `open` points are printed `closed`, and every wall and
+//! role holds at least one of them in its request.
 //!
 //! Runs the shipped curator hive over the bank (`support/curator_bank.rs`).
 
@@ -83,15 +92,26 @@ type RoleRun = (&'static str, &'static [(&'static str, i64)]);
 /// The roles the walls of talk are captured with. The second presets no
 /// `window_target`; it is set by knob to the target the first presets, so
 /// both rebuild the same wall at the same size.
-const TALK_RUNS: [RoleRun; 2] = [("talky", &[]), ("consult", &[("window_target", 100_000)])];
+/// Both carry state lines: the first presets them, the second gets the same
+/// cap by knob (its preset is 0), so the state condition has lines to hold
+/// in either (GH #1517, OR-54g-45).
+const TALK_RUNS: [RoleRun; 2] = [
+    ("talky", &[]),
+    ("consult", &[("window_target", 100_000), ("state_lines", 8)]),
+];
+
+/// The head of the state condition in a request (`STATE_COND_HEAD` of the
+/// policy).
+const STATE_COND_HEAD: &str = "Still true as of now -- keep it:";
 
 /// The roles the wall of a task is captured with.
 const TASK_RUNS: [RoleRun; 1] = [("coding", &[])];
 
 /// What the stub answers a request for a brief with: one line of a brief,
 /// dated with a day its transcript shows (`{day}`, filled in by `condense`,
-/// GH #1496).
-const BRIEF_STUB: &str = "- topic ({day}): what came before, condensed by the stub of the bank";
+/// GH #1496), naming the row of that day (`{id}`, GH #1517).
+const BRIEF_STUB: &str =
+    "- topic ({day}): what came before, condensed by the stub of the bank [#{id}]";
 
 /// One planted point of a wall: a row known by its keyword.
 #[derive(Clone)]
@@ -110,6 +130,9 @@ struct Point {
     subject: Option<String>,
     /// `superseded`: the row of the value the point replaces.
     old: Option<Box<Point>>,
+    /// The state of the round closes the point (`over_aim::closed_by_state`):
+    /// a summary that shows it open shows a closed point open.
+    closed: bool,
 }
 
 /// What a run tells of the rows of its planted points.
@@ -187,6 +210,9 @@ impl Judge<'_> {
             rec["new_key"] = json!(p.key);
             rec["old"] = self.row(old);
         }
+        if p.closed {
+            rec["closed"] = json!(true);
+        }
         rec
     }
 }
@@ -238,6 +264,8 @@ struct Job {
     role_knobs: &'static [(&'static str, i64)],
     form: &'static str,
     knobs: &'static [(&'static str, &'static str)],
+    /// The wall sows the state of the round with the settled matter.
+    state: bool,
 }
 
 /// Every string a value holds, one per line.
@@ -321,6 +349,27 @@ fn capture(job: &Job) -> (String, Value, Vec<String>) {
             "{who}: no planted point left the raw part, the request shows none"
         ));
     }
+    // GH #1517 (OR-54g-45): a wall with state hands every role a state
+    // condition that names the settled matter, and its request holds a
+    // closed point.
+    if job.state {
+        if job.form == "brief_state_cond"
+            && !(said.contains(STATE_COND_HEAD) && said.contains(&over_aim::settled_claim()))
+        {
+            lines.push(format!(
+                "{who}: the request carries no state condition with the settled matter"
+            ));
+        }
+        let closed_in = planted
+            .iter()
+            .filter(|r| r["closed"] == json!(true) && r["expected_in_request"] == json!(true))
+            .count();
+        if closed_in == 0 {
+            lines.push(format!(
+                "{who}: no closed point left the raw part into the tier summary"
+            ));
+        }
+    }
     let record = json!({
         "wall": wall.name, "role": job.role, "form": job.form,
         "knobs": job.role_knobs.iter().map(|(k, v)| (k.to_string(), json!(v)))
@@ -360,7 +409,8 @@ fn the_summarizer_request_is_captured() {
     let bank = bank();
     let talk_points: Vec<Point> = over_aim::planted()
         .into_iter()
-        .map(|p| Point {
+        .map(|p| (over_aim::closed_by_state(&p), p))
+        .map(|(closed, p)| Point {
             kind: p.kind.to_string(),
             key: p.key,
             text: p.text,
@@ -377,8 +427,10 @@ fn the_summarizer_request_is_captured() {
                     age: Some(-r.day),
                     subject: None,
                     old: None,
+                    closed: false,
                 })
             }),
+            closed,
         })
         .collect();
     // D58 plant: the capture carries both new kinds, each with its own
@@ -426,18 +478,28 @@ fn the_summarizer_request_is_captured() {
                 age: None,
                 subject: None,
                 old: None,
+                closed: false,
             })
         })
         .collect();
-    let mut walls: Vec<(Wall, &Vec<Point>, &[RoleRun])> =
-        vec![(bank.named("over_aim").clone(), &talk_points, &TALK_RUNS)];
+    // Every wall of talk sows the state with the settled matter: the wall of
+    // the bank here (it sows nothing of its own), its variants by
+    // themselves (GH #1517, OR-54g-45).
+    let mut walls: Vec<(Wall, &Vec<Point>, &[RoleRun], bool)> = vec![(
+        bank.named("over_aim")
+            .clone()
+            .prepare(over_aim::sow_settled),
+        &talk_points,
+        &TALK_RUNS,
+        true,
+    )];
     for v in over_aim::variants() {
-        walls.push((v, &talk_points, &TALK_RUNS));
+        walls.push((v, &talk_points, &TALK_RUNS, true));
     }
-    walls.push((task, &task_points, &TASK_RUNS));
+    walls.push((task, &task_points, &TASK_RUNS, false));
 
     let mut jobs = Vec::new();
-    for (wall, points, roles) in &walls {
+    for (wall, points, roles, state) in &walls {
         for (role, role_knobs) in roles.iter() {
             if !known.iter().any(|k| k.as_str() == *role) {
                 found.note(format!(
@@ -455,6 +517,7 @@ fn the_summarizer_request_is_captured() {
                     role_knobs,
                     form,
                     knobs,
+                    state: *state,
                 });
             }
         }

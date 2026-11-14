@@ -638,8 +638,17 @@ impl LongRunningCell for ProxyCell {
                     .await;
                 return;
             }
+            // GH #1505 (d54g, finding 16): an answer marked `repeat` carries a
+            // text this turn already sent -- the model wrote its sentence beside
+            // a call and wrote it again in the next round, and the person read
+            // the same answer twice in the channel. The mark is set upstream;
+            // here the answer is only not sent. Everything around the send stays
+            // the path of a sent answer, so the turn ends: the early message was
+            // cut above (the open turn is closed, no rest follows), the id is
+            // booked and settled (a replay stays silent) and the status stops.
+            let repeat = hop_str("repeat") == Some("1");
             // GH #1411: the rest is empty -- the early message said it all.
-            let sent = if first_sentence && text.is_empty() {
+            let sent = if repeat || (first_sentence && text.is_empty()) {
                 Ok(())
             } else {
                 self.client.send_message(chat_id, &text, timeout).await
@@ -648,7 +657,20 @@ impl LongRunningCell for ProxyCell {
             // the keeper for this chat has nothing left to say. Stopping AFTER
             // the call, not before, is deliberate: the status should stand for
             // the whole time the send itself takes.
-            self.typing.stop(chat_id);
+            // GH #1504 (d54g finding 10, plan part core-ack point 2): an
+            // interim is not the answer. The keeper used to end after EVERY
+            // sent message, so behind a bridge message the chat showed
+            // nothing until the answer came -- the gap the member reads as
+            // "it stopped working". Now only a message without `hop.interim`
+            // ends it; behind an interim the keeper stays and shows the
+            // status again at once, because the client dropped it when the
+            // message arrived. The ceiling (`typing_max_ms`) still ends a
+            // keeper whose answer never comes.
+            if hop_str("interim") == Some("1") {
+                self.typing.show_again(chat_id);
+            } else {
+                self.typing.stop(chat_id);
+            }
             let failure = sent.err().map(|e| format!("{e:?}"));
             // GH #1043 review: book the answer, so a replay answers like this.
             // A booking that fails leaves the row unconfirmed, and its replay

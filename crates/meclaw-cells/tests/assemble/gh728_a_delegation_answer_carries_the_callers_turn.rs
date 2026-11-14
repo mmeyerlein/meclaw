@@ -39,7 +39,7 @@ fn round_key(doc: serde_json::Value) -> String {
 fn the_label_comes_off_the_hop() {
     let key = round_key(delegation(Some("s1#3"), None));
     assert!(key.starts_with("s1#3~"), "{key}");
-    let out = assemble(&[], answer_in(&key, "Thursday."));
+    let out = through_store(answer_in(&key, "Thursday."));
     let ans = on_route(&out, "answer");
     assert_eq!(hop_str(ans, "turn_id"), "s1#3");
     assert_eq!(hop_str(ans, "round_id"), key);
@@ -50,7 +50,7 @@ fn the_label_comes_off_the_hop() {
 fn a_context_id_alone_is_no_label() {
     let key = round_key(delegation(None, Some("s1#3")));
     assert!(!key.contains("s1#3"), "the context is not the hop: {key}");
-    let out = assemble(&[], answer_in(&key, "Thursday."));
+    let out = through_store(answer_in(&key, "Thursday."));
     let ans = on_route(&out, "answer");
     assert_eq!(
         hop_str(ans, "turn_id"),

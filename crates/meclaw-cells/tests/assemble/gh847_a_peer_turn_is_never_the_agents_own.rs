@@ -665,13 +665,15 @@ fn a_peer_session_past_an_aged_close_keeps_its_legend() {
 
     // The round answers and its rows are dropped -- every join lies before it.
     let cut = assemble(&knob(), answer_in(TURN, "see you"));
-    let tables: Vec<Value> = calls_of(in_phase(&cut, "round-drop"))
+    // GH #1505: the drop rides in the answer's gate, behind the read of the
+    // turn's `said` rows and the answer's own row -- both in `round`.
+    let tables: Vec<Value> = calls_of(in_phase(&cut, "answer-gate"))
         .into_iter()
         .map(|(_, a)| a["table"].clone())
         .collect();
     assert_eq!(
         tables,
-        ["turns", "round"],
+        ["round", "round", "turns", "round"],
         "the window falls, the legend and the session row do not: {cut:?}"
     );
 

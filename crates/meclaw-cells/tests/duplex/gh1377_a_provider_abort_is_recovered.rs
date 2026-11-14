@@ -461,3 +461,84 @@ async fn a_hang_up_with_an_attempt_left_is_no_abort() {
     assert_eq!(seed_reasons(&seen), Vec::<String>::new(), "{seen:?}");
     assert_eq!(live.starts.load(Ordering::SeqCst), 1, "no second session");
 }
+
+/// The next append any session was told, and which session it reached.
+async fn next_append(live: &mut Live) -> (usize, Option<String>, String) {
+    loop {
+        let (at, control) =
+            tokio::time::timeout(duplex_cell::marker(), live.tagged_controls.recv())
+                .await
+                .expect("HANG: no append reached a session")
+                .expect("the fake is running");
+        if let DuplexControl::Append {
+            delegation_id,
+            content,
+            ..
+        } = control
+        {
+            return (at, delegation_id, content);
+        }
+    }
+}
+
+/// POC gpt-live-1 round 3 (A79, A84): a recovery is a replacement session.
+/// An answer to a delegation the DEAD session opened is routed to the new
+/// one without its handle -- the provider refuses an id it never issued --
+/// while a delegation the recovered session opened keeps its handle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_answer_for_the_dead_sessions_delegation_reaches_the_recovery_without_its_handle() {
+    let mut live = boot_recovering(params(), 1, 0, SEED_WAIT_MS).await;
+    let (_client, _hello) = live.connect("session=rec-d&mode=auto").await;
+    let first = live.session().await;
+    first
+        .say(DuplexEvent::DelegationCreated {
+            delegation_id: "dlg-old".to_string(),
+            offset_ms: 100,
+        })
+        .await;
+    let delegation = live.emission("delegation").await;
+    assert_eq!(
+        header(&delegation, "delegation_id"),
+        Some(&json!("dlg-old"))
+    );
+
+    provider_ends(first, "content", 3.0).await;
+    let ask = live.emission("seed_ask").await;
+    assert_eq!(header(&ask, "reason"), Some(&json!("recover")), "{ask}");
+    let second = live.session().await;
+    live.send(seed_msg("rec-d", 1, "what was said")).await;
+    assert_eq!(next_seed(&mut live).await, 2);
+    let _renewed = live.emission("renewed").await;
+
+    live.send(duplex_cell::advise_msg(
+        "rec-d",
+        "fact",
+        "It is sunny.",
+        Some("dlg-old"),
+    ))
+    .await;
+    assert_eq!(
+        next_append(&mut live).await,
+        (2, None, "It is sunny.".to_string()),
+        "the old handle is gone with its session; the answer is a plain fact"
+    );
+
+    second
+        .say(DuplexEvent::DelegationCreated {
+            delegation_id: "dlg-new".to_string(),
+            offset_ms: 50,
+        })
+        .await;
+    let _ = live.emission("delegation").await;
+    live.send(duplex_cell::advise_msg(
+        "rec-d",
+        "fact",
+        "It is raining.",
+        Some("dlg-new"),
+    ))
+    .await;
+    assert_eq!(
+        next_append(&mut live).await,
+        (2, Some("dlg-new".to_string()), "It is raining.".to_string())
+    );
+}

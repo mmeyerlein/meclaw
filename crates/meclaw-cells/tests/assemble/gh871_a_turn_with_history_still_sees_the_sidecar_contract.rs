@@ -51,7 +51,7 @@
 #[allow(unused_imports)]
 use crate::assemble_cell; // harness_fold: mod assemble_cell;
 
-use assemble_cell::{ASSEMBLE, DISPATCHER, calls_of, lane, run_cell};
+use assemble_cell::{ASSEMBLE, DISPATCHER, calls_of, drive_with, lane, open_round_of, run_cell};
 use serde_json::{Value, json};
 
 const SPLITTER: &str = "templates/talky/splitter/config.json";
@@ -108,7 +108,11 @@ fn collect_answer(ans: &Value, over: &[(&str, Value)]) -> Vec<Value> {
     if let Some(raw) = ans.get("sidecar_raw") {
         doc["sidecar_raw"] = raw.clone();
     }
-    run_cell(ASSEMBLE, over, doc).0
+    // GH #1505: the answer leaves through its gate. What the arrival sends to
+    // the store comes first, then what leaves on the store's reply.
+    let mut out = run_cell(ASSEMBLE, over, doc.clone()).0;
+    out.extend(drive_with(over, &mut open_round_of("t1"), doc));
+    out
 }
 
 /// GH #889: the collector files no answer -- the curator keeps what the model

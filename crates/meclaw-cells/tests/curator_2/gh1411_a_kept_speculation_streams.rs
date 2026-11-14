@@ -534,7 +534,15 @@ fn gh1411_the_spec_partial_reaches_only_the_rim() {
 /// edge changes at once, measured on the union, old (moveout)
 /// `96409ad0235c1cc92a4aa81e5b46986cac38f398903258fe21e6b2c861974284`, old (Bundle B)
 /// `21bdc2f1efeece5fc97d5afd4bbd134d2232cb03f2acd80cc1bae696fe07bac6`.
-const TALKY_EDGES_SHA256: &str = "8055d12c8e5285ed69d9df50941fe1a08d12668a18938be38401ee95feef685e";
+/// Re-blessed for D54g stamp (GH #1506, contract points 2 to 4): the second judge
+/// `./second_judge` with its model door, its refusal exit and its answer, the asks
+/// and answers of `./route` for its view, the notice `./route -> ./collector` on
+/// `in_route` with `wait_from` (`set_hop`), the edge `./decide -> ./route` that
+/// hands `route_state` on (`set_hop.state`, `delete_context`), and the keys
+/// `route_first` and `route_second_at` every exit drops (`delete_context`) -- a
+/// wanted edge change, measured on the strand's tree (9fdd650fd3), old
+/// `8055d12c8e5285ed69d9df50941fe1a08d12668a18938be38401ee95feef685e`.
+const TALKY_EDGES_SHA256: &str = "2ff44d3594f089e28059a49dcedda02f56ed5cdeafacbfee3c403d8f8bd31c55";
 /// `quick_spec/config.json` without the partial declarations and without its
 /// prose (`description`), before A1.
 const QUICK_SPEC_SHA256: &str = "6fb4049742f2723fd8d8b1185fe3280c1ecd1b286c0bee20264201b661567494";
@@ -591,7 +599,12 @@ const QUICK_SPEC_SHA256: &str = "6fb4049742f2723fd8d8b1185fe3280c1ecd1b286c0bee2
 /// `bad_arguments`, and `note_receipt` names the running session by its handle
 /// `live` instead of the call -- wanted contract text, no edge moved, old
 /// `e37dba7e0e9eaf11087f9f469a9313a8551d4f4425035880272ae123b92cce83`.
-const CURATOR_SHA256: &str = "f28ba076b187976cf76a49727c30a54e47add7969442f29293178d8247fcc32f";
+/// Re-blessed for GH #1507 (the hive's own feed by its target's profile): the
+/// emit `live_feed` says the three ways a target names in `limits.profile`
+/// (`feed_own` `renew`, `context`, `none`) instead of the one way built
+/// before -- wanted contract text, no edge moved, old
+/// `f28ba076b187976cf76a49727c30a54e47add7969442f29293178d8247fcc32f`.
+const CURATOR_SHA256: &str = "6f5537fe7ee014b4351531773449eb3e695af7b48d07f1ccf18a401208ec8466";
 
 fn sorted(v: &Value) -> Value {
     match v {
@@ -697,7 +710,47 @@ fn gh1411_speculation_off_moves_no_byte() {
             dropped += before - keys.len();
         }
     }
-    assert_eq!(dropped, 39, "the exit edges that drop the refusal");
+    // D54g stamp (GH #1506, OR-54g-36 (a) 2): the second judge's model exit
+    // `./second_judge -> .` (refusal) drops the refusal like every other exit --
+    // the one edge more, the count of talky's edges alone.
+    assert_eq!(dropped, 40, "the exit edges that drop the refusal");
+    // d54g callseam (GH #1509, review I-1 of bundle 2): the call end hands the
+    // keeper the live handle as it hands the curator, so the keeper records
+    // the end and refuses the session's late turns; that one key is the
+    // keeper's second safeguard, not this pin's.
+    let mut handed = 0;
+    for e in old.iter_mut() {
+        let call_end_to_keeper =
+            e["to"] == "./session-keeper" && cond(e).contains("hop.route == 'in_call_end'");
+        if !call_end_to_keeper {
+            continue;
+        }
+        let Some(modifier) = e.get_mut("modifier").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let Some(ctx) = modifier
+            .get_mut("set_context")
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        if ctx.remove("live")
+            == Some(json!(
+                "has(hop.engine) && hop.engine == 'duplex' && has(hop.call_id) ? hop.call_id : ''"
+            ))
+        {
+            handed += 1;
+            if ctx.is_empty() {
+                modifier.remove("set_context");
+            }
+        }
+        if modifier.is_empty()
+            && let Some(edge) = e.as_object_mut()
+        {
+            edge.remove("modifier");
+        }
+    }
+    assert_eq!(handed, 1, "the call end hands the keeper its live handle");
     assert_eq!(
         digest(&Value::Array(old)),
         TALKY_EDGES_SHA256,

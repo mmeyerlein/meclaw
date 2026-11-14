@@ -20,10 +20,17 @@
 //! that sees both ends of a turn — `handle_event` (the update arrived) starts a
 //! keeper, `handle` (the assistant turn came back on the inbound edge) stops it.
 //! The I/O sub-task sees only the poll and could not stop anything.
+//!
+//! GH #1504: "the answer" is the first message of the turn WITHOUT
+//! `hop.interim`. An interim is sent while the turn goes on, so it leaves the
+//! keeper standing; and because Telegram clients drop the status when a
+//! message of the bot arrives, the keeper is asked to show it again at once
+//! ([`TypingKeepers::show_again`]) instead of at its next regular tick.
 
 use crate::proxy::telegram::TelegramClient;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -85,6 +92,14 @@ impl Default for TypingCadence {
     }
 }
 
+/// One chat's keeper: its task, and the lane that asks it for a tick now.
+struct Keeper {
+    task: JoinHandle<()>,
+    /// GH #1504: capacity 1 -- one pending request is all a keeper can use,
+    /// a second one before its next tick says nothing new.
+    again: mpsc::Sender<()>,
+}
+
 /// The live keepers, one per chat at most.
 ///
 /// Keyed by `chat_id`, so a second incoming turn in the same chat REPLACES its
@@ -94,7 +109,7 @@ impl Default for TypingCadence {
 /// pruned on each start. `Drop` aborts what is left — a dropped cell must not
 /// leave detached tasks calling the Bot API.
 pub struct TypingKeepers {
-    live: HashMap<i64, JoinHandle<()>>,
+    live: HashMap<i64, Keeper>,
     cadence: TypingCadence,
 }
 
@@ -144,7 +159,8 @@ impl TypingKeepers {
         self.prune();
         let cadence = self.cadence;
         let client = client.clone();
-        let handle = tokio::spawn(async move {
+        let (again, mut asked_again) = mpsc::channel::<()>(1);
+        let task = tokio::spawn(async move {
             let started = Instant::now();
             let mut ticks: u32 = 0;
             loop {
@@ -192,11 +208,34 @@ impl TypingKeepers {
                     );
                     return;
                 }
-                tokio::time::sleep(cadence.interval).await;
+                // GH #1504: the next tick is due after one interval, or at
+                // once when the cell asks for it (`show_again`). Either way
+                // the ceiling check above ran first, so a request never
+                // carries the keeper past `max_total`. A closed lane (`None`)
+                // only disables its branch; the interval still runs.
+                tokio::select! {
+                    () = tokio::time::sleep(cadence.interval) => {}
+                    Some(()) = asked_again.recv() => {}
+                }
             }
         });
-        if let Some(previous) = self.live.insert(chat_id, handle) {
-            previous.abort();
+        if let Some(previous) = self.live.insert(chat_id, Keeper { task, again }) {
+            previous.task.abort();
+        }
+    }
+
+    /// GH #1504: asks the keeper of `chat_id` to show the status again now
+    /// rather than at its next regular tick.
+    ///
+    /// Called from `handle` after an interim message went out: the turn is
+    /// still running, but the client dropped "typing…" the moment the message
+    /// arrived, and the regular tick may be a whole interval away. Without a
+    /// standing keeper (none started, or it ran out its ceiling) this does
+    /// nothing -- the ceiling stays the ceiling. Never waits: the request is
+    /// handed over or, with one already pending, dropped.
+    pub fn show_again(&self, chat_id: i64) {
+        if let Some(keeper) = self.live.get(&chat_id) {
+            let _ = keeper.again.try_send(());
         }
     }
 
@@ -206,8 +245,8 @@ impl TypingKeepers {
     /// completed — after, not before: the status should stand until the answer
     /// is actually on the wire.
     pub fn stop(&mut self, chat_id: i64) {
-        if let Some(handle) = self.live.remove(&chat_id) {
-            handle.abort();
+        if let Some(keeper) = self.live.remove(&chat_id) {
+            keeper.task.abort();
         }
         self.prune();
     }
@@ -216,14 +255,14 @@ impl TypingKeepers {
     /// map at the size of the chats with a turn in flight rather than at the
     /// size of every chat the connector has ever seen.
     fn prune(&mut self) {
-        self.live.retain(|_, h| !h.is_finished());
+        self.live.retain(|_, k| !k.task.is_finished());
     }
 }
 
 impl Drop for TypingKeepers {
     fn drop(&mut self) {
-        for (_, handle) in self.live.drain() {
-            handle.abort();
+        for (_, keeper) in self.live.drain() {
+            keeper.task.abort();
         }
     }
 }

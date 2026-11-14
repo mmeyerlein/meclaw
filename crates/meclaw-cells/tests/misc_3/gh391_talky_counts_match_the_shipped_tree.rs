@@ -291,6 +291,12 @@ fn word(n: usize) -> &'static str {
         // hundred and forty-two, seventy-two of round, the boundary unchanged.
         (72, "seventy-two"),
         (142, "one hundred and forty-two"),
+        // D54g (GH #1506): the second judge of the route stamp -- its
+        // `view_ask`, its view home, the call and the verdict, the model door,
+        // the exit of a refused subscriber and the hold to the collector --
+        // one hundred and forty-nine, seventy-seven of round, the boundary
+        // seventy-two (thirty-one doors, forty-one leaving).
+        (149, "one hundred and forty-nine"),
     ]
     .into_iter()
     .collect();

@@ -1206,6 +1206,14 @@ fn summary_day(h: &Hive) -> Option<String> {
         .and_then(|m| m["text"].as_str().and_then(transcript_day_of))
 }
 
+/// GH #1517: the id of the row `summary_day` dates, of the open request.
+fn summary_id(h: &Hive) -> Option<String> {
+    h.summ
+        .front()
+        .and_then(|r| r.messages().last().cloned())
+        .and_then(|m| m["text"].as_str().and_then(transcript_id_of))
+}
+
 /// Every request of the summarizer a rebuild left open, answered by the stub
 /// of the wall: on the way of the summarizer, and -- a run that has its own
 /// model condense (`summarizer_self`) asks as a model call instead (D58
@@ -1215,13 +1223,21 @@ fn condense(h: &mut Hive, wall: &Wall) -> Vec<Msg> {
     let mut requests = Vec::new();
     // GH #1496: a stub brief names its day as `{day}` and is dated with a day
     // its transcript shows -- the policy drops a line dated with another.
-    let dated = |summary: &str, transcript: Option<String>| match transcript {
-        Some(day) if summary.contains("{day}") => summary.replace("{day}", &day),
-        _ => summary.to_string(),
+    // GH #1517: and its row as `{id}`, a row of its transcript -- the policy
+    // drops a line that names none.
+    let dated = |summary: &str, day: Option<String>, id: Option<String>| {
+        let mut s = summary.to_string();
+        if let Some(day) = day {
+            s = s.replace("{day}", &day);
+        }
+        if let Some(id) = id {
+            s = s.replace("{id}", &id);
+        }
+        s
     };
     while !h.summ.is_empty() {
-        let day = summary_day(h);
-        requests.push(h.answer(&dated(&wall.summary, day), "stop"));
+        let (day, id) = (summary_day(h), summary_id(h));
+        requests.push(h.answer(&dated(&wall.summary, day, id), "stop"));
     }
     let own: Vec<Msg> = h
         .routed("model_call")
@@ -1229,17 +1245,20 @@ fn condense(h: &mut Hive, wall: &Wall) -> Vec<Msg> {
         .filter(|m| m.hop.get("summarize") == Some(&json!("1")))
         .collect();
     for call in own {
+        let text = call
+            .messages()
+            .last()
+            .and_then(|m| m["text"].as_str())
+            .unwrap_or("")
+            .to_string();
         h.lane(
             "in_summary_self",
             json!({}),
             json!({"finish_reason": "stop", "model": "role-model", "summarize": "1",
                    "summary_call": call.hop.get("summary_call").cloned().unwrap_or_default(),
                    "summary_token": call.hop.get("summary_token").cloned().unwrap_or_default()}),
-            json!({"messages": [said(&dated(&wall.summary, call
-                .messages()
-                .last()
-                .and_then(|m| m["text"].as_str())
-                .and_then(transcript_day_of)))]}),
+            json!({"messages": [said(&dated(&wall.summary, transcript_day_of(&text),
+                                            transcript_id_of(&text)))]}),
         );
         requests.push(call);
     }

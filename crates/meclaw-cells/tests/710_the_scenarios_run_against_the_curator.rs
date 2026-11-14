@@ -305,6 +305,15 @@ scenarios! {
     scenario_s_094 => "S-094",
     scenario_s_095 => "S-095",
     scenario_s_096 => "S-096",
+    scenario_s_097 => "S-097",
+    scenario_s_098 => "S-098",
+    scenario_s_099 => "S-099",
+    scenario_s_100 => "S-100",
+    scenario_s_101 => "S-101",
+    scenario_s_102 => "S-102",
+    scenario_s_103 => "S-103",
+    scenario_s_104 => "S-104",
+    scenario_s_105 => "S-105",
 }
 
 /// The drift lock of the split (GH #1046): the tests above are the scenarios of the

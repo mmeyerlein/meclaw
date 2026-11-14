@@ -401,8 +401,16 @@ const CALL_END: &str = "has(hop.route) && hop.route == 'in_call_end'";
 /// edge changes at once, measured on the union, old (moveout)
 /// `b4a02126cced7b5373533568859ef20cd20c6eb3521213fa04ab97fb273855ea`, old (Bundle B)
 /// `7e33b6dbc3a1cd197316df9b016c69080477f7f11d2439b4e0ffd972d27b92fb`.
+/// Re-blessed for D54g stamp (GH #1506, contract points 2 to 4): the second judge
+/// `./second_judge` with its model door, its refusal exit and its answer, the asks
+/// and answers of `./route` for its view, the notice `./route -> ./collector` on
+/// `in_route` with `wait_from` (`set_hop`), the edge `./decide -> ./route` that
+/// hands `route_state` on (`set_hop.state`, `delete_context`), and the keys
+/// `route_first` and `route_second_at` every exit drops (`delete_context`) -- a
+/// wanted edge change, measured on the strand's tree (9fdd650fd3), old
+/// `e997157d9589c7fc5a0ae5a1f1c2a1f3dbcf08c79c15a5f405ff48e900457fd4`.
 const EDGES_6_13_1_SHA256: &str =
-    "e997157d9589c7fc5a0ae5a1f1c2a1f3dbcf08c79c15a5f405ff48e900457fd4";
+    "192ac63655b39559c7a2b62c3521341de5ea9cf2147c1b835c9c244a84789891";
 
 /// The guard #1398 adds to the brain's model door and to `./curator -> ./quick`.
 const DOOR_GUARD: &str =
@@ -567,7 +575,10 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
             dropped += before - keys.len();
         }
     }
-    assert_eq!(dropped, 35, "the exit edges that drop the refusal");
+    // D54g stamp (GH #1506, OR-54g-36 (a) 2): the second judge's model exit
+    // `./second_judge -> .` (refusal) drops the refusal like every other exit --
+    // the one edge more, the count of talky's edges alone.
+    assert_eq!(dropped, 36, "the exit edges that drop the refusal");
     let mut guarded = 0;
     for e in old.iter_mut() {
         let c = e["condition"].as_str().unwrap_or_default().to_string();

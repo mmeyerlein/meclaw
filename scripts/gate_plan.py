@@ -829,6 +829,9 @@ BROWSER_LOCKS = frozenset({
     "crates/meclaw-cells/tests/gh1003_the_shell_marks_orientation_browser.rs",
     # GH #1028: a new window that ranks first moves none of the others in the DOM.
     "crates/meclaw-cells/tests/gh1028_a_new_window_keeps_the_others_in_place_browser.rs",
+    # d54g weblive (OR-54g-21 j): the display page behind a live model -- the early
+    # `ready`, the model's audio played, the mark following its spoken section.
+    "crates/meclaw-cells/tests/gh_d54g_weblive_browser.rs",
 })
 
 # The engine the drivers run on: the one npm dependency of the tree (Playwright)
@@ -867,8 +870,13 @@ ORIENTATION_LOCK = "binary(/gh1003_the_shell_marks_orientation/)"
 # engine -- one boot and one page each, so every mode that plans the station runs it.
 KEEP_LOCK = "binary(/gh1028_a_new_window_keeps_the_others_in_place/)"
 
+# The weblive lock (d54g weblive, OR-54g-21 j): one display colony with a duplex
+# `voice` cell behind the loopback, one page in Chromium, one take -- one boot and
+# one page, so every mode that plans the station runs it.
+WEBLIVE_LOCK = "binary(/gh_d54g_weblive_browser/)"
+
 # The ignored locks every mode that plans the station runs, in this order.
-IGNORED_LOCKS = (CSP_LOCK, MOTION_LOCK, SLOW3G_LOCK, ORIENTATION_LOCK, KEEP_LOCK)
+IGNORED_LOCKS = (CSP_LOCK, MOTION_LOCK, SLOW3G_LOCK, ORIENTATION_LOCK, KEEP_LOCK, WEBLIVE_LOCK)
 
 # The locks that measure a bound in wall time under a slowed CPU, and so run with
 # nothing beside them on the lane (GH #1191): gh1002 asserts 6 s to `phx-connected`
@@ -4683,8 +4691,12 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_release_matches_battery",
               # release-tempo rt4 (#1387): the release chain prepare/publish
               "scripts.tests.test_release_script",
+              # d54g roadmap (#1518): the release's line in the Shipped section of ROADMAP.md
+              "scripts.tests.test_release_roadmap",
               # d53-1 c2 (#1389): the candidate build on every lane
-              "scripts.tests.test_pipeline_candidate"])
+              "scripts.tests.test_pipeline_candidate",
+              # d54g gatepipe (#1521): whole lines on a non-blocking stdout, the short station scope
+              "scripts.tests.test_pipeline_gate_stdout"])
         scope = "unittest"
         if mode == "release":
             # V8 (#1405, D43 section 7 lever 1): relgate-0781 ran every module

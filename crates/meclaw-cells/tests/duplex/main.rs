@@ -19,6 +19,12 @@ pub mod gh979_an_app_cannot_set_the_speaker;
 pub mod gh979_no_speaker_without_proof;
 pub mod gh979_objects_owner_tools_on_a_real_turn;
 pub mod gh979_speaker_stamp_from_bound_channel;
+pub mod gh_d54g_callseam;
+pub mod gh_d54g_deleg_appends;
+pub mod gh_d54g_kprofil_seed;
+pub mod gh_d54g_prewarm_park;
+pub mod gh_d54g_weblive;
+pub mod gh_d54g_weblive_seams;
 pub mod gpt_live_seed_lanes;
 #[path = "../support/gh1276_runner_modes.rs"]
 pub mod runner_modes;

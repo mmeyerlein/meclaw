@@ -14,12 +14,28 @@
 //! The proof is a POSITIVE receipt: after a burst of pathological messages, a
 //! valid message still routes end-to-end to the live capture cell ⟺ the colony
 //! task never died.
+//!
+//! Test class: topology/interleaving (`docs/development-rules.md` § 11) — four
+//! workers, invariant and event assertions only, no time window. Until GH #1514
+//! the test synchronised by two 100 ms sleeps followed by a `try_recv` drain;
+//! under CI load the forwarder's echo had not reached the receiver within the
+//! window (`left: 0, right: 1`). Now every wait is an event:
+//! - the dead letters are drained after `ColonyHandle::quiesce()`, the barrier
+//!   that returns once no inbox, mailbox or output of the colony holds work, so
+//!   the `TtlExpired` letter of (1) is in the queue by construction;
+//! - the receipt is awaited with `recv()` under the hang mark
+//!   `meclaw_testing::deadline::HANG` (never a verdict on speed — it only names
+//!   a receipt that never came);
+//! - "exactly one receipt" is proven by quiescence: after `quiesce()` nothing is
+//!   left in flight that could still reach `/a/receiver`, so an empty
+//!   `try_recv` is the absence of a second receipt, not an elapsed window.
 
 use meclaw_colony::DeadLetterReason;
 use meclaw_core::{MessageBuilder, Path};
 use meclaw_testing::MessageBuilder as TestMessageBuilder;
+use meclaw_testing::deadline;
 use meclaw_testing::topologies::phase_3a::build_phase_3a_topology;
-use std::time::Duration;
+use tokio::sync::mpsc::error::TryRecvError;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn colony_survives_pathological_routing_input() {
@@ -50,7 +66,8 @@ async fn colony_survives_pathological_routing_input() {
         )
         .await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Event, not a window: the colony has routed all three and holds no work.
+    topo.colony.quiesce().await;
 
     // The pathological input was absorbed (handled into the DLQ / no-route), not
     // panicked through. TtlExpired must be present from (1).
@@ -71,19 +88,25 @@ async fn colony_survives_pathological_routing_input() {
             MessageBuilder::new(Path::new("/a/forwarder")).build(),
         )
         .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let first = deadline::hang(
+        "the valid message reaches /a/receiver after the pathological input — proof \
+         the hot path never panicked",
+        topo.receiver_rx.recv(),
+    )
+    .await
+    .expect("receiver channel closed: the colony task is gone");
+    assert_eq!(first.target.as_str(), "/a/receiver");
 
-    let mut received = Vec::new();
-    while let Ok(m) = topo.receiver_rx.try_recv() {
-        received.push(m);
+    // Exactly one receipt: once the colony is quiescent nothing can still reach
+    // the receiver, so the channel must be empty now (absence by quiescence).
+    topo.colony.quiesce().await;
+    match topo.receiver_rx.try_recv() {
+        Err(TryRecvError::Empty) => {}
+        other => panic!(
+            "exactly one message must reach /a/receiver (the forwarder's echo); \
+             after quiescence the receiver still had {other:?}"
+        ),
     }
-    assert_eq!(
-        received.len(),
-        1,
-        "colony must still route a valid message after pathological input — proof \
-         the hot path never panicked"
-    );
-    assert_eq!(received[0].target.as_str(), "/a/receiver");
 
     topo.colony.shutdown().await;
 }

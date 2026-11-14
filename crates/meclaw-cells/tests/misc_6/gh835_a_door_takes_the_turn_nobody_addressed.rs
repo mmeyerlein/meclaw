@@ -121,7 +121,7 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
 fn wish(scope: &str, name: &str, door: bool) -> Value {
     let mut params = json!({
         "scope": scope, "level": "assistant", "name": name,
-        "template": "assistant@4.0.1",
+        "template": "assistant@4.0.2",
         "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                 "model_surface": "${MODEL_SURFACE}"},
         "override_params": {"cogny/brain": {"temperature": 0.2}}

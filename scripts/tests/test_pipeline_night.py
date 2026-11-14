@@ -521,7 +521,7 @@ class ReportTest(unittest.TestCase):
                     mock.patch.dict(os.environ, {"MECLAW_PIPELINE_COVERAGE_DIR": str(maps)}):
                 path = night.report(db, now=NOW, out_root=tmp / "nacht", runner=fake, date=DAY)
             text = path.read_text()
-            self.assertIn("browser locks measured 6/7 -- not measured: %s (SKIP webkit is not"
+            self.assertIn("browser locks measured 7/8 -- not measured: %s (SKIP webkit is not"
                           " installed)" % lock.rsplit("/", 1)[1].removesuffix(".rs"), text)
 
     def test_night_report_dir_from_the_newest_workpackage_wave(self):

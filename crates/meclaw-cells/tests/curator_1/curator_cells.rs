@@ -939,7 +939,8 @@ fn curator_template_shape() {
         "candidates": ["source", "cand_id", "hash", "triggers", "until", "once", "used_at",
                        "last_seq", "priority", "audience_set", "at"],
         "notes": ["source", "note_id", "text", "scope", "until", "priority",
-                  "audience_set", "session_id", "at", "used_turn", "item", "receipt"],
+                  "audience_set", "session_id", "at", "used_turn", "item", "receipt",
+                  "not_session", "not_live"],
         "snapshots": ["seq", "call_id", "session_id", "turn_id", "body", "cut", "sent", "at",
                       "audience_set"],
     });
@@ -948,7 +949,9 @@ fn curator_template_shape() {
     // GH #1450 its column `cut` (the second half: the cut of the call),
     // GH #1462 its column `sent` (the window as sent, `snapshot_window`);
     // GH #1451 `notes.item`; GH #1477 `notes.receipt` (D58 note, a `once`
-    // note's sender value, written only when a note carries one).
+    // note's sender value, written only when a note carries one); GH #1436
+    // (GH #1517) `notes.not_session` and `notes.not_live` (a carried note: the
+    // session and the running session that never show it, `carry_notes`).
     assert_eq!(schema.as_object().unwrap().len(), 12, "twelve tables");
     // The llm cell stamps `cost` as a fraction; the store knows `int`, `text`
     // and `json`, and only `json` says what the column holds (review M4).

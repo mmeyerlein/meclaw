@@ -132,6 +132,7 @@ BROWSER_LOCK_IDS = sorted([
     "meclaw-cells::gh1002_slow_3g_connects_browser",
     "meclaw-cells::gh1003_the_shell_marks_orientation_browser",
     "meclaw-cells::gh1028_a_new_window_keeps_the_others_in_place_browser",
+    "meclaw-cells::gh_d54g_weblive_browser",
 ])
 
 class Classify(unittest.TestCase):
@@ -544,7 +545,7 @@ class Classify(unittest.TestCase):
               "run_display_scenarios.py", "--workers", "4"],
              ["python3", "scripts/display_sync.py", "--check-source"]])
         # The number stands in every GATE line and in every receipt.
-        self.assertEqual(st["scenarios:display"].scope, "116 scenarios")
+        self.assertEqual(st["scenarios:display"].scope, "125 scenarios")
 
         # A diff on the driver alone plans it as well.
         driver = "templates/display/compose/scenarios/run_display_scenarios.py"
@@ -2260,7 +2261,9 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_export_audit_scope",
             "scripts.tests.test_release_matches_battery",
             "scripts.tests.test_release_script",
-            "scripts.tests.test_pipeline_candidate"]])
+            "scripts.tests.test_release_roadmap",
+            "scripts.tests.test_pipeline_candidate",
+            "scripts.tests.test_pipeline_gate_stdout"]])
 
     def test_every_runner_test_module_is_in_gate_selftest(self):
         """GH #1162: the runner's own tests (`scripts/tests/test_pipeline_*.py`)
@@ -5201,15 +5204,15 @@ class Explain(unittest.TestCase):
         out = gp.to_json(["templates/display/x.json"], "integration", repo, explain=True)
         browser = {r["name"]: r for r in out["stations"]}["browser:display"]
         extra = browser["select"]["extra"]
-        # Z8 (W3 delta3 M1): ALL seven locks by name, not two of them
+        # Z8 (W3 delta3 M1): ALL eight locks by name, not two of them
         self.assertEqual(extra, BROWSER_LOCK_IDS)
         self.assertEqual(browser["select"]["binaries"], [])
 
-    def test_browser_select_without_the_colony_half_lists_six_locks(self):
+    def test_browser_select_without_the_colony_half_lists_seven_locks(self):
         st = types.SimpleNamespace(cmds=gp.browser_cmds(colony=False))
         extra = gp._browser_select(st)["extra"]
         self.assertEqual(extra, [i for i in BROWSER_LOCK_IDS if "710_the_colony_" not in i])
-        self.assertEqual(6, len(extra))
+        self.assertEqual(7, len(extra))
 
     def test_every_planned_station_has_a_reason(self):
         """The trigger table is honest: a station the resolver planned in

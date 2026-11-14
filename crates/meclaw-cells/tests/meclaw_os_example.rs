@@ -149,7 +149,11 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 5] = [
 /// forty-five. MEASURED (45 against 43 in the strand's gate). GH #1474 moves
 /// the two into a hive of their own beside the curator (`lead`, `state`):
 /// still forty-five.
-const CELLS_AFTER_GROW: usize = 45;
+/// D54g (GH #1506): talky's second judge (`second_judge`), the model that
+/// sharpens an unsure route stamp -- forty-six. COMPUTED in the strand from
+/// the shipped tree (one `llm` cell more under `templates/talky/`, one
+/// `talky` in this example: 45 + 1); no run there, the first run measures it.
+const CELLS_AFTER_GROW: usize = 46;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -191,7 +195,10 @@ const CELLS_AFTER_GROW: usize = 45;
 /// talky wires; cogny runs without one and loses its two (`lead`,
 /// `lead_state`) -- sixty-four. Measured in the strand's test run (65 with
 /// the probe, against 67).
-const CELLS_AFTER_COGNY: usize = 64;
+/// D54g (GH #1506): talky's second judge is in [`CELLS_AFTER_GROW`] and so in
+/// this total too; `cogny` grows none -- sixty-five. COMPUTED in the strand
+/// (64 + 1); no run there, the first run measures it.
+const CELLS_AFTER_COGNY: usize = 65;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));

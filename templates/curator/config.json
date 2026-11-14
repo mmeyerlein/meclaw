@@ -232,7 +232,7 @@
         },
         {
           "route": "live_feed",
-          "because": "GH #1279: with `./policy` `live_feed` on, after each closed turn of a running session (the handle `live` set) ONE section of the facts a seed of the session carries that moved since its last seed or feed (`seed_facts:<live>`) -- `hop.section` `renew` (the param `live_feed_section`, the one way built) with `hop.at_turn_end` \"1\", `hop.live` set into `context.live` on the way out; facts only, nothing when nothing moved. The composition draws it to the voice cell's `in_advise` and translates the handle back into the receiver's own key"
+          "because": "GH #1279, GH #1507: with `./policy` `live_feed` on, after each closed turn of a running session (the handle `live` set) at most ONE own feed, as the session's target named it in `limits.profile` (`feed_own`) on its start-window ask: `renew` (shipped, and for a target that names no limits) -- `hop.section` `renew` (the param `live_feed_section`) with `hop.at_turn_end` \"1\", no words, when the facts a seed of the session carries moved since its last seed or feed (`seed_facts:<live>`); `context` -- `hop.section` `context` with only what came from outside since then (new notes, inner turns of the kind `event`) as words under `payload`: whole units, each with its place, parted by an empty line, the newest first, up to `limits.feed_budget` tokens (one unit over the budget on its own goes alone), the rest waits for the next turn; `none` -- nothing. `hop.live` set into `context.live` on the way out; nothing when nothing moved. The composition draws it to the lane of the target that holds the session and translates the handle back into the receiver's own key"
         },
         {
           "route": "propose",

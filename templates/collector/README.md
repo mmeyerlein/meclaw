@@ -1,4 +1,4 @@
-# `collector@6.0.0`
+# `collector@6.1.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -81,14 +81,14 @@ message context.
 |---|---|---|
 | `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory; a turn without the person's words (empty `user`, an agent text) is held as a deferred `assistant` row and opens nothing (GH #1378) |
 | `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round. Since `collector@4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)) in two stages when it carries a `consult_id`: the advice row is parked and the `depart` row the consult left behind is looked up by that id, and the round opens under a key that carries the member turn which asked (see "A late answer never invents an identity") |
-| `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory |
+| `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory. **Since #1504 the whole body travels:** the last message with text is the task, as before, and every message in front of it (the conversation so far, when the sender carries it) leaves on each `curate` of the round as body `history` (`[{origin, type, text, turn_id?}]`, whole, in order, each entry in the `origin` it came in -- #1507: not only `user` and `assistant`) beside `messages`; nothing is cut here, and a delegation that carries its task alone has no `history`. |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `in_briefing` | the member's `affinity`, restamped by the member ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) | becomes the **brief leg** of this turn: affinity's answer to the `brief` this hive raised, parked as text -- its `system` is dropped at the lane. `hop.brief_outcome == 'error'` parks the leg EMPTY. Since `collector@4.3.0` |
-| `in_route` | a route cell of the composite ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)) | becomes the **route leg** of this turn while `route_wait_ms` is above 0: the path the route cell chose, the body slot `stamp` = `{turn_id, path, p, intent, needs, families, duration}` with `hop.turn_id` and `hop.path` beside it, plus `choices` and `turn_notes` from a route cell that asks a product's questions ([#1304](https://github.com/mmeyerlein/meclaw/issues/1304)). Ignored at `0`. See "Folded menu and route stamp" below. |
+| `in_route` | a route cell of the composite ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)) | becomes the **route leg** of this turn while `route_wait_ms` is above 0: the path the route cell chose, the body slot `stamp` = `{turn_id, path, p, intent, needs, families, duration}` with `hop.turn_id` and `hop.path` beside it, plus `choices` and `turn_notes` from a route cell that asks a product's questions ([#1304](https://github.com/mmeyerlein/meclaw/issues/1304)). A message without a stamp and with `hop.wait_ms` is a notice of the stamp's sender ([#1506](https://github.com/mmeyerlein/meclaw/issues/1506)): the stamp takes up to that many ms more, counted from `hop.wait_from` (the moment the sender began to wait, else the notice's arrival), and the turn is held for it until then. Ignored at `0`. See "Folded menu and route stamp" below. |
 | `in_depart` | the composite, when its curator hands a turn to the backend on `consult` ([#1247](https://github.com/mmeyerlein/meclaw/issues/1247)) | writes the `depart` row of that consult under its `consult_id` (hop, else context), keyed by the member's turn, deadline `late_after_ms` -- the row `in_calls` writes for a handed call, so the advisor's `in_advice` opens its round under the member's turn. No turn or no id: dropped with a warn line. |
 | `in_calls` | the tool dispatcher | the assistant `tool_call` turn of the round; `hop.async_calls` names the ids this fan-in must **not** wait for |
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
-| `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (through the splitter in talky and, since GH #892, in cogny) | lets the answer out and, since `collector@5.0.0` (GH #889), drops the rows of its round, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)); a curator's bridge (`context.curator_call` `<call>-bridge`) and an answer that may follow one (a stamped turn's answer from iteration 1 on or for `<call>-esc`) pass the store first, so a bridge is said at most once and never after its turn's answer, and a late one is dropped with a stderr line ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)). The round is open while its opening row `leg-window` is there. The sentence rides beside the store op (`hop.gate` → `context.col_gate`), so a refused op never swallows the answer: it leaves with `hop.store_error`/`hop.store_operation` and without `hop.degraded`, and a bridge the store could not check is not said |
+| `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (through the splitter in talky and, since GH #892, in cogny) | lets the answer out and, since `collector@5.0.0` (GH #889), drops the rows of its round, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)); every interim (`hop.interim`, a bridge) and every answer pass the store first: a bridge is said only while nothing went out in its turn and never after its turn's answer, a held or late one is dropped with a stderr line, and an answer whose text already went out leaves marked `hop.repeat` ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300), [#1505](https://github.com/mmeyerlein/meclaw/issues/1505), see "At most one bridge, exactly one answer"). The round is open while its opening row `leg-window` is there. The sentence rides beside the store op (`hop.gate` → `context.col_gate`), so a refused op never swallows the answer: it leaves with `hop.store_error`/`hop.store_operation` and without `hop.degraded`, and a bridge the store could not check is not said |
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
 | `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under -- and, since `4.1.0`, `sidecar[]` beside them, the sections that answerer wants in the block a `splitter` cuts out of the answer (GH #606). Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and both halves are re-derived as the union over every answerer's row (GH #529). See "The menu is asked for" and "One block, several offers" below |
 | `mutation_committed` | the level above, carrying the mutation door's receipt (GH #553) | the occasion to ask for the menu again. The hive's own door turns it into the internal `in_menu_tick`, which is why nothing outside ever names that lane. It replaced `./menu-clock`, a five-minute poll |
@@ -98,7 +98,7 @@ Exits leave **from the hive path** on `hop.route`:
 | route | to | notes |
 |---|---|---|
 | `curate` | the curator's `in_curate` lane | THE seam, since `collector@5.0.0` in place of `brain` (GH #889) and sent exactly when `brain` was: the running round uncut, every element rendered once, with every hop key `brain` carried. `system.consult.open` carries the correlation ids of the advice turns still in the window -- **always**, empty included (`collector@2.0.3`): the `llm` cell upserts `system.*` per slot path, so a path that is not sent is a path that is not touched, and a slot that is only ever set keeps naming a consultation that closed long ago. `system.memory` follows the same rule and, since `collector@2.1.0`, carries nothing but that rule: the bundle itself is no longer anywhere in that subtree (GH #278) -- it travels as the `memory_recall` tool result at the end of `messages[]`. What the collector still sends there on every turn is the revocation, unconditionally and no longer tied to `memory_form`: an empty `text` on the FIXED path `system.memory.recall`, which clears a bundle an older collector may have left standing and contributes nothing to the system prompt, plus the `"$replace": true` marker on the whole `system.memory` node (`collector@2.0.4`, GH #264), which is what lets it revoke the `json` form's keys -- named by the memory hive per bundle, and therefore nameable by no fixed path. **Consequence for an `llm` cell with a `system_writable` allowlist, unchanged by the move**: the allowlist must carry `memory` as a prefix -- the replace ROOT is checked too, and `memory.recall` alone does not suffice. Since `collector@4.4.0` it carries the session's tool scope as the body key `tool_scope` (absent without one) and `hop.scope_changed`, and writes two more slots on every assembly, empty included: `system.roster` (the legend of a peer or group channel) and `system.instructions.peer` (see "The channel's tool scope" and "The other side's words"). **An `llm` cell with a `system_writable` allowlist must carry `roster` from `4.4.0` on**, beside `instructions`, `consult` and `memory`: the gate refuses the WHOLE update when one slot is outside the list, so a brain whose list lacks it refuses every turn. |
-| `answer` | the reply sink | the brain's final turn -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no"). Since `collector@4.2.1` every answer also carries `hop.round_id` (the key of the round it left) and `hop.late`; an answer of an advice or delegation round carries the member's turn as `hop.turn_id`. Since `collector@4.4.0` every answer carries `hop.finish_reason` and `hop.truncated` too (see "An answer says how it ended"). An answer marked `hop.silent` (GH #1305, the dispatcher's silence to an inner turn) ends its round all the same (`drop_round`) and says nothing: `"1"` leaves ONE empty `answer` with `hop.silent` `"1"` for the composite's receipt lane, `"0"` leaves no answer at all |
+| `answer` | the reply sink | the brain's final turn -- **or** a turn that reached `max_iter`, marked `hop.round_capped=1` **and**, since `collector@3.5.0`, `hop.partial=1`, whose last turn is a named PARTIAL ANSWER rather than the raw end of the tool round (see "A capped round is a partial answer") -- **or**, since `collector@2.1.1`, a turn that could not be assembled because the store refused, marked `hop.degraded=1` with `hop.store_error` and `hop.store_operation` beside it (see "When the store says no"). Since `collector@4.2.1` every answer also carries `hop.round_id` (the key of the round it left) and `hop.late`; an answer of an advice or delegation round carries the member's turn as `hop.turn_id`. Since `collector@4.4.0` every answer carries `hop.finish_reason` and `hop.truncated` too (see "An answer says how it ended"). An answer whose text already went out in its turn carries `hop.repeat = "1"` and no other answer carries the key ([#1505](https://github.com/mmeyerlein/meclaw/issues/1505), see "At most one bridge, exactly one answer"). An answer marked `hop.silent` (GH #1305, the dispatcher's silence to an inner turn) ends its round all the same (`drop_round`) and says nothing: `"1"` leaves ONE empty `answer` with `hop.silent` `"1"` for the composite's receipt lane, `"0"` leaves no answer at all |
 | `recall` | the memory hive's recall port | the per-turn leg, and only that (`memory_tier` set); promote `recall_query`, `memory_tier`, `recall_window_from`, `recall_window_to`, `session_id`, `turn_id`, `iter`. A `memory_recall` CALL does not travel here since `4.0.0` -- it leaves the composite on the ordinary `tool` lane and the memory answers it ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
 | `brief` | the member's `affinity` (via the member's stamping edge) | the brief leg's request, only with `brief_slots` set and a `context.counterpart` to be briefed about: one `tool_call` `{subject, channel, slots}` under an id derived from the turn and the subject, `hop.turn_id` the turn. Who asks and in which round are edge truth -- the member stamps `asker`, the turn's `audience_set` rides along. Since `collector@4.3.0` ([#834](https://github.com/mmeyerlein/meclaw/issues/834)) |
 | `schemas` | a tools hive's `in_schemas` door | the tool names `params.tools` declares, as the whole body (`{"tools": [...]}`); `["*"]` asks for everything that hive has. It leaves on a TICK, not per turn. A parent that wires this must wire the answer back, or the tick asks into a dead letter every period |
@@ -216,7 +216,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `hint_own_op` | `"0"` | `"1"` keeps every tool that stays single for its own `op` (the tools hive's `file`, `edit`) at hint level and names them on every seam as `hop.tools_hinted` ([#1272](https://github.com/mmeyerlein/meclaw/issues/1272)); only with `fold_tools` `"1"`. talky sets it. See "Folded menu and route stamp". |
 | `turn_answerers` | `[]` | the answerers whose menu row holds for one turn ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)): their tools never fold and an empty answer of theirs is written, so a turn without them empties their row. The simple agent sets `["client"]`. See "Folded menu and route stamp". |
 | `fold_families` | `["file_ws"]` | family names longer than the first name segment; every other tool folds by its first segment, so a new hive folds without an entry. |
-| `route_wait_ms` | `0` | how long the first assembly of a turn waits for its route stamp on `in_route`, in ms ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)). `0` = no route leg. |
+| `route_wait_ms` | `0` | how long the first assembly of a turn waits for its route stamp on `in_route`, in ms ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)). `0` = no route leg. A notice on `in_route` (`hop.wait_ms`, [#1506](https://github.com/mmeyerlein/meclaw/issues/1506)) holds a turn for its stamp that long from `hop.wait_from` (else from the notice on), whatever the age of its window leg; after it this bound decides again. |
 | `route_no_recall` | `["simple"]` | the stamped paths whose turn does not wait for the memory leg; read only while `route_wait_ms` is above 0. |
 | `needs_wait_recall` | `"0"` | `"1"` or true: a turn whose route stamp names `memory` in `needs` waits for the memory leg even on a path listed in `route_no_recall` ([#1435](https://github.com/mmeyerlein/meclaw/issues/1435)); read only while `route_wait_ms` is above 0. `"0"` = the fan-in of before. |
 | `needs_no_recall` | `"0"` | `"1"` or true: a turn whose route stamp does not name `memory` in `needs` stops waiting for the memory leg on any path; a stamp that names `memory` and a fallback stamp (its `hop.fallback`: no judgement of the needs) wait as before, and the seam of a fallback stamp carries `hop.fallback` ([#1441](https://github.com/mmeyerlein/meclaw/issues/1441)); read only while `route_wait_ms` is above 0. `"0"` = the fan-in and the seam of before. |
@@ -255,7 +255,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@6.0.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@6.1.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -491,7 +491,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@6.0.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@6.1.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -537,7 +537,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@6.0.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@6.1.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -632,6 +632,12 @@ the stamp is a leg of the turn, parked beside the window, memory and brief legs,
   carries it as `hop.needs_yes`: the JSON text of the object, keys sorted, only when the parked field is
   a non-empty object. The curator's `recall_skip_sure` reads the yes-value of `memory` there. No knob of
   this cell: without the field the seam is the one of before, byte for byte.
+- a stamp that carries `move` or `trail` (the route cell's `moves`, `sure` and `sharpen`,
+  [#1506](https://github.com/mmeyerlein/meclaw/issues/1506)) has them parked with the leg, and the seam
+  carries them as `hop.move` (the name) and `hop.trail` (the JSON text of the object, keys sorted), each
+  only when the parked field is there. This cell reads neither: the curator's `class_notes` may key a turn
+  note on class and move, and its `route` mark takes the trail. No knob of this cell: without the fields
+  the seam is the one of before, byte for byte.
 - no stamp yet, and the window leg is older than `route_wait_ms`: the turn stops waiting for it. The check
   runs when a leg lands, so the route cell answers every turn (`talk` when unsure, failed or late) and its
   stamp is the occasion that ends a longer wait.
@@ -968,6 +974,125 @@ there is one grammar that cuts it, and [`talky`](../talky/) routes `length` thro
 
 `./assemble`'s cell contract moved (`contract.version` 2.3.0): `finish_reason` and `truncated`
 join the emitted hop of `answer`, `finish_reason` the consumed hop of `in_answer`.
+
+### At most one bridge, exactly one answer (GH #1300, GH #1505)
+
+In one turn at most one bridge and exactly one answer leave on `answer`. A bridge is an
+interim: a sentence that goes out while a call is still running, marked `hop.interim`. It
+makes no difference who wrote it -- a side call or the model beside its own calls -- and
+this cell does not read the kind of a call.
+
+Measured before the fix: a model wrote the finished sentence beside a call, the round after
+the tool result wrote it again, and both went out behind a side call's bridge. Three
+messages in one turn, one of them twice. Only a side call's bridge was checked; a sentence
+beside the model's own calls left without a look at the store.
+
+**What went out is in the store.** Every send of a model's text on `answer` writes one row
+of role `said` into the table `round`, under the turn: `turn` holds
+`{"kind": "bridge" | "answer" | "due", "hash": "<sha256>"}`, and `correlation` holds
+`said`. The hash is taken over the text with whitespace and case levelled (edges trimmed,
+runs of whitespace one space, case folded); the wording is never stored. The rows fall with
+the round, like every row except `depart`; a round that ends at its calls keeps them for the
+sentence beside those calls (below), and that sentence takes them down.
+The state is in the store and not in the process, so a restart between a bridge and its
+answer does not lose it.
+
+**A bridge** (`in_answer` with `hop.interim`) sends one bundle in phase `bridge-gate`: its
+claim on the turn's one bridge (a `said` row with `fired` 0 and `if_absent` on
+`(turn_id, role)`) and a read of the turn's rows. It
+leaves when both hold: the claim was written (nothing went out in this turn before) and the
+round is open (its opening row `leg-window` is there; it falls only with the answer's
+drop). Otherwise it is held: nothing leaves, one line on stderr says why. A bridge that
+wrote its claim and did not leave takes back that claim and nothing else (phase `said-drop`,
+the row with `fired` 0 and its own kind and hash): a row `due` written behind the claim stays
+for the sentence it waits for. The bridge that leaves
+turns its claim into the row of a text that went out (`fired` 1, one `insert` with
+`replace`, phase `said-out`), written after the bridge. Because the claim is written and the
+round read in one bundle, of two bridges that race exactly one wins. A bridge with the words
+of an earlier send is held by the same rule.
+
+A round can also end at its calls: when every call of a round is async and the model spoke
+beside them (or one of them hands the turn over), `in_calls` drops the round at once. The
+sentence beside those calls is sent after the calls, so it reaches this cell behind the drop,
+and it is a send of the same turn. The drop of such a round therefore keeps the turn's `said`
+rows (its `where` holds back `correlation = said`): a bridge of an earlier round of the turn
+still holds the sentence, and words that already went out still make the answer a repeat.
+
+- Beside a call that **hands the turn over**, the answer comes later as an event of its own
+  and the sentence is an interim, the round's last send. Its gate finds no `leg-window`.
+  Measured before this rule: the sentence was dropped as "after its answer" in every
+  composite whose model hands a turn over, and the person heard nothing until the later
+  answer came. So the drop carries one more `said` row, kind `due`, with the hash of the
+  sentence (`fired` 0). The bridge whose words carry that hash is the sentence: it leaves
+  when no row of a text that went out stands in its turn and is held otherwise, and either
+  way it deletes the turn's `said` rows behind it (phase `said-drop`) -- the round is over.
+  When its read finds another bridge's claim (`fired` 0, any kind but `due`), that bridge
+  is decided and its word is in the store's queue behind the read: the sentence reads once
+  more (phase `bridge-recheck`, which also deletes the turn's `said` rows) and leaves only
+  when that read shows nothing that went out. A store that refuses this second read lets
+  the sentence leave: twice is better than nothing.
+  Any other bridge of that turn is held; after the sentence, a late bridge finds neither the
+  round nor a `due` row and is held as after an answer. The row belongs to the round, not
+  to the departure: a sentence that never arrives leaves it to the stale rule like every
+  other row of the round.
+- Beside calls that **hand nothing over**, the sentence is the turn's answer and passes
+  `answer-gate`, which reads the kept rows and drops them with the round.
+
+**An answer** (`in_answer` without `hop.interim`) sends one bundle in phase `answer-gate`:
+a read of the turn's `said` rows, its own `said` row, and the drop of the round. The store
+runs a bundle's ops in order, so the read sees what went out and the round is gone when the
+reply comes back; a bridge's read that queued behind it finds no open round. No answer of a
+model leaves without this round trip. When the read finds the answer's own hash on a row of
+a text that went out (`fired` 1), the answer leaves with `hop.repeat = "1"`: the text is
+unchanged, the round ends, and every key of an
+answer is there. It has to leave, because everybody who waits for the end of the turn waits
+for this message; what a consumer does with it is the consumer's side:
+
+- a channel that writes does not send a repeat and ends its turn as after an answer it sent
+  (`proxy`, every platform);
+- an edge onto a speaking input asks `!has(hop.repeat)`, so a repeat is never spoken
+  (`templates/voice/README.md`, `templates/freeswitch/README.md`, the edge
+  `./channels -> ./channels/<node>`);
+- a reader beside the channel has the text.
+
+**A repeat for a channel that speaks ends as one dead letter, and that is expected.** The
+member's way down (`./assistants -> ./channels`, on `answer` with a `context.channel_node`)
+takes every answer of such a turn, the repeat included, and hands it to the hive
+`./channels`. There the edge onto the speaking input declines it (`!has(hop.repeat)`), and
+no other out-edge of `./channels` takes an `answer`, so the colony files it under
+`<member>/channels` with `error_code` `hive_no_route` (`docs/meclaw-overview.md` § Routing
+algorithm): one row per repeat. Read it as its class says: a sentence was not spoken twice.
+It is no fault of the channel and needs no edge that takes it; a sink for it would hide
+the one place where a repeat towards a speaking channel can be counted. A channel that
+writes, on the same member, gets the repeat as before: its edge carries no such guard.
+
+Equal means equal after levelling and nothing else. There is no measure of likeness and no
+judgement about meaning in this cell.
+
+**A claim never makes a repeat.** When the answer's read finds a bridge's claim, whatever
+its words, that bridge was decided in front of the drop, and what it did is in the store's
+queue in front of the cell's next op: either its row of a text that went out or the delete
+of its claim. The answer then reads once more (phase `answer-recheck`, which also clears the
+turn's `said` rows written behind the dropped round, so none stays behind it) and is a
+repeat only when its own hash is on a row of a text that went out. A store that refuses that second read lets the answer leave as no repeat. The rule is
+for the person: a bridge whose round read the store refused claimed and did not leave, and
+an answer read as its repeat would not be sent by a channel that writes -- the person would
+get neither. Twice is better than nothing.
+
+**A send without text takes no gate.** An `answer` or interim with no text turn leaves as it
+did before GH #1505, in the call that brought it: an answer with its round's drop behind it,
+an interim alone. It writes no `said` row, and a gate reply without its text then means only
+that the store lost it (`hop.degraded` on an answer, a dropped bridge).
+
+**Three sends write no row.** The one empty `answer` of an inner turn answered with silence
+(`hop.silent`) says nothing. The digest of a spent round and the report of a store refusal
+are this cell's own words, not a model's. All three leave as they did.
+
+**When the store says no.** A refused `bridge-gate` holds the bridge. A refused `answer-gate`
+never holds the answer: it rode beside the op (`hop.gate` -> `context.col_gate`) and leaves
+with `hop.store_error` and `hop.store_operation`.
+
+`./assemble`'s cell contract: `repeat` joins the emitted hop of `answer`.
 
 ### A round lane without a turn id is parked, and said (GH #841, since `collector@4.4.0`)
 
@@ -1424,6 +1549,46 @@ round-check-> complete: ROUTE curate (iter + 1)             <- the same seam
                                                                the regular fan-in
 ```
 
+and, when a model's text comes back (GH #1300, GH #1505):
+
+```
+in_answer  -> interim: insert round(said, bridge, fired 0)  <- the claim
+   (interim)   if_absent (turn_id, role)
+             + select round               phase bridge-gate
+bridge-gate-> claim written + leg-window there:
+              ROUTE answer (interim)
+              + insert round(said, bridge, fired 1)
+                replace the claim         phase said-out
+           -> no leg-window, a said row due with its hash:
+              ROUTE answer (interim) unless a said row
+              with fired 1 stands
+              + delete round(said)        phase said-drop
+           -> the same, but another bridge's claim stands:
+              select round(said)
+              + delete round(said)        phase bridge-recheck
+bridge-recheck -> ROUTE answer (interim)                     <- unless a said row
+                                                               with fired 1 stands
+           -> otherwise: nothing, one line on stderr
+              (+ delete round(said, own claim)
+                                          phase said-drop    <- only when the claim
+                                                               was written)
+in_answer  -> select round(said)
+   (answer)  + insert round(said, answer, fired 1)
+             + delete turns + delete round
+               (all but depart)           phase answer-gate
+answer-gate-> ROUTE answer                                   <- repeat=1 when the
+                                                               read held its hash
+                                                               with fired 1
+           -> a claim stands: select round(said)
+              + delete round(said)        phase answer-recheck
+answer-recheck -> ROUTE answer                               <- repeat=1 when its
+                                                               hash went out
+in_answer  -> ROUTE answer (+ round drop) <- a send without text: as before,
+   (no text)                                 no gate, no row
+in_answer  -> ROUTE answer (silent, empty)                   <- an inner turn's
+   (silent)  + delete turns + delete round phase round-drop     silence: no row
+```
+
 and, when a timer (or an operator) asks whether a round is stuck:
 
 ```
@@ -1651,6 +1816,13 @@ It is revoked with the ids, by the same empty rendering, for the same reason.
   re-assembly of the same turn, `system.memory` carries the revocation and no data under
   every `memory_form`, and a model's OWN `memory_recall` still
   answers under its original `tool_call_id` without a synthetic pair.
+- `crates/meclaw-cells/tests/assemble_once/gh_d54g_oneanswer_once.rs` -- at most one bridge,
+  exactly one answer: the script against a store kept in the test, so what is measured is
+  what leaves on `answer` and what the store holds. `assemble/gh1300_a_bridge_never_follows_its_answer.rs`
+  holds the order of a bridge and its answer with the store's replies written out. The
+  sentence beside a call that hands the turn over (the `said` row `due`) is held in running
+  composites: `misc_8/talky_cogny_advisor.rs`, `misc_7/gh894_a_consult_asks_back_under_its_id.rs`
+  and `misc_7/gh908_a_model_reads_a_file_through_its_tools.rs`.
 - `crates/meclaw-cells/tests/misc_1/collector_colony.rs` -- a running colony with no memory hive
   in it at all: a runaway round that the seam ends, a lost tool result whose round a sweep
   closes, a mid-round turn that defers and rides with the next assembly, and a batching

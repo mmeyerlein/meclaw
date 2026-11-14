@@ -454,9 +454,21 @@ fn the_hold_is_not_released_by_the_pointer_leaving() {
     let src = std::fs::read_to_string(repo("templates/display/compose/compose.py"))
         .expect("compose.py")
         .replace("\\\"", "\"");
+    // Behind a live model the pointer leaving the mark takes back the early
+    // `ready` word (d54g weblive) and nothing else: every `pointerleave` in the
+    // hook is that one listener, and its handler only clears the flag. No
+    // listener on `pointerleave` may reach the release.
+    let leaves = src.matches("\"pointerleave\"").count();
+    let ready_off = src.matches("\"pointerleave\", readyOff)").count();
+    assert_eq!(
+        leaves, ready_off,
+        "the button still lets go on pointerleave: a `pointerleave` listener other \
+         than `readyOff`"
+    );
     assert!(
-        !src.contains("\"pointerleave\""),
-        "the button still lets go on pointerleave"
+        leaves == 0 || src.contains("function readyOff() { readied = false; }"),
+        "the button still lets go on pointerleave: `readyOff` does more than take \
+         back the `ready` word"
     );
     assert!(
         src.contains("setPointerCapture"),

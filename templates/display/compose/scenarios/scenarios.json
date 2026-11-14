@@ -7200,6 +7200,661 @@
           "timer": 0.8
         }
       }
+    },
+    {
+      "id": "S-097",
+      "title": "One turn, one window: a free card that carries the `turn_id` of a turn whose presenter window stands is `topic_dupe` — no window, no tile — although its topic is another one; the turn decides, not the topic key",
+      "source": "Wave d54g, onewindow; § 9b.15, § 4.12, § 4.11",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.presenter.show-weather",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "show:weather",
+                "relevance": "0.8",
+                "title": "Weather",
+                "turn_id": "t5",
+                "touched": "100000"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "weather:berlin-madrid-athens",
+              "relevance": "0.7",
+              "title": "Weather Berlin, Madrid, Athens",
+              "turn_id": "t5",
+              "touched": "103000"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": true,
+        "rung(view.v2v.card1)": null,
+        "level(view.v2v.card1)": 0,
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.presenter.show-weather"
+        ],
+        "open_windows()": [
+          "view.presenter.show-weather"
+        ],
+        "topic_dupe(view.presenter.show-weather)": false
+      }
+    },
+    {
+      "id": "S-098",
+      "title": "The order changes nothing: a free card that came first yields as soon as the presenter window of the same turn stands — the card is `topic_dupe`, the window is not",
+      "source": "Wave d54g, onewindow; § 9b.15, § 4.12, § 4.11",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.card1",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "weather:berlin-madrid-athens",
+                "relevance": "0.7",
+                "title": "Weather Berlin, Madrid, Athens",
+                "turn_id": "t5",
+                "touched": "100000"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.presenter.show-weather",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "show:weather",
+              "relevance": "0.8",
+              "title": "Weather",
+              "turn_id": "t5",
+              "touched": "103000"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "topic_dupe(view.v2v.card1)": true,
+            "topic_dupe(view.presenter.show-weather)": false
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": true,
+        "rung(view.v2v.card1)": null,
+        "level(view.v2v.card1)": 0,
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.presenter.show-weather"
+        ],
+        "open_windows()": [
+          "view.presenter.show-weather"
+        ]
+      }
+    },
+    {
+      "id": "S-099",
+      "title": "A free card without a window of its turn opens as before: a presenter window of ANOTHER turn is no rival, and neither is a card that stands alone",
+      "source": "Wave d54g, onewindow; § 9b.15, § 4.12, § 4.11, § 10",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.presenter.show-weather",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "show:weather",
+                "relevance": "0.8",
+                "title": "Weather",
+                "turn_id": "t4",
+                "touched": "100000"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "weather:berlin-madrid-athens",
+              "relevance": "0.7",
+              "title": "Weather Berlin, Madrid, Athens",
+              "turn_id": "t5",
+              "touched": "103000"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": false,
+        "rung(view.v2v.card1)": "relevant",
+        "level(view.v2v.card1)": 1,
+        "open_windows()": [
+          "view.presenter.show-weather",
+          "view.v2v.card1"
+        ]
+      }
+    },
+    {
+      "id": "S-100",
+      "title": "A free card without a `turn_id` is never compared by turn: beside a presenter window without a `turn_id` it opens — an empty id is no id",
+      "source": "Wave d54g, onewindow; § 9b.15, § 4.12, § 4.11, § 10",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.presenter.show-weather",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "show:weather",
+                "relevance": "0.8",
+                "title": "Weather",
+                "touched": "100000"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "weather:berlin-madrid-athens",
+              "relevance": "0.7",
+              "title": "Weather Berlin, Madrid, Athens",
+              "touched": "103000"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": false,
+        "rung(view.v2v.card1)": "relevant",
+        "level(view.v2v.card1)": 1,
+        "open_windows()": [
+          "view.presenter.show-weather",
+          "view.v2v.card1"
+        ]
+      }
+    },
+    {
+      "id": "S-101",
+      "title": "A pinned tile stays a tile: while the presenter window of a turn stands, a write of the tile's own app that carries that `turn_id` (relevance raised, touched) does not lift the tile to a second window",
+      "source": "Wave d54g, onewindow; § 9b.16, § 4.8 b, § 7.6",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.presenter.show-weather",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "show:weather",
+                "relevance": "0.8",
+                "title": "Weather",
+                "turn_id": "t5",
+                "touched": "100000"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "relevance": "0.8",
+              "touched": "103000",
+              "turn_id": "t5"
+            }
+          },
+          "now": 103000,
+          "expect": {
+            "rung(view.ambient.weather)": "ambient",
+            "level(view.ambient.weather)": 0
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "rung(view.ambient.weather)": "ambient",
+        "level(view.ambient.weather)": 0,
+        "open_windows()": [
+          "view.presenter.show-weather"
+        ],
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.presenter.show-weather"
+        ]
+      }
+    },
+    {
+      "id": "S-102",
+      "title": "`urgent` is no card: a ringing canvas window of another app that carries the `turn_id` of a turn whose presenter window stands is not `topic_dupe` — it rings in front, and the window of the turn stays",
+      "source": "Wave d54g, onewindow; § 9b.15, § 4.12, § 4.11, § 4.18",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.presenter.show-weather",
+              "view": {
+                "touched": "100000",
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "show:weather",
+                "relevance": "0.8",
+                "title": "Weather",
+                "turn_id": "t5"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.alarm.wake",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "alarm:wake",
+              "state": "urgent",
+              "relevance": "0.9",
+              "title": "Alarm",
+              "turn_id": "t5",
+              "touched": "103000"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.alarm.wake)": false,
+        "rung(view.alarm.wake)": "urgent",
+        "level(view.alarm.wake)": 3,
+        "front_urgent()": "view.alarm.wake",
+        "present()": [
+          "view.alarm.wake",
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.presenter.show-weather"
+        ],
+        "open_windows()": [
+          "view.alarm.wake",
+          "view.presenter.show-weather"
+        ],
+        "topic_dupe(view.presenter.show-weather)": false
+      }
+    },
+    {
+      "id": "S-103",
+      "title": "A dupe by its turn touches nobody: a free card of the turn whose topic is the topic of a standing tile is `topic_dupe` by its turn and is not compared by topic — the tile receives no touch (f) and stays a tile",
+      "source": "Wave d54g, onewindow; § 9b.15, § 4.12, § 4.8 f, § 4.11",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.presenter.show-weather",
+              "view": {
+                "touched": "100000",
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "show:weather",
+                "relevance": "0.8",
+                "title": "Weather",
+                "turn_id": "t5"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.v2v.card1",
+            "view": {
+              "layer": "canvas",
+              "context": "conversation",
+              "topic": "weather:berlin",
+              "relevance": "0.7",
+              "title": "Weather Berlin",
+              "turn_id": "t5",
+              "touched": "103000"
+            }
+          },
+          "now": 103000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": true,
+        "rung(view.v2v.card1)": null,
+        "level(view.v2v.card1)": 0,
+        "touched()": {
+          "view.v2v.card1": "a"
+        },
+        "since(view.ambient.weather)": 1000,
+        "rung(view.ambient.weather)": "ambient",
+        "level(view.ambient.weather)": 0,
+        "topic_dupe(view.ambient.weather)": false,
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.presenter.show-weather"
+        ],
+        "open_windows()": [
+          "view.presenter.show-weather"
+        ]
+      }
+    },
+    {
+      "id": "S-104",
+      "title": "A pinned window that is open counts as before: its app's write with the `turn_id` of a turn whose presenter window stands is a touch — `since` is the write's, the window stays open beside the window of the turn",
+      "source": "Wave d54g, onewindow; § 9b.16, § 4.8 b, § 4.8 c, § 7.6",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.ambient.weather",
+              "view": {
+                "relevance": "0.8",
+                "touched": "100000"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.presenter.show-weather",
+              "view": {
+                "touched": "102000",
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "show:weather",
+                "relevance": "0.8",
+                "title": "Weather",
+                "turn_id": "t5"
+              }
+            },
+            "now": 102000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 103000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "app_write",
+            "oid": "view.ambient.weather",
+            "view": {
+              "relevance": "0.8",
+              "touched": "104000",
+              "turn_id": "t5"
+            }
+          },
+          "now": 104000
+        }
+      ],
+      "expect": {
+        "touched()": {
+          "view.ambient.weather": "b"
+        },
+        "since(view.ambient.weather)": 104000,
+        "rung(view.ambient.weather)": "focus",
+        "level(view.ambient.weather)": 1,
+        "open_windows()": [
+          "view.ambient.weather",
+          "view.presenter.show-weather"
+        ],
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.presenter.show-weather"
+        ]
+      }
+    },
+    {
+      "id": "S-105",
+      "title": "The mark falls with the window: a free card that is `topic_dupe` by its turn is no dupe any more in the pass in which the presenter window of that turn loses its presence — the card stands again, the window leaves",
+      "source": "Wave d54g, onewindow; § 9b.15, § 4.12, § 4.11, § 4.34",
+      "given": {
+        "fixture": "ambient3+chat",
+        "setup": [
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.v2v.card1",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "weather:berlin-madrid-athens",
+                "relevance": "0.7",
+                "title": "Weather Berlin, Madrid, Athens",
+                "turn_id": "t5",
+                "touched": "100000"
+              }
+            },
+            "now": 100000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 101000
+          },
+          {
+            "event": {
+              "kind": "app_write",
+              "oid": "view.presenter.show-weather",
+              "view": {
+                "layer": "canvas",
+                "context": "conversation",
+                "topic": "show:weather",
+                "relevance": "0.8",
+                "title": "Weather",
+                "turn_id": "t5",
+                "touched": "102000"
+              }
+            },
+            "now": 102000
+          },
+          {
+            "event": {
+              "kind": "stroke"
+            },
+            "now": 103000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 104000,
+          "expect": {
+            "topic_dupe(view.v2v.card1)": true
+          }
+        },
+        {
+          "event": {
+            "kind": "app_withdraw",
+            "oid": "view.presenter.show-weather"
+          },
+          "now": 105000,
+          "expect": {
+            "topic_dupe(view.v2v.card1)": false,
+            "age(view.presenter.show-weather)": "leaving",
+            "present()": [
+              "view.ambient.clock",
+              "view.ambient.timer",
+              "view.ambient.weather",
+              "view.chat.chat",
+              "view.v2v.card1"
+            ]
+          }
+        },
+        {
+          "event": {
+            "kind": "stroke"
+          },
+          "now": 106000
+        }
+      ],
+      "expect": {
+        "topic_dupe(view.v2v.card1)": false,
+        "rung(view.v2v.card1)": "focus",
+        "level(view.v2v.card1)": 1,
+        "open_windows()": [
+          "view.v2v.card1"
+        ],
+        "present()": [
+          "view.ambient.clock",
+          "view.ambient.timer",
+          "view.ambient.weather",
+          "view.chat.chat",
+          "view.v2v.card1"
+        ]
+      }
     }
   ]
 }

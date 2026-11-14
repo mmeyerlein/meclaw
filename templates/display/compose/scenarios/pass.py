@@ -470,7 +470,23 @@ def step4_presence(state, now):
     window receives the touch (f) and, for § 4.13, the fresh window's `turn_id` counts for
     it; the fresh window receives `topic_dupe` — neither open nor present, no window, no
     tile, no rung, not computed — until the standing window loses its presence; windows of
-    the same owner are never compared; the judge does not lift it (Ruling 13.09.)."""
+    the same owner are never compared; the judge does not lift it (Ruling 13.09.).
+    § 9b.15: one turn, one window. The presenter's window is the one whose topic begins with
+    `show:` (§ 9b.2a). While such a window stands, a free card of its turn — a canvas window
+    of another owner, neither pinned nor `state: urgent`, that carries the same `turn_id` —
+    is `topic_dupe`, whatever its topic: here the turn decides, not the topic key. It is
+    compared in every pass and not only when it is fresh, so the order of the two writes
+    changes nothing; a card that is a dupe by its turn is not compared by topic and touches
+    nobody. An empty `turn_id` is no id. The mark falls when no such window stands any more
+    and no rival by topic either (R-54-1; wave d54g 2026-11-12).
+    § 9b.16: a pinned tile stays a tile. While the presenter's window of a turn stands, a
+    write of another owner that carries that `turn_id` on its own pinned window that is not
+    open is no touch: the touch (b) or (c) of step 3 is taken back — it leaves the touches
+    of the pass, and the window carries no `since` until its next touch, so it decays to
+    nothing at once, scores 0 whatever `relevance` the write carried, and stays a tile by
+    its pin. The verdict the touch cleared stays cleared. A pinned window that is open, a
+    fresh one (a) and a write beside no such window count as before (R-54-1; wave d54g
+    2026-11-12)."""
     views = state["views"]
     settings = state["settings"]
     touched = state["pass"]["touched"]
@@ -495,10 +511,37 @@ def step4_presence(state, now):
         return (not v.get("withdrawn") and not _ttl_expired(v, now)
                 and not v["curator"].get("topic_dupe") and _meets_presence(v, now, settings))
 
+    def shows(view):
+        """§ 9b.2a: the presenter's window carries `topic: show:<topic>`."""
+        topic = view.get("topic")
+        return isinstance(topic, str) and topic.startswith("show:")
+
+    def turn_windows(oid):
+        """§ 9b.15, § 9b.16: the standing presenter windows of the turn `oid` carries; never
+        for a presenter window itself, never for an empty `turn_id`, never within one owner."""
+        v = views[oid]
+        tid = v.get("turn_id")
+        if not tid or shows(v):
+            return []
+        return [o for o, w in views.items()
+                if o != oid and w.get("owner") != v.get("owner") and shows(w)
+                and w.get("turn_id") == tid and standing(o)]
+
+    def free_card(view):
+        """§ 9b.15: what yields to the window of its turn. A pinned window is a tile and
+        stays (§ 9b.16), a modal is no card (the chat carries the turn's id too, § 8.8),
+        and an urgent is never taken off the screen by a rule about duplicates."""
+        return (layer_of(view) == "canvas" and view.get("pinned") is not True
+                and view.get("state") != "urgent")
+
     # § 4.12 — the topic check for the fresh windows of this pass. "A standing window"
     # here is a present one: a decayed view has no window to duplicate.  # Decision 16.09. 12
     for oid in [o for o in new if o in views]:
         v = views[oid]
+        if free_card(v) and turn_windows(oid):
+            # § 9b.15: a dupe by its turn; it is not compared by topic and touches nobody.
+            v["curator"]["topic_dupe"] = True
+            continue
         topic = v.get("topic")
         if not topic:
             continue
@@ -513,14 +556,33 @@ def step4_presence(state, now):
             _app_touch(views[o], now)
             if v.get("turn_id"):
                 state["pass"]["topic_turn_ids"][o] = v["turn_id"]
-    # `topic_dupe` falls when the standing window loses its presence.
+    # § 9b.15 — the other direction: a free card that stood first yields in the pass in
+    # which the presenter's window of its turn stands.
+    for oid, v in views.items():
+        if not v["curator"].get("topic_dupe") and free_card(v) and turn_windows(oid):
+            v["curator"]["topic_dupe"] = True
+    # `topic_dupe` falls when the standing window loses its presence: the rival by topic
+    # (§ 4.12) and the presenter's window of the turn (§ 9b.15) alike.
     for oid, v in views.items():
         if v["curator"].get("topic_dupe"):
             still = [o for o, w in views.items()
                      if o != oid and w.get("owner") != v.get("owner")
                      and w.get("topic") == v.get("topic") and standing(o)]
-            if not still:
+            if not still and not (free_card(v) and turn_windows(oid)):
                 v["curator"]["topic_dupe"] = False
+
+    # § 9b.16 — a pinned tile stays a tile: the write of this pass, when it carries the
+    # `turn_id` of a turn whose presenter window stands, is no touch. In the measured turn
+    # the tile's app raised its own pinned tile to a second window beside the window of the
+    # turn (three windows for one question).
+    written = state["pass"].get("written")
+    if written is not None and written[0] in views:
+        oid = written[0]
+        v = views[oid]
+        if (touched.get(oid) in ("b", "c") and v.get("pinned") is True
+                and not v["curator"].get("open") and turn_windows(oid)):
+            del touched[oid]
+            v["curator"]["since"] = None
 
     # Presence.
     for oid, v in views.items():

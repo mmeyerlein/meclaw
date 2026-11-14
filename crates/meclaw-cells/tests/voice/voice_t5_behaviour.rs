@@ -1984,3 +1984,93 @@ mod fakes {
         })
     }
 }
+
+/// d54g callseam: the first audio of a synthesis is stamped the moment it
+/// goes out, on the way through a speech synthesis as on a duplex session.
+///
+/// With `emit_first_audio` set, one emission on the `first_audio` lane per
+/// synthesis: it names the synthesis, carries the time on the connection's
+/// own clock and no words, and it leaves before the `speak_end` of the same
+/// synthesis -- a measurement has the moment the listener got the first
+/// sound, not the end of the sentence. Off by default, for the reason
+/// `emit_speak_end` is: a composition that draws no edge for the lane emits
+/// nothing new. The `speak_end` lane is the marker in both halves, so the
+/// silence of the second half is read behind an emission, not off a clock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh_d54g_callseam_the_first_audio_of_a_synthesis_is_stamped() {
+    // ── ordered: one stamp for a synthesis of three chunks.
+    let stt = fakes::deepgram(fakes::flux_quiet()).await;
+    let tts = fakes::cartesia(fakes::cartesia_chunks(3, 5)).await;
+    let mut params = fakes::both_params_default(MOUNT, &stt, &tts);
+    params["emit_speak_end"] = json!(true);
+    params["emit_first_audio"] = json!(true);
+    let mut fx = Fixture::boot(params).await;
+    let (mut client, _) = fx.connect("session=stamp-1").await;
+
+    fx.speak("stamp-1", "A short sentence.").await;
+    let end = fx.heard(&mut client, "stamp-1", "speak_end").await;
+    assert_eq!(end["reason"], "done");
+
+    let got = fx.wait_for_route("speak_end", 1).await;
+    let routes: Vec<Option<String>> = got.iter().map(hop_route_owned).collect();
+    let stamps: Vec<&Message> = got
+        .iter()
+        .filter(|m| hop_route(m) == Some("first_audio"))
+        .collect();
+    assert_eq!(
+        stamps.len(),
+        1,
+        "one synthesis, one stamp, however many chunks it had: {routes:?}"
+    );
+    let stamp = stamps[0];
+    assert_eq!(hop_str(stamp, "session_id"), Some("stamp-1"));
+    assert_eq!(hop_str(stamp, "platform"), Some("voice"));
+    assert_eq!(
+        hop_str(stamp, "speak_id"),
+        end["speak_id"].as_str(),
+        "the stamp names the synthesis the client's own frame names"
+    );
+    assert!(
+        stamp
+            .headers
+            .hop
+            .get("t_first_audio_ms")
+            .and_then(Value::as_u64)
+            .is_some(),
+        "the stamp carries its time in milliseconds of the connection's clock: {:?}",
+        stamp.headers.hop
+    );
+    assert_eq!(body_text(stamp), "", "no words on this lane");
+    let stamp_at = got
+        .iter()
+        .position(|m| hop_route(m) == Some("first_audio"))
+        .expect("counted above");
+    let end_at = got
+        .iter()
+        .position(|m| hop_route(m) == Some("speak_end"))
+        .expect("waited for above");
+    assert!(
+        stamp_at < end_at,
+        "the stamp leaves when the audio does, before the synthesis is over: {routes:?}"
+    );
+    fx.shutdown().await;
+
+    // ── not ordered: the same round emits nothing on the lane. Everything
+    // the synthesis emitted stands before its `speak_end`.
+    let stt = fakes::deepgram(fakes::flux_quiet()).await;
+    let tts = fakes::cartesia(fakes::cartesia_chunks(3, 5)).await;
+    let mut params = fakes::both_params_default(MOUNT, &stt, &tts);
+    params["emit_speak_end"] = json!(true);
+    let mut fx = Fixture::boot(params).await;
+    let (mut client, _) = fx.connect("session=stamp-2").await;
+    fx.speak("stamp-2", "A short sentence.").await;
+    let end = fx.heard(&mut client, "stamp-2", "speak_end").await;
+    assert_eq!(end["reason"], "done");
+    let got = fx.wait_for_route("speak_end", 1).await;
+    assert!(
+        got.iter().all(|m| hop_route(m) != Some("first_audio")),
+        "a lane nobody ordered emits nothing: {:?}",
+        got.iter().map(hop_route_owned).collect::<Vec<_>>()
+    );
+    fx.shutdown().await;
+}

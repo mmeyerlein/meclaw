@@ -2447,6 +2447,393 @@ def write_golden():
         f.write(golden_text(selector_script(s)))
 
 
+# ---------------------------------------------------------------------------
+# Wave d54g, onewindow: the result of a listed tool fills the window of its turn
+
+
+def places_topic():
+    """An app's topic with a set named like the tool that answers it (`weather`)."""
+    return sample(standard="weather", candidates=[
+        {"key": "weather", "block": "display-list", "describe": "the places as a list",
+         "set": "weather", "bind": {"title": "=Places"},
+         "children": [{"each": "weather", "block": "display-item",
+                       "bind": {"k": "$.place.name", "v": "$.summary"}}]},
+        {"key": "brief", "block": "display-card", "describe": "a short summary",
+         "set": "brief", "bind": {"title": "brief.title", "body": "brief.body"}}])
+
+
+STAR = json.dumps(["*"])
+
+
+def fed(s, **params):
+    """A warm cell whose observed topics name the app's topic `sample`."""
+    base = {"observed_topics": ["search", "work", "sample"]}
+    base.update(params)
+    c = Cell(s, **base)
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [places_topic()]})
+    return c
+
+
+def w_ctx(tid):
+    ctx = {"audience_set": STAR}
+    if tid:
+        ctx["turn_id"] = tid
+    return ctx
+
+
+def w_call(c, cid, place, tid):
+    return call(c, "weather", cid, {"place": place}, ctx=w_ctx(tid))
+
+
+def forecast(name, summary=None):
+    """The result of the tool `weather` in its own form (templates/tools/README.md
+    § `weather/`): `place` is an object, `current` the hour's values."""
+    return {"summary": summary or name + ": mild and dry",
+            "place": {"name": name, "country": "Exampleland", "admin1": "North",
+                      "latitude": 51.5, "longitude": 7.25},
+            "timezone": "UTC",
+            "current": {"time": "2026-11-12T09:00", "temp": 12.4, "weather_code": 1,
+                        "condition": "mainly clear"},
+            "days": [], "fetched_at": "2026-11-12T09:00:00Z", "source": "open-meteo"}
+
+
+def w_result(c, cid, place, tid, hop=None):
+    return result(c, cid, json.dumps(forecast(place)), ctx=w_ctx(tid), hop=hop)
+
+
+def places_of(out):
+    """The places of the last view the emissions carry, in the order of the screen."""
+    got = []
+
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("component") == "display-item":
+                got.append(n["props"].get("k"))
+            for k in n.get("children") or []:
+                walk(k)
+    vs = views(out)
+    if vs:
+        walk(vs[-1]["content"])
+    return got
+
+
+def build_of(out):
+    vs = views(out)
+    return stack_of(vs[-1])["props"].get("build") if vs else None
+
+
+HOME = {"weather": {"audience_set": ["*"],
+                    "rows": [forecast("Hometown", "Hometown: grey")]}}
+
+
+def last_state(out):
+    """The state of the last pending row the emissions write, or None."""
+    rows = pending_rows(out)
+    return rows[-1]["state"] if rows else None
+
+
+def t_onewindow(s, t):
+    """One question, one window (display-hive.md § 9b.9, § 9b.14): a listed tool's result is the
+    data set of its turn's window, whichever tool and whichever app owns the topic."""
+    t.check("the listed tools", s.OBSERVED_TOOLS,
+            ("web_search", "web_fetch", "bash", "file", "edit", "weather"))
+    t.check("a set named like an observed tool is that tool's set",
+            s.fed_tools(places_topic()), ["weather"])
+    t.check("a topic without such a set is fed by no tool", s.fed_tools(sample()), [])
+    t.check("a JSON object is the row", s.result_row('{"place": "A", "n": 1}'),
+            {"place": "A", "n": 1})
+    t.check("anything else is the row {text}, whole",
+            [s.result_row("plain words"), s.result_row("[1, 2]"), s.result_row(None)],
+            [{"text": "plain words"}, {"text": "[1, 2]"}, {"text": ""}])
+    rec = {"observed": {"results": [
+        {"tool": "weather", "seq": 7, "row": {"place": {"name": "B"}}, "audience_set": ROUND},
+        {"tool": "weather", "seq": 3, "row": {"place": {"name": "A"}}, "audience_set": ["*"]},
+        {"tool": "weather", "seq": 5, "row": {"place": {"name": "X"}}, "audience_set": OTHER},
+        {"tool": "weather", "seq": 6, "row": {"place": {"name": "Y"}}, "audience_set": []},
+        {"tool": "bash", "seq": 4, "row": {"text": "out"}, "audience_set": ["*"]}]}}
+    sets = s.turn_sets(rec, places_topic(), SCREEN)
+    t.check("turn_sets: the rows the screen may see, in the order of the calls",
+            [r["place"]["name"] for r in sets["weather"]["rows"]], ["A", "B"])
+    t.check("turn_sets: only the sets of the topic's tools", sorted(sets), ["weather"])
+    t.check("turn_sets: the set carries the meet of its rows' rounds",
+            sorted(sets["weather"]["audience_set"]), sorted(ROUND))
+    t.check("turn_sets: no visible result, no set",
+            s.turn_sets({"observed": {"results": rec["observed"]["results"][2:4]}},
+                        places_topic(), SCREEN), {})
+
+    # 1. a_tool_result_of_the_turn_fills_the_topic_window (stamp way, the app stays silent)
+    c = fed(s, verdict_source="stamp")
+    said(c, "t1", "how is the weather in Southport")
+    out = judged(c, "t1", stamp("t1", lead="weather"))
+    t.check("a_tool_result_fills: the verdict opens the window and asks the app",
+            routes(out), ["view", "in_show"])
+    t.check("a_tool_result_fills: a topic fed by tools waits for them",
+            pending_rows(out)[-1]["data_deadline"] - c.now, 15000)
+    out = w_call(c, "w1", "Southport", "t1")
+    t.check("a_tool_result_fills: a call is a work row, no view", views(out), [])
+    t.check("a_tool_result_fills: the call's summary names the place, nothing else",
+            [(w["tool"], w["summary"], w["turn_id"]) for w in work_rows(out)],
+            [("weather", "weather: Southport", "t1")])
+    out = w_result(c, "w1", "Southport", "t1")
+    t.check("a_tool_result_fills: the result placed the lead",
+            [k for k in screen_ids(out) if k == "show-sample-weather"], ["show-sample-weather"])
+    t.check("a_tool_result_fills: the place the turn asked for", places_of(out), ["Southport"])
+    t.check("a_tool_result_fills: one result and no call running is done",
+            (build_of(out), pending_rows(out)[-1]["state"]), ("done", "done"))
+    t.check("a_tool_result_fills: the kept results leave with the turn",
+            pending_rows(out)[-1]["observed"], {})
+
+    # 2. three_results_of_one_tool_stand_in_one_window: results in another order than calls
+    c = fed(s, verdict_source="stamp")
+    said(c, "t2", "the weather in Northfield, Southport and Eastham")
+    judged(c, "t2", stamp("t2", lead="weather"))
+    for cid, place in (("w1", "Northfield"), ("w2", "Southport"), ("w3", "Eastham")):
+        w_call(c, cid, place, "t2")
+    out = w_result(c, "w2", "Southport", "t2")
+    t.check("three_results: the first result stands, the window still builds",
+            (places_of(out), build_of(out)), (["Southport"], "building"))
+    all_out = list(out)
+    out = w_result(c, "w3", "Eastham", "t2")
+    t.check("three_results: the second joins it in the order of the calls",
+            (places_of(out), build_of(out)), (["Southport", "Eastham"], "building"))
+    all_out += out
+    out = w_result(c, "w1", "Northfield", "t2")
+    t.check("three_results: all three, in the order of the calls, done",
+            (places_of(out), build_of(out)),
+            (["Northfield", "Southport", "Eastham"], "done"))
+    all_out += out
+    t.check("three_results: one window, not three",
+            sorted({e["view_id"] for e in views(all_out)}), ["show-sample"])
+    t.check("three_results: nothing after done",
+            routes(w_result(c, "w1", "Northfield", "t2")), [])
+
+    # 3. the_apps_own_set_fills_in_until_a_result_comes
+    c = fed(s, verdict_source="stamp")
+    said(c, "t3", "how is the weather in Southport")
+    judged(c, "t3", stamp("t3", lead="weather"))
+    c.tick(1000)
+    out = data(c, "t3", HOME)
+    t.check("apps_own_set: the app's set fills the window",
+            places_of(out), ["Hometown"])
+    t.check("apps_own_set: not done on the app's set alone",
+            (build_of(out), pending_rows(out)[-1]["state"]), ("building", "showing"))
+    c.tick(2000)
+    w_call(c, "w1", "Southport", "t3")
+    w_call(c, "w2", "Eastham", "t3")
+    out = w_result(c, "w1", "Southport", "t3")
+    t.check("apps_own_set: the result of the turn replaced the app's set",
+            (places_of(out), build_of(out)), (["Southport"], "building"))
+    out = data(c, "t3", HOME)
+    t.check("apps_own_set: the app's set does not come back over a result",
+            (views(out), pending_rows(out)[-1]["sets"]["weather"]["rows"][0]["place"]["name"]),
+            ([], "Southport"))
+    out = w_result(c, "w2", "Eastham", "t3")
+    t.check("apps_own_set: done when no call of the turn runs any more",
+            (places_of(out), build_of(out)), (["Southport", "Eastham"], "done"))
+    t.check("apps_own_set: frozen after done", routes(data(c, "t3", HOME)), [])
+
+    # the app's set stays the filling when no result comes: done at data_wait_ms
+    c = fed(s, verdict_source="stamp")
+    said(c, "t4")
+    judged(c, "t4", stamp("t4", lead="weather"))
+    data(c, "t4", HOME)
+    c.tick(14999)
+    t.check("apps_own_set: before data_wait_ms nothing changes",
+            views(c.run({"route": "in_tick"})), [])
+    c.tick(1)
+    out = c.run({"route": "in_tick"})
+    t.check("apps_own_set: data_wait_ms ends the wait on the app's set",
+            (places_of(out), build_of(out)), (["Hometown"], "done"))
+
+    # a failed result fills nothing, and ends the wait for its call
+    c = fed(s, verdict_source="stamp")
+    said(c, "t5")
+    judged(c, "t5", stamp("t5", lead="weather"))
+    w_call(c, "w1", "Northfield", "t5")
+    w_call(c, "w2", "Southport", "t5")
+    out = w_result(c, "w1", "Northfield", "t5")
+    t.check("failed_result: one of two is in", (places_of(out), build_of(out)),
+            (["Northfield"], "building"))
+    out = w_result(c, "w2", "Southport", "t5", hop={"error_code": "tool_failed"})
+    t.check("failed_result: the failed one adds no row and the window is done",
+            (places_of(out), build_of(out)), (["Northfield"], "done"))
+
+    # 4. an_observed_tool_never_opens_a_window_by_itself (§ 9b.9)
+    c = fed(s)
+    out = w_call(c, "w0", "Southport", None) + w_result(c, "w0", "Southport", None)
+    t.check("never_opens: a call and a result without a turn", views(out), [])
+    t.check("never_opens: nothing asked", [r for r in routes(out) if r != "store"], [])
+    c = fed(s, verdict_source="stamp")
+    said(c, "t6")
+    out = w_call(c, "w1", "Southport", "t6") + w_result(c, "w1", "Southport", "t6")
+    t.check("never_opens: a result of a turn without a verdict opens nothing",
+            [r for r in routes(out) if r != "store"], [])
+    t.check("never_opens: it is kept as data of the turn",
+            [(x["tool"], x["row"]["place"]["name"]) for x in
+             pending_rows(out)[-1]["observed"]["results"]], [("weather", "Southport")])
+    out = judged(c, "t6", stamp("t6", lead="weather"))
+    t.check("never_opens: the verdict opens the window, with what was observed before it",
+            (places_of(out), build_of(out)), (["Southport"], "done"))
+    c = fed(s, verdict_source="stamp")
+    said(c, "t7")
+    w_call(c, "w1", "Southport", "t7")
+    w_result(c, "w1", "Southport", "t7")
+    out = judged(c, "t7", stamp("t7", topic="none", screen=False))
+    t.check("never_opens: no verdict, no window, whatever was observed", views(out), [])
+
+    # Neutral: without the topic in `observed_topics` nothing changes
+    c = fed(s, verdict_source="stamp", observed_topics=["search", "work"])
+    said(c, "n1")
+    out = judged(c, "n1", stamp("n1", lead="weather"))
+    t.check("neutral: the topic's own wait", pending_rows(out)[-1]["data_deadline"] - c.now, 4000)
+    w_call(c, "w1", "Southport", "n1")
+    out = w_result(c, "w1", "Southport", "n1")
+    t.check("neutral: an unlisted topic takes no result", views(out), [])
+    t.check("neutral: and none is kept",
+            [p.get("observed") for p in pending_rows(out)], [])
+    out = data(c, "n1", HOME)
+    t.check("neutral: the app's set is done at once, as before",
+            (places_of(out), build_of(out)), (["Hometown"], "done"))
+    c = fed(s, verdict_source="stamp", observed_topics=[])
+    said(c, "n2")
+    judged(c, "n2", stamp("n2", lead="weather"))
+    t.check("neutral: with nothing listed no call is observed",
+            w_call(c, "w1", "Southport", "n2") + w_result(c, "w1", "Southport", "n2"), [])
+    c = Cell(s, verdict_source="stamp", observed_topics=["sample"])
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [sample()]})
+    said(c, "n3")
+    out = judged(c, "n3", stamp("n3"))
+    t.check("neutral: a listed topic without a tool's set keeps its wait",
+            pending_rows(out)[-1]["data_deadline"] - c.now, 4000)
+    t.check("neutral: and observes nothing", w_call(c, "w1", "Southport", "n3"), [])
+    out = data(c, "n3", ROWS)
+    t.check("neutral: and is done on its app's set", build_of(out), "done")
+    c = Cell(s, verdict_source="stamp", observed_topics=["sample"])
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [places_topic()]})
+    said(c, "n4")
+    judged(c, "n4", stamp("n4", lead="weather"))
+    w_call(c, "w1", "Southport", "n4")
+    out = w_result(c, "w1", "Southport", "n4")
+    t.check("the app's topic alone in the list is fed as well",
+            (places_of(out), build_of(out)), (["Southport"], "done"))
+
+    # The selector way never rebuilds a set: it is fed once, when no call runs any more
+    c = fed(s)
+    c.run({"route": "turn", "turn_id": "s1"},
+          {"messages": [{"type": "text", "text": "the weather in two places"}]})
+    out = c.run({"route": "in_decision", "show_id": "s1"},
+                verdict("sample", 0.9, "weather"), ctx=DEC_CTX)
+    t.check("selector_way: hint and data request", routes(out)[:2], ["view", "in_show"])
+    w_call(c, "w1", "Northfield", "s1")
+    w_call(c, "w2", "Southport", "s1")
+    out = w_result(c, "w2", "Southport", "s1")
+    t.check("selector_way: nothing placed while a call of the turn runs", views(out), [])
+    out = w_result(c, "w1", "Northfield", "s1")
+    t.check("selector_way: both results in one set, in the order of the calls",
+            places_of(out), ["Northfield", "Southport"])
+    t.check("selector_way: the turn closes", pending_rows(out)[-1]["state"], "done")
+
+    # The selector way: a verdict while a call of the turn runs places none of the results
+    # that are there; the last result places them all (§ 9b.14).
+    c = fed(s)
+    c.run({"route": "turn", "turn_id": "s3"},
+          {"messages": [{"type": "text", "text": "the weather in two places"}]})
+    w_call(c, "w1", "Northfield", "s3")
+    w_call(c, "w2", "Southport", "s3")
+    w_result(c, "w1", "Northfield", "s3")
+    out = c.run({"route": "in_decision", "show_id": "s3"},
+                verdict("sample", 0.9, "weather"), ctx=DEC_CTX)
+    t.check("selector_mid_call: the verdict places nothing while a call runs",
+            (places_of(out), last_state(out)), ([], "showing"))
+    out = w_result(c, "w2", "Southport", "s3")
+    t.check("selector_mid_call: the last result places both, in the order of the calls",
+            (places_of(out), last_state(out)),
+            (["Northfield", "Southport"], "done"))
+
+    # A result of the turn leads (§ 9b.9): the verdict chose `brief`, the turn's data bind
+    # the tool's set `weather`.
+    brief = {"brief": {"audience_set": ["*"], "value": {"title": "Brief"}}}
+    c = fed(s, verdict_source="stamp")
+    said(c, "l1", "the weather in Northfield and Southport")
+    judged(c, "l1", stamp("l1", lead="brief"))
+    out = data(c, "l1", dict(HOME, **brief))
+    t.check("turn_leads: before a result the verdict's lead stands",
+            ("show-sample-brief" in screen_ids(out), places_of(out), build_of(out)),
+            (True, [], "building"))
+    w_call(c, "w1", "Northfield", "l1")
+    w_call(c, "w2", "Southport", "l1")
+    out = w_result(c, "w1", "Northfield", "l1")
+    t.check("turn_leads: the first result puts the tool's candidate in the lead",
+            ("show-sample-brief" in screen_ids(out), places_of(out), build_of(out)),
+            (False, ["Northfield"], "building"))
+    out = w_result(c, "w2", "Southport", "l1")
+    t.check("turn_leads: the window is done with the turn's data as its lead",
+            ("show-sample-brief" in screen_ids(out), places_of(out), build_of(out)),
+            (False, ["Northfield", "Southport"], "done"))
+    c = fed(s, verdict_source="stamp")
+    said(c, "l2")
+    judged(c, "l2", stamp("l2", lead="brief"))
+    data(c, "l2", dict(HOME, **brief))
+    c.tick(15000)
+    out = c.run({"route": "in_tick"})
+    t.check("turn_leads: without a result the verdict's lead stays",
+            ("show-sample-brief" in screen_ids(out), places_of(out), build_of(out)),
+            (True, [], "done"))
+    c = fed(s)
+    c.run({"route": "turn", "turn_id": "l3"},
+          {"messages": [{"type": "text", "text": "the weather in two places"}]})
+    for cid, place in (("w1", "Northfield"), ("w2", "Southport")):
+        w_call(c, cid, place, "l3")
+        w_result(c, cid, place, "l3")
+    out = c.run({"route": "in_decision", "show_id": "l3"},
+                verdict("sample", 0.9, "brief"), ctx=DEC_CTX)
+    t.check("turn_leads: on the selector way as well",
+            ("show-sample-brief" in screen_ids(out), places_of(out),
+             last_state(out)),
+            (False, ["Northfield", "Southport"], "done"))
+
+    # A call before the stamp of a turn that came without a `turn_id` (§ 9b.9, § 9b.12):
+    # the turn moved to the stamp's id, the result finds it by the id it carries.
+    c = fed(s, verdict_source="stamp")
+    unkeyed(c, "the weather in Northfield and Southport", ctx={"audience_set": STAR})
+    w_call(c, "w1", "Northfield", KEEPER)
+    w_call(c, "w2", "Southport", KEEPER)
+    judged(c, KEEPER, stamp(KEEPER, lead="weather"), ctx={"audience_set": STAR})
+    out = w_result(c, "w1", "Northfield", KEEPER)
+    t.check("unkeyed_call: the result of a call before the stamp stands in the window",
+            (places_of(out), build_of(out)), (["Northfield"], "building"))
+    t.check("unkeyed_call: the call's rows moved to the turn",
+            sorted({w["turn_id"] for w in work_rows(out)}), [KEEPER])
+    out = w_result(c, "w2", "Southport", KEEPER)
+    t.check("unkeyed_call: the second one joins it, then done",
+            (places_of(out), build_of(out)), (["Northfield", "Southport"], "done"))
+
+    # The rows of `work` (§ 9b.9): with a built-in topic listed every listed tool, as before;
+    # with app topics alone only the tools they take.
+    c = Cell(s, observed_topics=["sample"])
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [places_topic()]})
+    t.check("work_rows: app topics alone, a tool none of them takes leaves no row",
+            call(c, "bash", "b1", {"command": "ls"}), [])
+    t.check("work_rows: app topics alone, the tool a listed topic takes is a row",
+            [(w["tool"], w["summary"]) for w in
+             work_rows(w_call(c, "w1", "Southport", None))],
+            [("weather", "weather: Southport")])
+    c = Cell(s, observed_topics=["search", "work"])
+    c.run({"route": "show_topics", "show_app": "/app", "show_at": "./show"},
+          {"topics": [places_topic()]})
+    t.check("work_rows: from the factory a call of weather is a step of work",
+            [(w["tool"], w["summary"]) for w in
+             work_rows(w_call(c, "w1", "Southport", None))],
+            [("weather", "weather: Southport")])
+    t.check("work_rows: from the factory every listed tool, as before",
+            [w["tool"] for w in work_rows(call(c, "bash", "b1", {"command": "ls"}))],
+            ["bash"])
+
+
 TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_threshold),
           ("BINDING", t_binding), ("AUDIENCE", t_audience), ("TURNS", t_turns),
           ("PARTIAL", t_partial),
@@ -2455,6 +2842,7 @@ TABLES = [("MANIFEST", t_manifest), ("QUESTIONS", t_questions), ("THRESHOLD", t_
           ("SOURCE", t_source), ("REGISTRY", t_registry), ("DATAROUND", t_data_round),
           ("FOLLOWUP", t_followup), ("RESULTS", t_results),
           ("STAMP", t_stamp), ("FORMFALL", t_form_fallback), ("JOIN", t_join),
+          ("ONEWINDOW", t_onewindow),
           ("TOPICS", t_topics),
           ("TOPICSWIRE", t_topics_wire),
           ("CONTRACT", t_contract), ("FOREIGN", t_foreign_round),

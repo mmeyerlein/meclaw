@@ -714,12 +714,20 @@ def merge_gate_base(repo, master, tip, receipt_doc):
 #     status test count) and a wave's own records `plans/<wave>/{berichte,
 #     straenge,receipts}/**` (`RELEASE_RECORD_WAVE`) -- a wave record a
 #     committed script or test names is a test input and no record
-#     (`reuse_readers`). ROADMAP.md (station `roadmap-anchors`) and every other
-#     `plans/**` path (export fixtures, goldens, corridor fixtures, scripts) are
-#     no record: review C1 of RT2 let `plans/export-fixtures/make_export.py`, a
-#     golden and a new 100755 file past the release gate under `plans/`.
-#     Release 0.77.0 wrote ROADMAP.md and the wave ledger after the battery
-#     (6946a6ab..064ec541c): that cut is refused now, fail closed on purpose;
+#     (`reuse_readers`). Every other `plans/**` path (export fixtures, goldens,
+#     corridor fixtures, scripts) is no record: review C1 of RT2 let
+#     `plans/export-fixtures/make_export.py`, a golden and a new 100755 file
+#     past the release gate under `plans/`. Release 0.77.0 wrote ROADMAP.md and
+#     the wave ledger after the battery (6946a6ab..064ec541c): that cut is
+#     refused now, fail closed on purpose;
+#   * ROADMAP.md (station `roadmap-anchors`), modified, 100644, only when the
+#     change adds release lines under `## Shipped` and nothing else
+#     (`shipped_only`): `release.sh prepare` writes the release's line there on
+#     the cut (GH #1518), after the battery measured it. An added line is a
+#     bullet `- vX.Y.Z: ...` (or the indented continuation of one it adds) whose
+#     version is not under § Shipped before and stands there once after. A line
+#     above or below § Shipped, prose, a heading, a twin or copy of a version, a
+#     changed or deleted line is foreign;
 #   * version places, only when nothing but the version string moves:
 #     `Cargo.toml` / `crates/*/Cargo.toml` (`[workspace.package]`/`[package]`
 #     version, `meclaw-*` path pins), `Cargo.lock` (versions of `meclaw*`
@@ -824,6 +832,52 @@ def _blob(repo, rev, path):
     return raw.decode("utf-8", "replace")
 
 
+ROADMAP_FILE = "ROADMAP.md"
+SHIPPED_HEAD = re.compile(r"^##\s+Shipped\b")
+SHIPPED_LINE = re.compile(r"^- v(%s):" % SEMVER)
+SHIPPED_MORE = re.compile(r"^  \S")
+
+
+def shipped_versions(lines):
+    """The versions of the `- vX.Y.Z:` lines under `## Shipped`, in order."""
+    head = next((i for i, row in enumerate(lines) if SHIPPED_HEAD.match(row)), None)
+    if head is None:
+        return []
+    end = next((i for i in range(head + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return [m.group(1) for m in map(SHIPPED_LINE.match, lines[head + 1:end]) if m]
+
+
+def shipped_only(old, new):
+    """True when `new` is `old` with release lines added under `## Shipped` and
+    nothing else: no line changed or deleted; every added block lies between
+    the § Shipped heading of `new` and the next `## ` heading, starts with a
+    `- vX.Y.Z:` line and goes on only with such lines or their indented
+    continuation; every added version is new to § Shipped and stands there once
+    (re-check R2 A: no twin, no copy, no prose, no heading)."""
+    import difflib
+    a, b = old.split("\n"), new.split("\n")
+    head = next((i for i, row in enumerate(b) if SHIPPED_HEAD.match(row)), None)
+    if head is None or a == b:
+        return False
+    end = next((i for i in range(head + 1, len(b)) if b[i].startswith("## ")), len(b))
+    added = []
+    for op, _, _, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        if op != "insert" or j1 <= head or j2 > end:
+            return False
+        if not SHIPPED_LINE.match(b[j1]):
+            return False
+        for row in b[j1:j2]:
+            m = SHIPPED_LINE.match(row)
+            if m:
+                added.append(m.group(1))
+            elif not SHIPPED_MORE.match(row):
+                return False
+    before, after = shipped_versions(a), shipped_versions(b)
+    return all(v not in before and after.count(v) == 1 for v in added)
+
+
 def release_foreign(repo, a, b, status, old_mode, new_mode, path):
     """None when the change of `path` in `a..b` is one a release record may
     make, else the reason (the rule above; the readers half is in
@@ -838,6 +892,10 @@ def release_foreign(repo, a, b, status, old_mode, new_mode, path):
         return "added" if status == "A" else "deleted"
     if old_mode != new_mode:
         return "mode %s -> %s" % (old_mode, new_mode)
+    if path == ROADMAP_FILE and new_mode == RECORD_MODE:
+        if shipped_only(_blob(repo, a, path), _blob(repo, b, path)):
+            return None
+        return "changes more than lines added under ## Shipped"
     norm = release_normaliser(path)
     if norm is None:
         return "not a version or CHANGELOG file"

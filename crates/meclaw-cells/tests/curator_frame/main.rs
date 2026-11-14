@@ -1,10 +1,13 @@
 //! Test harness `curator_frame` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/assemble_cell.rs"]
+pub mod assemble_cell;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
 #[path = "../support/curator_target.rs"]
 pub mod curator_target;
+pub mod gh_d54g_stamp_notes;
 pub mod gh_d58_frame_a_class_note_follows_the_stamp_class;
 pub mod gh_d58_frame_a_class_with_pair_proposes_question_and_answer;
 pub mod gh_d58_frame_a_class_without_tools_gets_none;

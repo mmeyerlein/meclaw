@@ -18,7 +18,7 @@ const T: &str = "chat#0f1e2d3c4b5a6978";
 #[test]
 fn past_the_deadline_the_answer_is_late_and_keeps_its_label() {
     let (key, _) = open_advice("k-7", json!([{"turn_id": T, "deadline_ms": 1_000}]));
-    let out = assemble(&[], answer_in(&key, "It is 21C."));
+    let out = through_store(answer_in(&key, "It is 21C."));
     let ans = on_route(&out, "answer");
     assert_eq!(hop_str(ans, "late"), "1", "{ans}");
     assert_eq!(hop_str(ans, "turn_id"), T, "late, never re-identified");
@@ -30,7 +30,7 @@ fn inside_the_deadline_it_is_a_leg() {
         "k-7",
         json!([{"turn_id": T, "deadline_ms": now_ms() + 600_000}]),
     );
-    let out = assemble(&[], answer_in(&key, "It is 21C."));
+    let out = through_store(answer_in(&key, "It is 21C."));
     assert_eq!(hop_str(on_route(&out, "answer"), "late"), "0");
 }
 
@@ -38,7 +38,7 @@ fn inside_the_deadline_it_is_a_leg() {
 fn an_ordinary_turns_answer_carries_the_keys_empty() {
     // Keys always present, empty where they mean nothing: a CEL modifier that reads an
     // absent hop key fails and skips its edge.
-    let out = assemble(&[], answer_in(T, "hello"));
+    let out = through_store(answer_in(T, "hello"));
     let ans = on_route(&out, "answer");
     assert_eq!(hop_str(ans, "turn_id"), T);
     assert_eq!(hop_str(ans, "round_id"), T);
@@ -49,9 +49,10 @@ fn an_ordinary_turns_answer_carries_the_keys_empty() {
 fn only_the_answer_route_hands_out_the_label() {
     let (key, _) = open_advice("k-7", json!([{"turn_id": T, "deadline_ms": 1_000}]));
     let out = assemble(&[], answer_in(&key, "It is 21C."));
-    // GH #889: the answer is no longer stored; the store op beside it is the
-    // round's drop (`round-drop`), and that one stays on the key too.
-    let store = in_phase(&out, "round-drop");
+    // GH #889: the answer is no longer stored; the store op it sends is the
+    // round's drop, and that one stays on the key too. GH #1505: the drop
+    // rides in the answer's gate (`answer-gate`).
+    let store = in_phase(&out, "answer-gate");
     assert_eq!(
         hop_str(store, "turn_id"),
         key,

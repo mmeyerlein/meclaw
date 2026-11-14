@@ -102,8 +102,8 @@ use crate::voice::contract::{
     AppendKind, AudioFormat, DuplexControl, DuplexError, DuplexEvent, DuplexProvider,
     DuplexSession, Speaker, SttError, SttEvent, TtsError,
 };
-use crate::voice::io::{ToConnection, VoiceIoShared, register, unregister};
-use crate::voice::link::{ClientLink, Incoming, LinkSink, Outgoing};
+use crate::voice::io::{ToConnection, VoiceIoShared, new_session_way, register, unregister};
+use crate::voice::link::{ClientLink, Incoming, LinkSink, LinkStream, Outgoing};
 use crate::voice::service::{Negotiated, audio_out_frame_ms, stt_name, tts_name};
 use crate::voice::wire::{
     CLOSE_SESSION_NOT_TAKEN, ClientFrame, Mode, PROTOCOL, ServerFrame, SpeakEndReason,
@@ -132,6 +132,11 @@ const AUDIO_QUEUE: usize = 32;
 
 /// The sending half of the client link, whatever carries it.
 type Sink = LinkSink;
+
+/// The text that waits for the line's first quiet moment (GH #1400): its cut
+/// (`split_id`), its parts (channel, event id, words) in order, and since when
+/// the first part waits.
+type QuietHeld = (String, Vec<(AppendKind, String, String)>, Instant);
 
 /// One running recognition session.
 struct SttSession {
@@ -196,6 +201,31 @@ impl SttSession {
     }
 }
 
+/// Whether the first audio of one synthesis has left for the client (d54g
+/// callseam): what makes the `first_audio` stamp one per synthesis, however
+/// many chunks the provider cuts it into.
+#[derive(Debug, Default)]
+struct FirstAudio(bool);
+
+impl FirstAudio {
+    /// Whether `frames` are this synthesis' first audio. A chunk the framer
+    /// held back whole is no audio yet: the stamp waits for the first frame
+    /// that actually travels.
+    fn leaves_with(&mut self, frames: &[Vec<u8>]) -> bool {
+        if self.0 || frames.iter().all(Vec::is_empty) {
+            return false;
+        }
+        self.0 = true;
+        true
+    }
+}
+
+/// Milliseconds since the connection opened: the clock of a cascade
+/// connection, which has no session clock (d54g callseam).
+fn since_ms(opened: Instant) -> u64 {
+    u64::try_from(opened.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// One running synthesis.
 struct Speaking {
     /// The id its `speak_start`/`speak_end` pair carries.
@@ -208,6 +238,8 @@ struct Speaking {
     framer: Framer,
     /// The verdict, once the synthesis future is over.
     done_rx: oneshot::Receiver<Result<(), TtsError>>,
+    /// Whether its first audio has left (the `first_audio` stamp).
+    first_audio: FirstAudio,
 }
 
 impl Speaking {
@@ -449,6 +481,8 @@ pub async fn run_connection(
         unregister(&shared, &session_id, conn_id).await;
         return;
     }
+    // The zero of this connection's clock, for the `first_audio` stamp.
+    let opened = Instant::now();
 
     // The echo path has no provider to lose, so it has no session to restart.
     //
@@ -1014,12 +1048,31 @@ pub async fn run_connection(
                         // Framed here rather than at the provider: the chunk
                         // size is the vendor's business, the frame size is the
                         // client's, and this is the only place that knows both.
-                        let frames = match speaking.as_mut() {
-                            Some(sp) => sp.framer.push(bytes),
-                            None => vec![bytes],
+                        let (frames, first) = match speaking.as_mut() {
+                            Some(sp) => {
+                                let frames = sp.framer.push(bytes);
+                                let first = (shared.emit_first_audio
+                                    && sp.first_audio.leaves_with(&frames))
+                                .then(|| sp.speak_id.clone());
+                                (frames, first)
+                            }
+                            None => (vec![bytes], None),
                         };
                         if send_audio(&mut sink, frames).await.is_err() {
                             break;
+                        }
+                        // d54g callseam: the stamp of the way through a
+                        // speech synthesis. After the send, so it says the
+                        // audio went out; only where ordered, so a cell that
+                        // did not ask sends the handler what it always sent.
+                        if let Some(speak_id) = first {
+                            shared
+                                .emit(VoiceEvent::SpeakAudioOut {
+                                    session_id: session_id.clone(),
+                                    speak_id,
+                                    at_ms: since_ms(opened),
+                                })
+                                .await;
                         }
                     }
                     SynthTick::End => {
@@ -1029,9 +1082,21 @@ pub async fn run_connection(
                             // A held part-sample is the provider's last bytes,
                             // not noise: it leaves as a short last frame ahead
                             // of the verdict, in the order a client plays it.
-                            let flushed =
-                                send_audio(&mut sink, sp.framer.flush().into_iter().collect())
+                            let last: Vec<Vec<u8>> = sp.framer.flush().into_iter().collect();
+                            // A synthesis shorter than one frame: its held
+                            // part-sample is its first audio.
+                            let first =
+                                shared.emit_first_audio && sp.first_audio.leaves_with(&last);
+                            let flushed = send_audio(&mut sink, last).await;
+                            if first && flushed.is_ok() {
+                                shared
+                                    .emit(VoiceEvent::SpeakAudioOut {
+                                        session_id: session_id.clone(),
+                                        speak_id: id.clone(),
+                                        at_ms: since_ms(opened),
+                                    })
                                     .await;
+                            }
                             let (reason, detail) = sp.outcome(shared.external_timeout).await;
                             if flushed.is_err() {
                                 // The socket died on the last frame. `speaking`
@@ -1088,12 +1153,55 @@ pub async fn run_connection(
 // The duplex path (welle live, contract § 1.3)
 // ──────────────────────────────────────────────────────────────────────────
 
-/// The longest append one `session.*.append` may carry, in characters.
+/// The cut of one append for a provider whose block names no ceiling of its
+/// own, in characters, and the most `duplex.advise_split_chars` may say.
 ///
-/// The documented ceiling is 500 tokens; 1 800 characters is the wave's
-/// conservative reading of it (contract § 1.5). Longer guidance is split at
-/// paragraph boundaries by the handler, never here.
+/// `gpt_live` counts its ceiling in tokens (`advise_max_tokens` times
+/// `chars_per_token`, 1 080 characters as shipped): 1 800 characters was the
+/// first reading of its 500 tokens, and the provider refused appends under
+/// it. Longer guidance is split by the handler, never here.
 pub(crate) const APPEND_MAX_CHARS: usize = 1_800;
+
+/// What stands before the part of the caller's sentence a session is told
+/// when it takes over inside that sentence (d54g callseam).
+///
+/// Written here and not by the colony: the takeover at the cap happens on the
+/// connection's clock, and a round trip through a colony at that moment is the
+/// wait the cap ends. It names what the words are and nothing about them, and
+/// it holds whether the caller is still talking or the model is answering
+/// inside the same turn.
+const HEARD_SO_FAR_LEAD: &str =
+    "The caller's turn is still open. What they have said in it so far: ";
+
+/// `text` in pieces one append can carry ([`APPEND_MAX_CHARS`]), cut between
+/// words where there is a word boundary and inside a word only where one word
+/// alone is longer than an append. Joined, the pieces are `text`.
+///
+/// The handler splits the guidance a colony writes; this is for the one text
+/// the connection writes itself, the caller's sentence at a takeover.
+fn append_parts(text: &str) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut part = String::new();
+    let mut len = 0usize;
+    for word in text.split_inclusive(char::is_whitespace) {
+        if len > 0 && len + word.chars().count() > APPEND_MAX_CHARS {
+            parts.push(std::mem::take(&mut part));
+            len = 0;
+        }
+        for ch in word.chars() {
+            if len == APPEND_MAX_CHARS {
+                parts.push(std::mem::take(&mut part));
+                len = 0;
+            }
+            part.push(ch);
+            len += 1;
+        }
+    }
+    if !part.is_empty() {
+        parts.push(part);
+    }
+    parts
+}
 
 /// One running duplex session, as the connection holds it.
 ///
@@ -1230,6 +1338,17 @@ impl Prewarmed {
         }
     }
 
+    /// Whether the provider's run is already over: its handshake failed while
+    /// the line rang, or it ran and ended (GH #1055, the review's finding
+    /// M1). The verdict is there, or the task that owed it is gone. Such a
+    /// session has no model behind it and is not adopted.
+    fn is_over(&mut self) -> bool {
+        !matches!(
+            self.run.done_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        )
+    }
+
     /// The connection takes the run: the pump sends what it kept, ahead of
     /// everything the model says from here on.
     fn adopt(self) -> DuplexRun {
@@ -1238,11 +1357,281 @@ impl Prewarmed {
     }
 }
 
-/// How much of what a parked model said is kept for the caller, in audio
-/// milliseconds. A ring rarely lasts this long; past it the oldest goes, so a
-/// caller who picks up late hears the end of the greeting rather than a
-/// minute of the model waiting (GH #1055).
+/// How much of what a parked model SAID is kept for the caller, in
+/// milliseconds of audible audio. It bounds the speech, not the ring: the
+/// silence a model streams while it waits for the pickup does not count, so a
+/// ring longer than this leaves the greeting where it was. Past it the oldest
+/// goes, so a caller who picks up late hears the end of what the model said
+/// rather than a minute of it (GH #1055).
 const PARK_KEEP_MS: u64 = 15_000;
+
+/// What a parked session keeps of its model for the caller who picks up
+/// (GH #1055, the review's finding C1).
+///
+/// A live model streams silence between and after its phrases. Kept as it
+/// came, ten seconds of ringing after the greeting were ten seconds of
+/// silence in front of every later word, and the cap counted them, so a ring
+/// longer than [`PARK_KEEP_MS`] pushed the greeting out. Hence three states
+/// for a chunk:
+/// - silence before the first audible window: dropped;
+/// - audible: kept, and counted against the cap;
+/// - silence after something audible: `pending`. It is the model's own pause
+///   if it speaks again, and joins what is kept then; it is the wait for the
+///   pickup if it does not, and is dropped at the adoption.
+///
+/// Only the model's first answer, the greeting, is kept. What it says after
+/// it into the ring is said to a caller who is not there yet: eight seconds of
+/// its own silence and a second phrase behind the greeting were what the
+/// caller heard first. Where the greeting ends is the turn machine's verdict
+/// ([`ParkedGreeting`]), and [`Self::end_greeting`] is what it does here.
+struct ParkBuffer {
+    rate: u32,
+    level: f64,
+    /// Kept for the caller, oldest first; `true` marks a chunk with speech.
+    /// The number is where the chunk stood on the session's clock when it
+    /// arrived, for a pause where the pause began.
+    kept: std::collections::VecDeque<(Vec<u8>, bool, u64)>,
+    /// The audible part of `kept`, the one [`PARK_KEEP_MS`] bounds.
+    spoken_ms: u64,
+    /// Silence since the last audible chunk, not yet a pause and not yet the
+    /// wait for the pickup. Bounded by the session's deadline
+    /// (`prewarm_ttl_ms`), like the events a parked session keeps.
+    pending: Vec<Vec<u8>>,
+    /// Where `pending` began on the session's clock.
+    pending_at_ms: u64,
+    /// Silence dropped before the first audible window.
+    dropped_ms: u64,
+    /// What the cap pushed out.
+    trimmed_ms: u64,
+    /// The greeting is over: nothing the model sends from here on is kept.
+    closed: bool,
+    /// What the model said and streamed after its greeting, dropped.
+    cut_ms: u64,
+}
+
+/// What a [`ParkBuffer`] hands the connection at the adoption.
+struct Parked {
+    /// The chunks for the caller, oldest first.
+    audio: std::collections::VecDeque<Vec<u8>>,
+    /// Their length.
+    kept_ms: u64,
+    /// Silence dropped before the first audible window.
+    dropped_ms: u64,
+    /// What the cap pushed out.
+    trimmed_ms: u64,
+    /// The silence after the last audible chunk, dropped here.
+    tail_ms: u64,
+    /// What the model sent after its greeting, dropped.
+    cut_ms: u64,
+}
+
+impl ParkBuffer {
+    fn new(rate: u32, level: f64) -> Self {
+        Self {
+            rate,
+            level,
+            kept: std::collections::VecDeque::new(),
+            spoken_ms: 0,
+            pending: Vec::new(),
+            pending_at_ms: 0,
+            dropped_ms: 0,
+            trimmed_ms: 0,
+            closed: false,
+            cut_ms: 0,
+        }
+    }
+
+    /// File one chunk the parked model sent; `at_ms` is where the session's
+    /// clock stood when it arrived.
+    fn push(&mut self, chunk: Vec<u8>, at_ms: u64) {
+        if self.closed {
+            self.cut_ms += pcm_ms(chunk.len(), self.rate);
+            return;
+        }
+        let Some(at) = crate::voice::duck::first_audible(&chunk, self.rate, self.level) else {
+            if self.kept.is_empty() {
+                self.dropped_ms += pcm_ms(chunk.len(), self.rate);
+            } else {
+                if self.pending.is_empty() {
+                    self.pending_at_ms = at_ms;
+                }
+                self.pending.push(chunk);
+            }
+            return;
+        };
+        let chunk = if self.kept.is_empty() {
+            // The first word starts what is kept, to within one window.
+            self.dropped_ms += pcm_ms(at, self.rate);
+            chunk[at..].to_vec()
+        } else {
+            chunk
+        };
+        // The model speaks again: the silence before this was its own pause.
+        let pause_at_ms = self.pending_at_ms;
+        for pause in self.pending.drain(..) {
+            self.kept.push_back((pause, false, pause_at_ms));
+        }
+        self.spoken_ms += pcm_ms(chunk.len(), self.rate);
+        self.kept.push_back((chunk, true, at_ms));
+        while self.spoken_ms > PARK_KEEP_MS {
+            let Some((old, spoken, _)) = self.kept.pop_front() else {
+                break;
+            };
+            let ms = pcm_ms(old.len(), self.rate);
+            self.trimmed_ms += ms;
+            if spoken {
+                self.spoken_ms = self.spoken_ms.saturating_sub(ms);
+            }
+        }
+        // What is kept never starts with a pause.
+        while matches!(self.kept.front(), Some((_, false, _))) {
+            if let Some((old, _, _)) = self.kept.pop_front() {
+                self.trimmed_ms += pcm_ms(old.len(), self.rate);
+            }
+        }
+    }
+
+    /// The greeting is over: the model began a second answer at `start_ms` on
+    /// its clock. What is kept ends where the pause before that answer began,
+    /// and nothing that arrives from here on is kept.
+    ///
+    /// The pause is the last one that began at or before `start_ms`: the
+    /// silence still pending where the second answer's audio is yet to come,
+    /// a pause already among the kept chunks where it came before its
+    /// transcript did (audio and events travel on two channels). Where no
+    /// such pause is found what is kept stays whole: a greeting cut short is
+    /// worse than a word too many.
+    fn end_greeting(&mut self, start_ms: u64) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        let rate = self.rate;
+        let pending_is_the_pause = !self.pending.is_empty() && self.pending_at_ms <= start_ms;
+        if !pending_is_the_pause {
+            let mut cut = None;
+            let mut after_speech = false;
+            for (i, (_, spoken, at_ms)) in self.kept.iter().enumerate() {
+                if after_speech && !*spoken && *at_ms <= start_ms {
+                    cut = Some(i);
+                }
+                after_speech = *spoken;
+            }
+            if let Some(i) = cut {
+                let after: Vec<(Vec<u8>, bool, u64)> = self.kept.drain(i..).collect();
+                for (chunk, spoken, _) in after {
+                    let ms = pcm_ms(chunk.len(), rate);
+                    self.cut_ms += ms;
+                    if spoken {
+                        self.spoken_ms = self.spoken_ms.saturating_sub(ms);
+                    }
+                }
+            }
+        }
+        let pending: Vec<Vec<u8>> = std::mem::take(&mut self.pending);
+        for chunk in pending {
+            self.cut_ms += pcm_ms(chunk.len(), rate);
+        }
+    }
+
+    /// The adoption: what is kept goes to the caller, the silence the model
+    /// streamed after its last word, until the pickup, does not.
+    fn adopt(self) -> Parked {
+        let rate = self.rate;
+        let tail_ms: u64 = self.pending.iter().map(|c| pcm_ms(c.len(), rate)).sum();
+        let kept_ms: u64 = self
+            .kept
+            .iter()
+            .map(|(c, _, _)| pcm_ms(c.len(), rate))
+            .sum();
+        Parked {
+            audio: self.kept.into_iter().map(|(c, _, _)| c).collect(),
+            kept_ms,
+            dropped_ms: self.dropped_ms,
+            trimmed_ms: self.trimmed_ms,
+            tail_ms,
+            cut_ms: self.cut_ms,
+        }
+    }
+}
+
+/// Where the greeting of a parked model ends.
+///
+/// Nobody forms turns while a session is parked: its events reach the handler
+/// only after the adoption. So the pump asks the turn machine's own rule for
+/// the one verdict it needs. The model's first answer is its first BLOCK, and
+/// a fragment of the model's that starts more than `turn_gap_ms` after the
+/// block last spoke opens a second one
+/// ([`crate::voice::live_turns::opens_new_block`], the rule the open turn
+/// counts blocks with). Measured on the model's clock, with the gap the cell
+/// forms its turns with; no value of its own.
+struct ParkedGreeting {
+    gap_ms: u64,
+    /// The session's clock, kept the way `run_duplex` keeps the call's
+    /// ([`stamp_model_clock`], [`clock_now_ms`]): the last stamp and when it
+    /// arrived.
+    clock: Option<(u64, Instant)>,
+    opened: Instant,
+    /// Where the model's running block last spoke, on its clock.
+    block_end_ms: Option<u64>,
+    /// The second block began.
+    over: bool,
+}
+
+impl ParkedGreeting {
+    fn new(gap_ms: u64) -> Self {
+        Self {
+            gap_ms,
+            clock: None,
+            opened: Instant::now(),
+            block_end_ms: None,
+            over: false,
+        }
+    }
+
+    /// Where the session's clock stands now: what a chunk arriving now is
+    /// filed under, like the audio `run_duplex` reports to the turn machine.
+    fn now_ms(&self) -> u64 {
+        clock_now_ms(self.clock, self.opened)
+    }
+
+    /// Read one event of the parked session. It comes back where it is kept
+    /// for the handler; a fragment of what the model said after its greeting
+    /// does not, because the caller never hears those words and the handler
+    /// would take them for said.
+    fn judge(&mut self, event: DuplexEvent, park: &mut ParkBuffer) -> Option<DuplexEvent> {
+        match &event {
+            DuplexEvent::Transcript { end_ms, .. } | DuplexEvent::Appended { end_ms, .. } => {
+                stamp_model_clock(&mut self.clock, *end_ms);
+            }
+            DuplexEvent::DelegationCreated { offset_ms, .. } => {
+                stamp_model_clock(&mut self.clock, *offset_ms);
+            }
+            _ => {}
+        }
+        let DuplexEvent::Transcript {
+            speaker: Speaker::Assistant,
+            start_ms,
+            end_ms,
+            ..
+        } = &event
+        else {
+            return Some(event);
+        };
+        if self.over {
+            return None;
+        }
+        if self.block_end_ms.is_some()
+            && crate::voice::live_turns::opens_new_block(self.block_end_ms, *start_ms, self.gap_ms)
+        {
+            self.over = true;
+            park.end_greeting(*start_ms);
+            return None;
+        }
+        self.block_end_ms = Some(self.block_end_ms.map_or(*end_ms, |end| end.max(*end_ms)));
+        Some(event)
+    }
+}
 
 /// The length of one frame of the silence a parked session is fed.
 const PARK_FEED_FRAME: Duration = Duration::from_millis(20);
@@ -1268,18 +1657,23 @@ fn audible_offset_ms(armed: bool, chunk: &[u8], rate: u32, level: f64) -> Option
 ///
 /// A live model streams a continuous channel, silence included, in 100 ms
 /// chunks paced in real time (`meclaw-next/25-gpt-live/messungen`, S0 a1/a2),
-/// and its adapter blocks on a full channel (`providers/gpt_live.rs`,
-/// `audio_out.send(..).await` and `events.send(..).await`). Parked with nobody
-/// reading, the 32-chunk queue was full after 3.2 s of ringing and the
-/// provider loop stood still — keepalive, socket reads and idle deadline with
-/// it — and what was queued by then was the silence BEFORE the greeting, all of
+/// and its adapter stops reading the socket while a channel is full
+/// (`providers/gpt_live.rs`, the frame `held` for `audio_out`/`events`; until
+/// d54g weblive it blocked outright). Parked with nobody reading, the 32-chunk
+/// queue was full after 3.2 s of ringing and the provider loop stood still —
+/// socket reads and idle deadline with it — and what was queued by then was the silence BEFORE the greeting, all of
 /// it sent to the caller at the pickup and kept as a lag for the whole call.
 ///
 /// So while parked this task reads both channels at once:
 /// - audio: dropped until the first audible 20 ms (the gate's own test,
-///   [`crate::voice::duck::first_audible`] at `barge_level_dbfs`), kept from
-///   there on, at most [`PARK_KEEP_MS`] (oldest first out);
-/// - events: kept whole, nothing dropped (the TTL bounds them);
+///   [`crate::voice::duck::first_audible`] at `barge_level_dbfs`); from there
+///   on what the model says is kept, at most [`PARK_KEEP_MS`] of it (oldest
+///   first out), with its own pauses, and the silence after its last word is
+///   dropped at the adoption ([`ParkBuffer`]). Only the greeting: what the
+///   model says after its first answer is dropped, audio and transcript
+///   ([`ParkedGreeting`]);
+/// - events: read before the audio, so a fragment is judged before the
+///   audio that follows it, and kept (the TTL bounds them);
 /// - the model's way in: fed 20 ms frames of digital silence, the line every
 ///   measured session heard from a quiet caller (S0a: continuous silence
 ///   frames, 640 B every 20 ms) — a model that paces its output on its
@@ -1301,6 +1695,7 @@ async fn park_pump(
     mut adopt: oneshot::Receiver<()>,
     format: AudioFormat,
     level: f64,
+    gap_ms: u64,
     session_id: String,
 ) {
     use std::collections::VecDeque;
@@ -1310,12 +1705,12 @@ async fn park_pump(
     let mut tick = tokio::time::interval(PARK_FEED_FRAME);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut adopted = false;
-    let mut heard = false;
+    // Holds the model's audio until the adoption, `audio` from there on.
+    let mut park = Some(ParkBuffer::new(rate, level));
     let mut audio: VecDeque<Vec<u8>> = VecDeque::new();
-    let mut kept_ms: u64 = 0;
     let mut events: VecDeque<DuplexEvent> = VecDeque::new();
     let mut catchup_ms: u64 = 0;
-    let (mut dropped_ms, mut trimmed_ms) = (0u64, 0u64);
+    let mut greeting = ParkedGreeting::new(gap_ms);
     let (mut audio_open, mut events_open) = (true, true);
     loop {
         if adopted && !audio_open && !events_open && audio.is_empty() && events.is_empty() {
@@ -1329,12 +1724,28 @@ async fn park_pump(
                     adopted = true;
                     // The connection's reader feeds the model from here on.
                     feed = None;
-                    catchup_ms = audio.iter().map(|c| pcm_ms(c.len(), rate)).sum();
-                    tracing::info!(
-                        %session_id, kept_ms = catchup_ms, dropped_ms, trimmed_ms,
-                        events = events.len(),
-                        "voice: the early session is adopted with what the model said"
-                    );
+                    // What the model said before the pickup is judged as
+                    // parked, also where its event still waits in the queue.
+                    while let Ok(e) = events_from.try_recv() {
+                        let kept = match park.as_mut() {
+                            Some(p) => greeting.judge(e, p),
+                            None => Some(e),
+                        };
+                        events.extend(kept);
+                    }
+                    if let Some(parked) = park.take().map(ParkBuffer::adopt) {
+                        // Only what goes out ahead is a lag to catch up on;
+                        // the tail was never sent.
+                        catchup_ms = parked.kept_ms;
+                        tracing::info!(
+                            %session_id, kept_ms = parked.kept_ms,
+                            dropped_ms = parked.dropped_ms, trimmed_ms = parked.trimmed_ms,
+                            tail_ms = parked.tail_ms, cut_ms = parked.cut_ms,
+                            events = events.len(),
+                            "voice: the early session is adopted with what the model said"
+                        );
+                        audio = parked.audio;
+                    }
                 }
                 // Dropped unadopted: the call ended, the deadline struck, or
                 // the connection asked for another format.
@@ -1359,32 +1770,24 @@ async fn park_pump(
                 Err(_) => return,
             },
 
+            // Before the audio: a fragment sent ahead of its audio is read ahead
+            // of it, so the greeting is over before a word after it is filed.
+            e = events_from.recv(), if events_open && (!adopted || events.len() < AUDIO_QUEUE) => match e {
+                None => events_open = false,
+                Some(e) => {
+                    let kept = match park.as_mut() {
+                        Some(p) => greeting.judge(e, p),
+                        None => Some(e),
+                    };
+                    events.extend(kept);
+                }
+            },
+
             c = audio_from.recv(), if audio_open && (!adopted || audio.len() < AUDIO_QUEUE) => match c {
                 None => audio_open = false,
                 Some(c) if !adopted => {
-                    if !heard {
-                        match crate::voice::duck::first_audible(&c, rate, level) {
-                            None => {
-                                dropped_ms += pcm_ms(c.len(), rate);
-                                continue;
-                            }
-                            Some(at) => {
-                                heard = true;
-                                dropped_ms += pcm_ms(at, rate);
-                                let c = c[at..].to_vec();
-                                kept_ms += pcm_ms(c.len(), rate);
-                                audio.push_back(c);
-                            }
-                        }
-                    } else {
-                        kept_ms += pcm_ms(c.len(), rate);
-                        audio.push_back(c);
-                    }
-                    while kept_ms > PARK_KEEP_MS {
-                        let Some(old) = audio.pop_front() else { break };
-                        let ms = pcm_ms(old.len(), rate);
-                        kept_ms -= ms;
-                        trimmed_ms += ms;
+                    if let Some(p) = park.as_mut() {
+                        p.push(c, greeting.now_ms());
                     }
                 }
                 Some(c) => {
@@ -1396,11 +1799,6 @@ async fn park_pump(
                     }
                     audio.push_back(c);
                 }
-            },
-
-            e = events_from.recv(), if events_open && (!adopted || events.len() < AUDIO_QUEUE) => match e {
-                None => events_open = false,
-                Some(e) => events.push_back(e),
             },
 
             _ = tick.tick(), if feed.is_some() => {
@@ -1438,6 +1836,9 @@ async fn ask_seed(
             session_id: session_id.to_string(),
             reason,
             renewal_n,
+            // Wave d54g, strand kprofil: every ask names the limits of the
+            // model the session runs on, a renewal's as well as the first.
+            limits: shared.duplex_limits.clone(),
         })
         .await;
 }
@@ -1453,13 +1854,16 @@ async fn ask_seed(
 /// an earlier ring (`180` then `183`) or held by a connection — opens nothing:
 /// the check and the opening are one step under the registry's lock, so no
 /// provider handshake is paid for a session that is thrown away (R5).
-pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) {
+///
+/// Returns whether this call opened and parked one (d54g weblive, review
+/// M-3: a page counts past the name of an early session that ran out).
+pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) -> bool {
     let Some(provider) = shared.duplex.clone() else {
-        return;
+        return false;
     };
     let ttl = shared.duplex_prewarm_ttl_ms;
     if ttl == 0 || session_id.is_empty() {
-        return;
+        return false;
     }
     let format = provider.format();
     let level = crate::voice::duck::linear(shared.duck.level_dbfs);
@@ -1479,13 +1883,14 @@ pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) {
             adopted,
             format,
             level,
+            shared.duplex_turn_gap_ms,
             session_id.to_string(),
         ));
         Prewarmed { run, format, adopt }
     };
     let Some(token) = shared.park_prewarm(session_id, open).await else {
         tracing::debug!(%session_id, "voice: the call already has a session, no early one");
-        return;
+        return false;
     };
     tracing::info!(%session_id, ttl_ms = ttl, "voice: duplex session opened while the line rings");
     // The seed is asked for at the ring, not at the media (GH #1055 opened
@@ -1507,6 +1912,7 @@ pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) {
             );
         }
     });
+    true
 }
 
 /// The call ended before its media connection came: close its early session
@@ -1890,6 +2296,16 @@ struct Lineup {
     /// detector of its own, so a quiet moment is read off what the provider
     /// says: `spoken_quiet_ms` without any of it (review I-2).
     last_speech: Option<Instant>,
+    /// The caller's open turn, as the handler last told the client: the words
+    /// of it so far. `None` while no turn of the caller's is open.
+    ///
+    /// The provider sends no event for the beginning of the caller's speech
+    /// (d54g callseam: its event list was checked against the recordings), so
+    /// "the caller speaks" is read off the one place that forms turns. A pause
+    /// inside a sentence is longer than `spoken_quiet_ms` and shorter than the
+    /// gap that closes a turn, and a renewal that took over in it split the
+    /// sentence between two sessions (measured 2026-11-07).
+    caller_turn: Option<String>,
     /// The `renewal_n` of the session in charge; `0` for the first session of
     /// a call. A handover block that names it is the rest of a block split in
     /// parts, or one that came after a takeover without it, and is that
@@ -2130,16 +2546,56 @@ impl Lineup {
             && self.last_speech.is_none_or(|at| at.elapsed() >= quiet)
     }
 
+    /// Read the caller's open turn off a frame on its way to the client: a
+    /// `partial` carries the turn's words so far, a `turn` closes it. Both
+    /// come from the handler in the order its turn machine decided them.
+    fn caller_frame(&mut self, frame: &ServerFrame) {
+        match frame {
+            ServerFrame::Partial { text, eager: false } => self.caller_turn = Some(text.clone()),
+            ServerFrame::Turn { .. } => self.caller_turn = None,
+            _ => {}
+        }
+    }
+
+    /// What a session that takes over inside the caller's turn is told first:
+    /// the part of the sentence the call has heard so far, as something to
+    /// know and not to say. Empty where no turn of the caller's is open or
+    /// nothing of it was heard.
+    ///
+    /// Nothing of it is dropped: words past the ceiling of one append
+    /// ([`APPEND_MAX_CHARS`]) travel in a further append, in order.
+    fn heard_so_far(&self, session_id: &str, renewal_n: u32) -> Vec<DuplexControl> {
+        let Some(text) = self.caller_turn.as_deref().filter(|t| !t.trim().is_empty()) else {
+            return Vec::new();
+        };
+        append_parts(&format!("{HEARD_SO_FAR_LEAD}{text}"))
+            .into_iter()
+            .enumerate()
+            .map(|(part, content)| DuplexControl::Append {
+                kind: AppendKind::Thinking,
+                event_id: format!("{session_id}-heard-{renewal_n}-{part}"),
+                delegation_id: None,
+                content,
+            })
+            .collect()
+    }
+
     /// When the waiting renewal takes over: never before it is due; then at
     /// the first quiet moment (`quiet` after the last speech, no spoken
-    /// section open); at the latest `cap` after it became due, so a model that
-    /// never stops still hands the call over. `None` where nothing is due.
+    /// section open, no turn of the caller's open); at the latest `cap` after
+    /// it became due, so a model that never stops and a caller who never
+    /// pauses still hand the call over. `None` where nothing is due.
+    ///
+    /// The cap is one number for both speakers (`spoken_cap_ms`): it is one
+    /// moment -- "somebody is still speaking this long after the renewal was
+    /// due" -- and the room a host leaves below the provider's limit is sized
+    /// on it once (`renew_after_ms`).
     fn takeover_at(&self, spoken_open: bool, quiet: Duration, cap: Duration) -> Option<Instant> {
         let due = self.due_since?;
         if !self.renewal.as_ref().is_some_and(|r| r.started) {
             return None;
         }
-        Some(self.quiet_at(spoken_open, quiet, cap, due))
+        Some(self.quiet_at(spoken_open || self.caller_turn.is_some(), quiet, cap, due))
     }
 
     /// The first quiet moment after `since` (`quiet` after the last speech, no
@@ -2268,6 +2724,7 @@ async fn report_failed_renewal(
             event: DuplexEvent::Warning {
                 detail: format!("the renewed duplex session ended before it took over: {why}"),
                 provider_code,
+                client_event_id: None,
             },
         })
         .await;
@@ -2438,6 +2895,14 @@ async fn run_duplex(
     mut to_conn_rx: mpsc::Receiver<ToConnection>,
 ) {
     let (mut sink, mut stream) = link.into_halves();
+    // The connection's way in is the registry's, never its own: the sender
+    // moves into `register`, and the delivery task it feeds is the one strong
+    // holder. When that delivery gives up on the client (`client_too_slow`,
+    // or `external_timeout`) it lets go, `to_conn_rx` ends, and so does the
+    // call -- the end a phone always had (review I-1 of d54g weblive: a clone
+    // kept here held the channel open, and the call ran on with the
+    // provider's clock under a session the handler had already let go of).
+    // A page's sessions get a way of their own each (see the loop below).
     let taken = register(&shared, &session_id, conn_id, to_conn_tx, mode).await;
     if !session_taken(&shared, &mut sink, &session_id, conn_id, taken).await {
         return;
@@ -2467,21 +2932,351 @@ async fn run_duplex(
         return;
     }
 
+    // d54g weblive, contract 4: a page has sessions as a phone has calls. In
+    // `auto` -- the phone -- the connection IS the call and its one session
+    // opens with the `hello`, as it always did. In `hold` -- the page -- the
+    // provider session opens with the first hold (or a switch to `auto`), not
+    // when the page hangs on: measured in a browser against the live model
+    // (2026-11-13), the page joins when it loads, so the provider's clock ran
+    // from the page view on. Each session
+    // of a page carries a name of its own in the place of `call_id` (the
+    // connection's name and its number, OR-54g-21 e), is reported like a call
+    // (`seed_ask`, `usage` `final`), and ends after `hold_idle_ms` idle; the
+    // page keeps its connection, and its next hold opens the next session.
+    if mode != Mode::Hold {
+        duplex_session(
+            &mut sink,
+            &mut stream,
+            Arc::clone(&shared),
+            Arc::clone(&provider),
+            session_id.clone(),
+            mode,
+            input,
+            output,
+            &mut to_conn_rx,
+            None,
+            false,
+        )
+        .await;
+        unregister(&shared, &session_id, conn_id).await;
+        return;
+    }
+    let mut page_n: u32 = 0;
+    loop {
+        let wait = page_wait(
+            &mut sink,
+            &mut stream,
+            &shared,
+            &session_id,
+            &mut page_n,
+            &mut mode,
+            input.frame_bytes(),
+            &mut to_conn_rx,
+        )
+        .await;
+        if wait == PageWait::Gone {
+            break;
+        }
+        page_n = page_n.saturating_add(1);
+        let next = page_session_name(&session_id, page_n);
+        // The session's name is a session of this cell like a call's: the
+        // handler holds its state from `Connected` to `Disconnected`, and an
+        // answer the colony addresses to it reaches this connection.
+        // A way of its own (OR-d54g.weblive.20): its delivery
+        // is the one strong holder, so when that delivery gives up on the
+        // page (`client_too_slow`, `external_timeout`) the session's way in
+        // ends and the session with it, as a call does. On the connection's
+        // way it never could: the registration of the page's own name holds
+        // that sender for the whole connection, and the session ran on until
+        // `hold_idle_ms` (`0`, never, by default) or a hang-up.
+        let (session_tx, mut session_rx) = new_session_way();
+        let taken = register(&shared, &next, conn_id, session_tx, mode).await;
+        if !session_taken(&shared, &mut sink, &next, conn_id, taken).await {
+            break;
+        }
+        let (gone, left_in) = duplex_session(
+            &mut sink,
+            &mut stream,
+            Arc::clone(&shared),
+            Arc::clone(&provider),
+            next.clone(),
+            mode,
+            input,
+            output,
+            &mut session_rx,
+            Some(&mut to_conn_rx),
+            mode == Mode::Hold,
+        )
+        .await;
+        mode = left_in;
+        unregister(&shared, &next, conn_id).await;
+        if gone {
+            break;
+        }
+    }
+    unregister(&shared, &session_id, conn_id).await;
+}
+
+/// The name of a page's `n`-th session (d54g weblive, OR-54g-21 e): the
+/// connection's name and the session's number, counting from 1. One per
+/// session, not per connection: a turn after a session's `usage` `final`
+/// under that session's name would be dropped as late (d54g callseam).
+fn page_session_name(connection: &str, n: u32) -> String {
+    format!("{connection}-{n}")
+}
+
+/// What ended a page's wait for its next session.
+#[derive(Debug, PartialEq, Eq)]
+enum PageWait {
+    /// The key went down (or the page switched to `auto`): open it.
+    Open,
+    /// The connection is gone, or was closed.
+    Gone,
+}
+
+/// A page in `hold` with no session open (d54g weblive, contract 4).
+///
+/// Nothing reaches a provider here. A microphone frame goes nowhere -- the
+/// key is the one door to the microphone (contract 2) -- and a misframed one
+/// is counted like on the session's way. The page's early word (`ready`)
+/// opens the next session ahead of the hold, the way a ringing line does
+/// ([`prewarm`], `prewarm_ttl_ms`; nothing where that is `0`): measured on
+/// the live model, a page's first hold waited 2 661 ms (median, n = 5) for
+/// its answer against 1 696 ms on a warm session (measured in a browser
+/// against the live model, 2026-11-13). An append or a synthesis order of
+/// the handler for a session that is not there is answered as refused; the
+/// other orders have nothing to act on and are dropped.
+#[allow(clippy::too_many_arguments)]
+async fn page_wait(
+    sink: &mut LinkSink,
+    stream: &mut LinkStream,
+    shared: &Arc<VoiceIoShared>,
+    session_id: &str,
+    page_n: &mut u32,
+    mode: &mut Mode,
+    frame_bytes: usize,
+    to_conn_rx: &mut mpsc::Receiver<ToConnection>,
+) -> PageWait {
+    let mut half_gone = shared.shutdown();
+    let mut bad_frames: u32 = 0;
+    // Whether this wait opened an early session for the page's next one.
+    // One that ran out (`prewarm_ttl_ms`) was reported like a ring nobody
+    // answered -- `seed_ask` under its name, no `usage` -- so its name is
+    // spent: what opens next takes the number after it (review M-3 of d54g
+    // weblive: the name came back with a second `seed_ask`).
+    let mut warmed = false;
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = half_is_gone(&mut half_gone) => {
+                sink.close(1001, "").await;
+                return PageWait::Gone;
+            }
+
+            cmd = to_conn_rx.recv() => {
+                match cmd {
+                    None => return PageWait::Gone,
+                    Some(ToConnection::Close(code)) => {
+                        sink.close(code, "").await;
+                        return PageWait::Gone;
+                    }
+                    Some(ToConnection::Frame(frame)) => {
+                        if send_frame(sink, &frame).await.is_err() {
+                            return PageWait::Gone;
+                        }
+                    }
+                    // An append has no model to reach while no session is
+                    // open. Said on the handler's lanes, never dropped in
+                    // silence (review M-2 of d54g weblive): the model's
+                    // refusal of an append is the one report the handler
+                    // already has for "the model never got it" --
+                    // `advise_append_refused` on its error lane, and a
+                    // delegation it answered falls back. This half does not
+                    // hold the message, so a dead letter is not its to send.
+                    Some(ToConnection::Advise { event_id, .. }) => {
+                        shared.emit(VoiceEvent::Live {
+                            session_id: session_id.to_string(),
+                            event: DuplexEvent::Warning {
+                                detail: "no session of the page is open: the append \
+                                         never reached a model"
+                                    .to_string(),
+                                provider_code: None,
+                                client_event_id: Some(event_id),
+                            },
+                        }).await;
+                    }
+                    // A wiring fault on this engine, answered as on a session's
+                    // way: the handler counts on exactly one `SpeakEnded` per
+                    // `Speak` it issued.
+                    Some(ToConnection::Speak { speak_id, .. }) => {
+                        shared.emit(VoiceEvent::SpeakEnded {
+                            session_id: session_id.to_string(),
+                            speak_id,
+                            reason: SpeakEndReason::Failed,
+                            detail: Some(
+                                "no session of the page is open, and a duplex \
+                                 connection speaks through the model"
+                                    .to_string(),
+                            ),
+                        }).await;
+                    }
+                    // Nothing to cancel, renew or seed without a session.
+                    Some(_) => tracing::info!(
+                        %session_id,
+                        "voice: an order for a page with no session open is dropped"
+                    ),
+                }
+            }
+
+            incoming = stream.next() => {
+                let Some(message) = incoming else { return PageWait::Gone };
+                match message {
+                    Incoming::Binary(bytes) => {
+                        if frame_bytes == 0 || bytes.len() % frame_bytes != 0 {
+                            bad_frames = bad_frames.saturating_add(1);
+                            shared.emit(VoiceEvent::BadAudioFrame {
+                                session_id: session_id.to_string(),
+                                len: bytes.len(),
+                                count: bad_frames,
+                            }).await;
+                        }
+                    }
+                    Incoming::Text(text) => {
+                        let frame = match duplex_text(sink, &text).await {
+                            Err(()) => return PageWait::Gone,
+                            Ok(None) => continue,
+                            Ok(Some(frame)) => frame,
+                        };
+                        match frame {
+                            ClientFrame::Hold if *mode == Mode::Hold => {
+                                spend_expired_prewarm(shared, session_id, page_n, &mut warmed)
+                                    .await;
+                                return PageWait::Open;
+                            }
+                            ClientFrame::Hold | ClientFrame::Release => {
+                                let refusal = ServerFrame::Error {
+                                    code: WireErrorCode::WrongMode,
+                                    detail: "hold and release are only frames in \
+                                             `hold` mode".to_string(),
+                                    bad_frames: None,
+                                };
+                                if *mode != Mode::Hold
+                                    && send_frame(sink, &refusal).await.is_err()
+                                {
+                                    return PageWait::Gone;
+                                }
+                            }
+                            ClientFrame::Ready => {
+                                if *mode == Mode::Hold {
+                                    spend_expired_prewarm(shared, session_id, page_n, &mut warmed)
+                                        .await;
+                                    let next =
+                                        page_session_name(session_id, page_n.saturating_add(1));
+                                    if prewarm(shared, &next).await {
+                                        warmed = true;
+                                    }
+                                }
+                            }
+                            ClientFrame::Cancel => {}
+                            ClientFrame::Mode { mode: wanted } => {
+                                *mode = wanted;
+                                if send_frame(sink, &ServerFrame::Mode { mode: wanted })
+                                    .await
+                                    .is_err()
+                                {
+                                    return PageWait::Gone;
+                                }
+                                // `auto` is an open ear by definition: the
+                                // session is opened now.
+                                if wanted == Mode::Auto {
+                                    spend_expired_prewarm(shared, session_id, page_n, &mut warmed)
+                                        .await;
+                                    return PageWait::Open;
+                                }
+                            }
+                        }
+                    }
+                    Incoming::Close => return PageWait::Gone,
+                }
+            }
+        }
+    }
+}
+
+/// Count past the page's next session where the early session this wait
+/// opened for it ran out (review M-3 of d54g weblive): its name carried a
+/// `seed_ask` and is not given to a second one.
+async fn spend_expired_prewarm(
+    shared: &Arc<VoiceIoShared>,
+    session_id: &str,
+    page_n: &mut u32,
+    warmed: &mut bool,
+) {
+    if !*warmed {
+        return;
+    }
+    let next = page_session_name(session_id, page_n.saturating_add(1));
+    if !shared.prewarm_parked(&next).await {
+        *page_n = page_n.saturating_add(1);
+        *warmed = false;
+    }
+}
+
+/// One provider session of a duplex connection, from its start to its
+/// verdict and its `final` usage. Returns whether the connection is gone --
+/// `false` only for a page whose session ended for being idle
+/// (`hold_idle_ms`, d54g weblive), which keeps its connection for the next --
+/// and the mode the client left it in: a switch inside the session holds for
+/// the page's wait and its next session (review M-1 of d54g weblive: the mode
+/// from before the session refused the next `hold` with `wrong_mode` after
+/// the client had switched back and the cell had acknowledged it).
+/// `ear_open`: the session was opened by the key going down, so the model's
+/// ear opens with it.
+/// `to_conn_rx` is the session's way in; `page_rx`, for a page's session, is
+/// the page's connection way beside it. A page's session whose own way ends
+/// ends alone and returns "not gone": the page keeps its connection.
+#[allow(clippy::too_many_arguments)]
+async fn duplex_session(
+    sink: &mut LinkSink,
+    stream: &mut LinkStream,
+    shared: Arc<VoiceIoShared>,
+    provider: Arc<dyn DuplexProvider>,
+    session_id: String,
+    mut mode: Mode,
+    input: AudioFormat,
+    output: Option<AudioFormat>,
+    to_conn_rx: &mut mpsc::Receiver<ToConnection>,
+    mut page_rx: Option<&mut mpsc::Receiver<ToConnection>>,
+    ear_open: bool,
+) -> (bool, Mode) {
     // Started with the `hello` and not with the first frame: a live model
     // greets before the caller speaks (`params.duplex.greeting`, OR-L25), and
     // a session opened on the first buffer would greet nobody. Unless the
     // line rang first (GH #1055): then the session was opened while it rang,
     // and this connection adopts it with whatever it has said so far.
     let mut usage = CallUsage::default();
-    let first = match shared.take_prewarm(&session_id, None).await {
-        Some(early) if early.format == input => {
+    let early = shared
+        .take_prewarm(&session_id, None)
+        .await
+        .map(|mut early| {
+            let over = early.is_over();
+            (early, over)
+        });
+    let adopted = matches!(&early, Some((e, false)) if e.format == input);
+    let first = match early {
+        Some((early, false)) if early.format == input => {
             tracing::info!(%session_id, "voice: the media connection adopts the early session");
             early.adopt()
         }
-        Some(_) => {
+        Some((early, over)) => {
+            // A run that is over is never adopted, whatever it kept: the
+            // caller would be handed a session with no model behind it, and
+            // the call would end on its first frame (M1).
+            let same_format = early.format == input;
             tracing::warn!(
-                %session_id,
-                "voice: the early session runs at another format, a fresh one is opened"
+                %session_id, over, same_format,
+                "voice: the early session is over or runs at another format, a fresh one is opened"
             );
             // It was opened while the line rang and billed, and its close goes
             // with the pump it is dropped with: the call's total says it may
@@ -2499,14 +3294,52 @@ async fn run_duplex(
     // Ducking the model while the caller talks over it (GH #1055); off
     // unless `params.duplex.barge_duck_ms` asks.
     let mut duck = crate::voice::duck::Duck::new(shared.duck, input.sample_rate);
-    // In `hold` the ear stays shut until the key goes down (OR-L24).
-    if mode == Mode::Hold {
+    // The adopted session greeted into the ring: noise on the line just
+    // picked up does not duck its greeting, only the caller's words do
+    // (d54g, contract 5).
+    if adopted {
+        duck.greeting_runs(shared.duplex_turn_gap_ms);
+    }
+    // In `hold` the ear stays shut until the key goes down (OR-L24) --
+    // unless the key going down opened this session (d54g weblive): then the
+    // ear opens with it.
+    if ear_open {
+        let _ = first.control_tx.send(DuplexControl::Unmute).await;
+    } else if mode == Mode::Hold {
         let _ = first.control_tx.send(DuplexControl::Mute).await;
     }
     // What the connection last told the model's ear, so a renewal opens with
     // the ear the call has NOW (GH #896): shut in `hold` until the key goes
     // down, open while it is held and in `auto`.
-    let mut ear_shut = mode == Mode::Hold;
+    let mut ear_shut = mode == Mode::Hold && !ear_open;
+    // d54g weblive, contract 3: a release whose mute waits for the caller's
+    // last frames. The model's socket reads its control before its audio
+    // (`gpt_live::run_session`, `biased`), so a mute sent while frames of the
+    // hold still queue in `audio_tx` reached the model first and cut the end
+    // of the sentence off. The mute goes once the queue is empty.
+    let mut mute_due = false;
+    // d54g weblive, contract 2 and probe (d): a hold that came while the model
+    // was speaking. Until the key comes up, the model's audio leaves as
+    // silence of the same length. The live model has no event that cancels
+    // its speech (its socket knows `mute`/`unmute` and the appends), and it
+    // goes on for seconds after it is interrupted (S0: 4.4 to 11.0 s), so the
+    // stop is the playback on this side -- the place the provider names for
+    // it ("control playback at the client or media relay").
+    let mut hushed = false;
+    // Whether this stretch outside a hold has dropped a frame yet: one log
+    // line per stretch, not one per frame.
+    let mut dropped_outside = false;
+    // d54g weblive, contract 4: a page's session ends after `hold_idle_ms`
+    // in which nothing happened -- no hold, no audible speech of the model,
+    // no delegation open, no renewal under way. `0` (shipped) never ends it
+    // before the connection ends. `idle_since` is the last key event; the
+    // model's last audible audio counts from `model_audio_at` below.
+    let idle_after = Duration::from_millis(shared.duplex_hold_idle_ms);
+    let mut idle_since = Instant::now();
+    let mut open_delegations: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut idle_ended = false;
+    // The delivery of a page's session gave up on the page (OR-d54g.weblive.20).
+    let mut session_lost = false;
     // The renewal's three numbers (GH #896). `renew_after` counts from the
     // moment a session takes charge of the call, the first one included, and
     // `0` never renews: a call on the shipped params runs exactly as it did.
@@ -2526,6 +3359,7 @@ async fn run_duplex(
         takeover_by: None,
         due_since: None,
         last_speech: None,
+        caller_turn: None,
         in_charge_n: 0,
         announced: 0,
         delegations: Delegations::default(),
@@ -2571,6 +3405,12 @@ async fn run_duplex(
     let mut audio_mark_armed = false;
     let audible_rate = input.sample_rate;
     let audible_level = crate::voice::duck::linear(shared.duck.level_dbfs);
+    // When audible audio of the model last went to the client (d54g
+    // callseam): a model whose audio went out inside `spoken_quiet_ms` of the
+    // end of the connection was speaking when the line went, and the turn
+    // that closes there says its sentence was cut. The same number that calls
+    // the line quiet for a `speak_end` and for a takeover.
+    let mut model_audio_at: Option<Instant> = None;
     let mut ticker = tokio::time::interval(Duration::from_millis(shared.duplex_tick_ms.max(1)));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The call's time marks (D48, DK): one timer, in this loop, so it ends
@@ -2596,10 +3436,15 @@ async fn run_duplex(
     let recover_max = shared.duplex_recover_max;
     let mut recoveries: u32 = 0;
     let mut last_close: Option<String> = None;
-    // GH #1400: the append that waits for the line's first quiet moment (the
-    // curator's horizon, `when_quiet`) -- channel, event id, words, and since
-    // when. One at a time: a newer one replaces it.
-    let mut quiet_held: Option<(AppendKind, String, String, Instant)> = None;
+    // GH #1400: the text that waits for the line's first quiet moment (the
+    // curator's horizon, `when_quiet`) -- its cut (`split_id`), its parts
+    // (channel, event id, words) in order, and since when the first part
+    // waits. One text at a time: a newer one replaces it. The parts of ONE
+    // text queue behind each other (d54g callseam): a text over
+    // the append ceiling leaves the cell in parts, and with one waiting append
+    // every part but the last was thrown away (strand deleg, finding
+    // `quiet_held`).
+    let mut quiet_held: Option<QuietHeld> = None;
 
     loop {
         // When a due renewal takes over (GH #896, review I-2), read before the
@@ -2610,7 +3455,16 @@ async fn run_duplex(
         let takeover_at = lineup.takeover_at(spoken.is_some(), quiet, cap);
         let quiet_held_at = quiet_held
             .as_ref()
-            .map(|h| lineup.quiet_at(spoken.is_some(), quiet, cap, h.3));
+            .map(|h| lineup.quiet_at(spoken.is_some(), quiet, cap, h.2));
+        let idle_at = (!idle_after.is_zero()
+            && mode == Mode::Hold
+            && ear_shut
+            && !mute_due
+            && spoken.is_none()
+            && open_delegations.is_empty()
+            && lineup.renewal.is_none()
+            && lineup.retiring.is_none())
+        .then(|| model_audio_at.map_or(idle_since, |at| at.max(idle_since)) + idle_after);
         tokio::select! {
             biased;
 
@@ -2623,7 +3477,16 @@ async fn run_duplex(
 
             // Commands first — a `cancel` must not queue behind a burst of the
             // model's own audio.
-            cmd = to_conn_rx.recv() => {
+            way = next_command(to_conn_rx, &mut page_rx) => {
+                let cmd = match way {
+                    // A page's session whose delivery gave up: the session
+                    // ends, the page keeps its connection.
+                    Way::Session(None) if page_rx.is_some() => {
+                        session_lost = true;
+                        None
+                    }
+                    Way::Session(cmd) | Way::Connection(cmd) => cmd,
+                };
                 match cmd {
                     None => break,
                     Some(ToConnection::Close(code)) => {
@@ -2631,14 +3494,17 @@ async fn run_duplex(
                         break;
                     }
                     Some(ToConnection::Frame(frame)) => {
-                        if send_frame(&mut sink, &frame).await.is_err() {
+                        // d54g callseam: the handler's word on the caller's
+                        // turn, which a due renewal waits for.
+                        lineup.caller_frame(&frame);
+                        if send_frame(sink, &frame).await.is_err() {
                             break;
                         }
                     }
                     Some(ToConnection::CancelSpeak) => {
                         if let Some(sp) = spoken.take()
                             && finish_speak(
-                                &shared, &session_id, &mut sink, sp.speak_id,
+                                &shared, &session_id, sink, sp.speak_id,
                                 SpeakEndReason::Cancelled, None,
                             ).await.is_err()
                         {
@@ -2647,22 +3513,57 @@ async fn run_duplex(
                     }
                     Some(ToConnection::Advise {
                         kind, event_id, delegation_id, content, speak_id, takeover, when_quiet,
+                        split_id,
                     }) => {
+                        // d54g weblive: an answer to a delegation closes it
+                        // for the idle end of a page's session.
+                        if let Some(id) = &delegation_id {
+                            open_delegations.remove(id);
+                        }
                         // GH #1400: an append for the first quiet moment goes
                         // now where the line is quiet and otherwise waits for
                         // it -- the takeover's rule, which hears the model's
-                        // own speech too (o8.6) -- replacing one that waits.
+                        // own speech too (o8.6) -- replacing a text that waits.
+                        // A further part of the waiting text (same
+                        // `split_id`) queues behind it instead (d54g callseam).
                         if when_quiet {
-                            let older = quiet_held.take();
-                            if !lineup.quiet(spoken.is_some(), quiet) {
-                                if older.is_some() {
+                            let earlier = match quiet_held.take() {
+                                Some((held, parts, since)) if held == split_id => {
+                                    Some((parts, since))
+                                }
+                                Some(_) => {
                                     tracing::info!(
                                         %session_id,
-                                        "voice: a newer append for a quiet moment replaces the waiting one"
+                                        "voice: a newer text for a quiet moment replaces the waiting one"
+                                    );
+                                    None
+                                }
+                                None => None,
+                            };
+                            if !lineup.quiet(spoken.is_some(), quiet) {
+                                let (mut parts, since) =
+                                    earlier.unwrap_or_else(|| (Vec::new(), Instant::now()));
+                                parts.push((kind, event_id, content));
+                                quiet_held = Some((split_id, parts, since));
+                                continue;
+                            }
+                            // Quiet now, while earlier parts of this text
+                            // still wait: they go first, in their order.
+                            for (kind, event_id, content) in
+                                earlier.map(|(parts, _)| parts).unwrap_or_default()
+                            {
+                                let append = DuplexControl::Append {
+                                    kind,
+                                    event_id,
+                                    delegation_id: None,
+                                    content,
+                                };
+                                if lineup.run.control_tx.send(append).await.is_err() {
+                                    tracing::debug!(
+                                        %session_id,
+                                        "voice: the duplex session is gone, the append was dropped"
                                     );
                                 }
-                                quiet_held = Some((kind, event_id, content, Instant::now()));
-                                continue;
                             }
                         } else if (speak_id.is_some() || delegation_id.is_some())
                             && quiet_held.take().is_some()
@@ -2686,7 +3587,7 @@ async fn run_duplex(
                             // socket.
                             if let Some(prev) = spoken.take()
                                 && finish_speak(
-                                    &shared, &session_id, &mut sink, prev.speak_id,
+                                    &shared, &session_id, sink, prev.speak_id,
                                     SpeakEndReason::Done, None,
                                 ).await.is_err()
                             {
@@ -2695,7 +3596,7 @@ async fn run_duplex(
                             let frame = ServerFrame::SpeakStart {
                                 speak_id: id.clone(),
                             };
-                            if send_frame(&mut sink, &frame).await.is_err() {
+                            if send_frame(sink, &frame).await.is_err() {
                                 break;
                             }
                             spoken = Some(Spoken {
@@ -2757,7 +3658,11 @@ async fn run_duplex(
                                     "voice: the renewed duplex session heard its handover"
                                 );
                             }
-                            if !lineup.quiet(spoken.is_some(), quiet) {
+                            // d54g callseam: nor into the caller's open
+                            // turn, however long the pause inside it.
+                            if !lineup.quiet(spoken.is_some(), quiet)
+                                || lineup.caller_turn.is_some()
+                            {
                                 continue;
                             }
                             let Some(renewal) = lineup.renewal.take() else { continue };
@@ -2776,7 +3681,7 @@ async fn run_duplex(
                                 "voice: the renewed duplex session took over with its handover, \
                                  on a quiet line"
                             );
-                            if send_audio(&mut sink, leftover).await.is_err() {
+                            if send_audio(sink, leftover).await.is_err() {
                                 break;
                             }
                             continue;
@@ -2932,7 +3837,7 @@ async fn run_duplex(
             () = sleep_until_opt(spoken.as_ref().and_then(|s| s.quiet_until)) => {
                 if let Some(sp) = spoken.take()
                     && finish_speak(
-                        &shared, &session_id, &mut sink, sp.speak_id,
+                        &shared, &session_id, sink, sp.speak_id,
                         SpeakEndReason::Done, None,
                     ).await.is_err()
                 {
@@ -2945,7 +3850,7 @@ async fn run_duplex(
             () = sleep_until_opt(spoken.as_ref().map(|s| s.cap_until)) => {
                 if let Some(sp) = spoken.take()
                     && finish_speak(
-                        &shared, &session_id, &mut sink, sp.speak_id,
+                        &shared, &session_id, sink, sp.speak_id,
                         SpeakEndReason::Done, None,
                     ).await.is_err()
                 {
@@ -2998,11 +3903,13 @@ async fn run_duplex(
                         }
                         if let DuplexEvent::DelegationCreated { delegation_id, .. } = &event {
                             lineup.delegations.opened(delegation_id);
+                            open_delegations.insert(delegation_id.clone());
                         }
                         if matches!(event, DuplexEvent::Transcript { .. }) {
                             lineup.heard();
                             audio_mark_armed = true;
                         }
+                        duck.transcript(&event);
                         observe(&event, &mut model_clock, &mut spoken, quiet);
                         shared.emit(VoiceEvent::Live {
                             session_id: session_id.clone(),
@@ -3065,7 +3972,7 @@ async fn run_duplex(
                             "voice: the provider ended the duplex session mid-call -- \
                              recovering with a fresh session"
                         );
-                        if send_audio(&mut sink, leftover).await.is_err() {
+                        if send_audio(sink, leftover).await.is_err() {
                             break;
                         }
                     }
@@ -3162,7 +4069,7 @@ async fn run_duplex(
                                 frames.extend(a.framer.push(chunk));
                             }
                             frames.extend(a.framer.flush());
-                            if send_audio(&mut sink, frames).await.is_err() {
+                            if send_audio(sink, frames).await.is_err() {
                                 break;
                             }
                         }
@@ -3177,7 +4084,7 @@ async fn run_duplex(
                             );
                         }
                         if let Some(mut a) = lineup.retiring_audio.take()
-                            && send_audio(&mut sink, a.framer.flush().into_iter().collect())
+                            && send_audio(sink, a.framer.flush().into_iter().collect())
                                 .await
                                 .is_err()
                         {
@@ -3196,7 +4103,8 @@ async fn run_duplex(
             () = sleep_until_opt(takeover_at) => {
                 match lineup.renewal.take() {
                     Some(renewal) if renewal.started && renewal.alive() => {
-                        let calm = lineup.quiet(spoken.is_some(), quiet);
+                        let calm = lineup.quiet(spoken.is_some(), quiet)
+                            && lineup.caller_turn.is_none();
                         let capped = lineup.due_since.is_some_and(|due| due.elapsed() >= cap);
                         if !calm && !capped {
                             // The model's next words are already waiting: it
@@ -3206,6 +4114,26 @@ async fn run_duplex(
                             continue;
                         }
                         let renewal_n = renewal.renewal_n;
+                        // d54g callseam: at the cap the call changes hands
+                        // inside the caller's sentence. The new session is
+                        // told the part already heard BEFORE the caller's
+                        // audio reaches it -- its control channel is read
+                        // ahead of the takeover, as the handover block is --
+                        // so it does not start in the middle of a sentence it
+                        // knows nothing of. The turn itself stays one turn:
+                        // the handler's clock runs across the takeover.
+                        let heard = lineup.heard_so_far(&session_id, renewal_n);
+                        let handed_over = !heard.is_empty();
+                        for part in heard {
+                            if renewal.run.control_tx.send(part).await.is_err() {
+                                tracing::warn!(
+                                    %session_id, renewal_n,
+                                    "voice: the renewed duplex session did not take the part of \
+                                     the caller's sentence heard so far"
+                                );
+                                break;
+                            }
+                        }
                         let briefed = renewal.briefed;
                         let base = clock_now_ms(model_clock, opened);
                         let leftover = lineup.take_over(
@@ -3219,9 +4147,10 @@ async fn run_duplex(
                         tracing::info!(
                             %session_id, renewal_n, clock_ms = base, briefed,
                             on_a_quiet_line = calm,
+                            inside_the_callers_turn = handed_over,
                             "voice: the renewed duplex session took over"
                         );
-                        if send_audio(&mut sink, leftover).await.is_err() {
+                        if send_audio(sink, leftover).await.is_err() {
                             break;
                         }
                     }
@@ -3242,25 +4171,28 @@ async fn run_duplex(
             // waits for it, re-checked as the takeover is: the model's next
             // words already waiting move the moment out; at the cap it goes.
             () = sleep_until_opt(quiet_held_at) => {
-                let Some((kind, event_id, content, since)) = quiet_held.take() else {
+                let Some((split_id, parts, since)) = quiet_held.take() else {
                     continue;
                 };
                 if !lineup.quiet(spoken.is_some(), quiet) && since.elapsed() < cap {
-                    quiet_held = Some((kind, event_id, content, since));
+                    quiet_held = Some((split_id, parts, since));
                     lineup.heard();
                     continue;
                 }
-                let append = DuplexControl::Append {
-                    kind,
-                    event_id,
-                    delegation_id: None,
-                    content,
-                };
-                if lineup.run.control_tx.send(append).await.is_err() {
-                    tracing::debug!(
-                        %session_id,
-                        "voice: the duplex session is gone, the append was dropped"
-                    );
+                // Every part of the waiting text, in its order (d54g callseam).
+                for (kind, event_id, content) in parts {
+                    let append = DuplexControl::Append {
+                        kind,
+                        event_id,
+                        delegation_id: None,
+                        content,
+                    };
+                    if lineup.run.control_tx.send(append).await.is_err() {
+                        tracing::debug!(
+                            %session_id,
+                            "voice: the duplex session is gone, the append was dropped"
+                        );
+                    }
                 }
             }
 
@@ -3299,6 +4231,14 @@ async fn run_duplex(
                 }).await;
             }
 
+            // d54g weblive, contract 3: the release's mute, once every frame of
+            // the hold is with the model. Not awaited in the release's arm: the
+            // loop goes on carrying the model's audio while it waits.
+            () = audio_drained(&lineup.run.audio_tx), if mute_due => {
+                mute_due = false;
+                lineup.ear(DuplexControl::Mute).await;
+            }
+
             incoming = stream.next() => {
                 let Some(message) = incoming else { break };
                 match message {
@@ -3313,6 +4253,23 @@ async fn run_duplex(
                                 len: bytes.len(),
                                 count: bad_frames,
                             }).await;
+                            continue;
+                        }
+                        // d54g weblive, contract 2: in `hold` the key is the
+                        // one door to the microphone. A frame outside a hold
+                        // goes nowhere -- not to the model, and not as silence
+                        // either -- also while the model speaks. The page
+                        // sends none (0 of 1 165, measured in a browser
+                        // against the live model, 2026-11-13); this is
+                        // the cell keeping the promise for any client.
+                        if mode == Mode::Hold && ear_shut {
+                            if !dropped_outside {
+                                dropped_outside = true;
+                                tracing::info!(
+                                    %session_id,
+                                    "voice: microphone audio outside a hold is dropped"
+                                );
+                            }
                             continue;
                         }
                         if let Some(closed) = duck.caller(&bytes) {
@@ -3331,7 +4288,7 @@ async fn run_duplex(
                         }
                     }
                     Incoming::Text(text) => {
-                        let frame = match duplex_text(&mut sink, &text).await {
+                        let frame = match duplex_text(sink, &text).await {
                             Err(()) => break,
                             Ok(None) => continue,
                             Ok(Some(frame)) => frame,
@@ -3352,22 +4309,59 @@ async fn run_duplex(
                                              `hold` mode".to_string(),
                                     bad_frames: None,
                                 };
-                                if send_frame(&mut sink, &refusal).await.is_err() {
+                                if send_frame(sink, &refusal).await.is_err() {
                                     break;
                                 }
                             }
                             ClientFrame::Hold => {
                                 ear_shut = false;
+                                dropped_outside = false;
+                                idle_since = Instant::now();
+                                // A release whose mute still waits is over:
+                                // the ear never shut, and it stays open.
+                                mute_due = false;
+                                // Probe (d): a hold into the model's speech
+                                // stops it. Speaking = a section is open or
+                                // the model was audible within the quiet the
+                                // line is judged by (`spoken_quiet_ms`).
+                                let speaking = spoken.is_some()
+                                    || model_audio_at.is_some_and(|at| at.elapsed() < quiet);
+                                if speaking {
+                                    hushed = true;
+                                    tracing::info!(
+                                        %session_id,
+                                        "voice: a hold into the model's speech stops it"
+                                    );
+                                    if let Some(sp) = spoken.take()
+                                        && finish_speak(
+                                            &shared, &session_id, sink, sp.speak_id,
+                                            SpeakEndReason::Cancelled, None,
+                                        ).await.is_err()
+                                    {
+                                        break;
+                                    }
+                                }
                                 lineup.ear(DuplexControl::Unmute).await;
                             }
                             ClientFrame::Release => {
                                 ear_shut = true;
-                                lineup.ear(DuplexControl::Mute).await;
+                                idle_since = Instant::now();
+                                // The model's answer to what was just said is
+                                // heard again.
+                                hushed = false;
+                                // Contract 3: the mute is the provider's one
+                                // word for "the caller is done" (its socket has
+                                // no commit and no turn trigger); it goes in
+                                // the arm below once the last frame of the hold
+                                // is with the model.
+                                mute_due = true;
                             }
+                            // The session is open already: nothing to warm.
+                            ClientFrame::Ready => {}
                             ClientFrame::Cancel => {
                                 if let Some(sp) = spoken.take()
                                     && finish_speak(
-                                        &shared, &session_id, &mut sink, sp.speak_id,
+                                        &shared, &session_id, sink, sp.speak_id,
                                         SpeakEndReason::Cancelled, None,
                                     ).await.is_err()
                                 {
@@ -3383,8 +4377,12 @@ async fn run_duplex(
                                     Mode::Hold => DuplexControl::Mute,
                                 };
                                 ear_shut = mode == Mode::Hold;
+                                // The switch says what the ear is now; a
+                                // waiting mute and a stopped model are over.
+                                mute_due = false;
+                                hushed = false;
                                 lineup.ear(cmd).await;
-                                if send_frame(&mut sink, &ServerFrame::Mode { mode })
+                                if send_frame(sink, &ServerFrame::Mode { mode })
                                     .await
                                     .is_err()
                                 {
@@ -3540,20 +4538,30 @@ async fn run_duplex(
                     Some(mut bytes) => {
                         shared.liveness.mark_success();
                         lineup.heard();
+                        if crate::voice::duck::first_audible(&bytes, audible_rate, audible_level)
+                            .is_some()
+                        {
+                            model_audio_at = Some(Instant::now());
+                        }
                         // Its transcripts arm the mark too (review M-3): the
                         // answer the retiring session speaks is the turn's.
                         let audible = audible_offset_ms(
-                            audio_mark_armed,
+                            // Silenced by a hold, nothing of it is heard.
+                            audio_mark_armed && !hushed,
                             &bytes,
                             audible_rate,
                             audible_level,
                         );
                         duck.model(&mut bytes);
+                        // Probe (d): a hold came into the model's speech.
+                        if hushed {
+                            bytes.fill(0);
+                        }
                         let frames = match lineup.retiring_audio.as_mut() {
                             Some(a) => a.framer.push(bytes),
                             None => vec![bytes],
                         };
-                        if send_audio(&mut sink, frames).await.is_err() {
+                        if send_audio(sink, frames).await.is_err() {
                             break;
                         }
                         if let Some(offset) = audible {
@@ -3566,7 +4574,7 @@ async fn run_duplex(
                     }
                     None => {
                         if let Some(mut a) = lineup.retiring_audio.take()
-                            && send_audio(&mut sink, a.framer.flush().into_iter().collect())
+                            && send_audio(sink, a.framer.flush().into_iter().collect())
                                 .await
                                 .is_err()
                         {
@@ -3583,10 +4591,16 @@ async fn run_duplex(
                     Some(mut bytes) => {
                         shared.liveness.mark_success();
                         lineup.heard();
+                        if crate::voice::duck::first_audible(&bytes, audible_rate, audible_level)
+                            .is_some()
+                        {
+                            model_audio_at = Some(Instant::now());
+                        }
                         // Heard before the duck: ducked speech is still the
                         // answer the model gave (fix-round C-1).
                         let audible = audible_offset_ms(
-                            audio_mark_armed,
+                            // Silenced by a hold, nothing of it is heard.
+                            audio_mark_armed && !hushed,
                             &bytes,
                             audible_rate,
                             audible_level,
@@ -3594,6 +4608,10 @@ async fn run_duplex(
                         // Read for its level, then silenced while the caller
                         // talks over it (GH #1055).
                         duck.model(&mut bytes);
+                        // Probe (d): a hold came into the model's speech.
+                        if hushed {
+                            bytes.fill(0);
+                        }
                         // The session in charge speaks: whatever the session a
                         // renewal replaced still had to say is dropped from
                         // here on. Two models' frames interleaved on one sink
@@ -3607,7 +4625,7 @@ async fn run_duplex(
                             drop(tail);
                         }
                         let frames = lineup.framer.push(bytes);
-                        if send_audio(&mut sink, frames).await.is_err() {
+                        if send_audio(sink, frames).await.is_err() {
                             break;
                         }
                         // Read after the frames are on the sink, on the clock
@@ -3629,9 +4647,35 @@ async fn run_duplex(
                     None => lineup.audio_open = false,
                 }
             }
+
+            // d54g weblive, contract 4: the page was idle for `hold_idle_ms`.
+            // Its session ends the way a call does -- the open turn, the
+            // provider's close, the `final` usage -- and the connection stays
+            // for the next hold. Last: anything else that is ready moves it.
+            () = sleep_until_opt(idle_at) => {
+                tracing::info!(
+                    %session_id, idle_ms = shared.duplex_hold_idle_ms,
+                    "voice: the page was idle -- its session ends, the page stays"
+                );
+                idle_ended = true;
+                break;
+            }
         }
     }
 
+    // The connection is over (d54g callseam): the handler closes the open turn
+    // NOW, from the transcript it holds, and emits it -- ahead of the
+    // provider's close, which `duplex_verdict` below may wait `close_grace_ms`
+    // for, and so ahead of the call's `final` usage. Measured on 2026-11-07:
+    // the turn that waited for the provider left 330 ms and more after the
+    // line was gone and stood at the beginning of the next conversation.
+    shared
+        .emit(VoiceEvent::LiveEnded {
+            session_id: session_id.clone(),
+            at_ms: clock_now_ms(model_clock, opened),
+            model_audible: model_audio_at.is_some_and(|at| at.elapsed() < quiet),
+        })
+        .await;
     // A renewal still waiting and a session still retiring end with the call
     // (GH #896). Dropping them drops their way in, and a provider reads that
     // as the end of the conversation.
@@ -3661,17 +4705,17 @@ async fn run_duplex(
     drop(renewal);
     drop(retiring);
     if let Some(mut a) = retiring_audio {
-        let _ = send_audio(&mut sink, a.framer.flush().into_iter().collect()).await;
+        let _ = send_audio(sink, a.framer.flush().into_iter().collect()).await;
     }
     // A held part-sample is the model's last bytes, not noise.
-    let _ = send_audio(&mut sink, framer.flush().into_iter().collect()).await;
+    let _ = send_audio(sink, framer.flush().into_iter().collect()).await;
     // Exactly one `SpeakEnded` per section this connection opened, whatever
     // ended it — the telephony hive holds a hang-up until this arrives.
     if let Some(sp) = spoken.take() {
         let _ = finish_speak(
             &shared,
             &session_id,
-            &mut sink,
+            sink,
             sp.speak_id,
             SpeakEndReason::Cancelled,
             None,
@@ -3756,7 +4800,34 @@ async fn run_duplex(
     // review B-1) -- before `unregister`, whose `Disconnected` is the
     // handler's last word of the call.
     report_usage(&shared, &session_id, &usage, true).await;
-    unregister(&shared, &session_id, conn_id).await;
+    (!idle_ended && !session_lost, mode)
+}
+
+/// Which way a command came in on during a session.
+enum Way {
+    /// The session's own way (`None`: its delivery let go).
+    Session(Option<ToConnection>),
+    /// A page's connection way, for what reaches the page's own name while a
+    /// session is open (`None`: that delivery let go too).
+    Connection(Option<ToConnection>),
+}
+
+/// The next command for a session: its own way first, then -- for a page's
+/// session -- what reaches the page's own name (a close of the connection, an
+/// order addressed to it). Both receives are cancel-safe, so nothing is lost
+/// when another arm of the session's `select!` wins.
+async fn next_command(
+    session: &mut mpsc::Receiver<ToConnection>,
+    page: &mut Option<&mut mpsc::Receiver<ToConnection>>,
+) -> Way {
+    match page {
+        None => Way::Session(session.recv().await),
+        Some(connection) => tokio::select! {
+            biased;
+            cmd = session.recv() => Way::Session(cmd),
+            cmd = connection.recv() => Way::Connection(cmd),
+        },
+    }
 }
 
 /// One text frame from a duplex client.
@@ -3817,10 +4888,7 @@ async fn duplex_verdict(
                 // it cost.
                 while let Ok(event) = events_rx.try_recv() {
                     usage.observe(slot, &event);
-                    shared.emit(VoiceEvent::Live {
-                        session_id: session_id.to_string(),
-                        event: shift_event(event, clock_base_ms),
-                    }).await;
+                    after_the_end(shared, session_id, event, clock_base_ms).await;
                 }
                 return match outcome {
                     Ok(verdict) => verdict,
@@ -3834,10 +4902,7 @@ async fn duplex_verdict(
                 match event {
                     Some(event) => {
                         usage.observe(slot, &event);
-                        shared.emit(VoiceEvent::Live {
-                            session_id: session_id.to_string(),
-                            event: shift_event(event, clock_base_ms),
-                        }).await;
+                        after_the_end(shared, session_id, event, clock_base_ms).await;
                     }
                     None => events_open = false,
                 }
@@ -3848,6 +4913,46 @@ async fn duplex_verdict(
             }
         }
     }
+}
+
+/// One event a provider delivered after the connection ended (d54g callseam).
+///
+/// A transcript fragment is booked in the log and goes no further: the open
+/// turn closed with the connection ([`VoiceEvent::LiveEnded`]), and words that
+/// arrive after it would open a turn nobody is on the line for -- measured on
+/// 2026-11-07, the tail of one call stood at the beginning of the next
+/// conversation. Its length and stamps are logged, never its words. Every
+/// other event travels on as before: the close carries the session's cost.
+async fn after_the_end(
+    shared: &Arc<VoiceIoShared>,
+    session_id: &str,
+    event: DuplexEvent,
+    clock_base_ms: u64,
+) {
+    if let DuplexEvent::Transcript {
+        speaker,
+        delta,
+        start_ms,
+        end_ms,
+    } = &event
+    {
+        tracing::info!(
+            %session_id,
+            ?speaker,
+            chars = delta.chars().count(),
+            start_ms,
+            end_ms,
+            "voice: a transcript fragment arrived after the connection ended -- \
+             booked here, no turn is made of it"
+        );
+        return;
+    }
+    shared
+        .emit(VoiceEvent::Live {
+            session_id: session_id.to_string(),
+            event: shift_event(event, clock_base_ms),
+        })
+        .await;
 }
 
 /// One text frame from the client.
@@ -3966,6 +5071,7 @@ async fn start_speak(
         audio_rx,
         framer: Framer::new(Some(format), audio_out_frame_ms(shared)),
         done_rx,
+        first_audio: FirstAudio::default(),
     }))
 }
 
@@ -4005,6 +5111,18 @@ async fn send_frame(sink: &mut Sink, frame: &ServerFrame) -> Result<(), ()> {
         }
     };
     sink.send(Outgoing::Text(text)).await.map_err(|_| ())
+}
+
+/// Resolves once the model has taken every frame queued for it (d54g weblive,
+/// contract 3).
+///
+/// Holding every permit of the queue at once is only possible while nothing
+/// waits in it; a provider takes a frame and puts it on its wire before it
+/// reads its next control, so from here on a control frame goes behind the
+/// caller's last word. A queue whose receiver is gone resolves at once: there
+/// is nothing left to wait for. The permits are given back on the spot.
+async fn audio_drained(audio_tx: &mpsc::Sender<Vec<u8>>) {
+    let _ = audio_tx.reserve_many(audio_tx.max_capacity()).await;
 }
 
 /// Send audio frames in order, stopping at the first socket that is gone.
@@ -4085,6 +5203,46 @@ async fn sleep_until_opt(at: Option<Instant>) {
 mod tests {
     use super::*;
     use crate::voice::contract::AudioFormat;
+
+    /// d54g callseam: the caller's sentence at a takeover is cut for the
+    /// append ceiling between words, and nothing of it is lost.
+    #[test]
+    fn append_parts_lose_nothing_and_cut_between_words() {
+        assert_eq!(append_parts("one two"), vec!["one two".to_string()]);
+        assert!(append_parts("").is_empty());
+
+        let long = "word ".repeat(APPEND_MAX_CHARS / 5 + 3);
+        let parts = append_parts(&long);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts.concat(), long);
+        assert_eq!(parts[0].chars().count(), APPEND_MAX_CHARS);
+        assert!(
+            parts[1].starts_with("word "),
+            "cut between words: {parts:?}"
+        );
+
+        // One word longer than an append is cut inside, in order.
+        let word = "x".repeat(APPEND_MAX_CHARS + 7);
+        let parts = append_parts(&word);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts.concat(), word);
+    }
+
+    /// d54g callseam: one stamp per synthesis, at the first frame that
+    /// actually travels.
+    #[test]
+    fn the_first_audio_of_a_synthesis_is_counted_once() {
+        let mut first = FirstAudio::default();
+        assert!(
+            !first.leaves_with(&[]),
+            "a chunk the framer held back whole is no audio yet"
+        );
+        assert!(first.leaves_with(&[vec![0u8; 4]]), "the first frame out");
+        assert!(
+            !first.leaves_with(&[vec![0u8; 4], vec![0u8; 4]]),
+            "every later frame belongs to a synthesis already stamped"
+        );
+    }
 
     /// 24 kHz PCM16 mono, 20 ms: the 960 bytes the FreeSWITCH finding is about.
     #[test]
@@ -4406,6 +5564,7 @@ mod tests {
             DuplexEvent::Warning {
                 detail: "x".to_string(),
                 provider_code: None,
+                client_event_id: None,
             },
         ] {
             assert_eq!(

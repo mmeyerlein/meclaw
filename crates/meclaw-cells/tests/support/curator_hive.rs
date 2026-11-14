@@ -1568,6 +1568,20 @@ impl Hive {
             .unwrap_or_else(|| panic!("a dated row line in the transcript: {text}"))
     }
 
+    /// GH #1517: the id of the row `transcript_day` dates, of the open
+    /// request.
+    pub fn transcript_id(&self) -> String {
+        let req = self.summ.front().expect("a summarizer request");
+        let text = req
+            .messages()
+            .last()
+            .and_then(|m| m["text"].as_str())
+            .unwrap_or("")
+            .to_string();
+        transcript_id_of(&text)
+            .unwrap_or_else(|| panic!("a dated row line in the transcript: {text}"))
+    }
+
     /// The summarizer's answer with `extra` hop keys -- the llm cell's stamp
     /// of its own package (`input_soft`, GH #1037) among them.
     pub fn answer_with(&mut self, text: &str, finish: &str, extra: Value) -> Msg {
@@ -2061,6 +2075,17 @@ pub fn transcript_day_of(text: &str) -> Option<String> {
     text.lines().find_map(|l| {
         let (_, after) = l.strip_prefix("[#")?.split_once("] (")?;
         (after.get(10..12) == Some(") ")).then(|| after[..10].to_string())
+    })
+}
+
+/// GH #1517 (d58rest): the id of the first dated row line of a brief
+/// transcript (`[#<id>] (<day>) ...`), the row `transcript_day_of` reads the
+/// day of -- a stub brief line names it, the policy drops a line that names
+/// no row of its transcript.
+pub fn transcript_id_of(text: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let (id, after) = l.strip_prefix("[#")?.split_once("] (")?;
+        (id.len() == 12 && after.get(10..12) == Some(") ")).then(|| id.to_string())
     })
 }
 

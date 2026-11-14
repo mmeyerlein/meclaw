@@ -373,7 +373,7 @@ class ProbeTest(Base):
             finally:
                 store.close(db)
             self.assertEqual(n, 0)
-        self.assertIn("measured 7/7", out)
+        self.assertIn("measured 8/8", out)
 
     def test_an_unmeasured_lock_fails_the_probe(self):
         field = {l: {"binary": _bid(l), "measured": True, "tests": 2}
@@ -382,7 +382,7 @@ class ProbeTest(Base):
         field[lock] = {"binary": _bid(lock), "measured": False, "tests": 2, "why": "SKIP x"}
         rc, _calls, _maps, _db, out = self._build(field)
         self.assertEqual(rc, 1)
-        self.assertIn("measured 6/7", out)
+        self.assertIn("measured 7/8", out)
 
 
 GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
@@ -429,10 +429,10 @@ class NightLineTest(Base):
 
     def test_the_line_counts_the_measured_locks_and_names_the_others(self):
         line = browser_cover.measured_line({browser_cover.FIELD: _field({LOCK: "SKIP x"})})
-        self.assertEqual("browser locks measured 6/7 -- not measured: %s (SKIP x)" % STEM, line)
-        self.assertEqual("browser locks measured 7/7",
+        self.assertEqual("browser locks measured 7/8 -- not measured: %s (SKIP x)" % STEM, line)
+        self.assertEqual("browser locks measured 8/8",
                          browser_cover.measured_line({browser_cover.FIELD: _field()}))
-        self.assertEqual("browser locks measured 0/7 -- the map has no browser_locks",
+        self.assertEqual("browser locks measured 0/8 -- the map has no browser_locks",
                          browser_cover.measured_line({"parts": []}))
 
     def test_the_night_line_reads_the_map_the_build_installed(self):
@@ -440,7 +440,7 @@ class NightLineTest(Base):
         cov[browser_cover.FIELD] = _field({LOCK: "no merged profile"})
         rc, out, maps, _db = _full_build(self.root, cov)
         self.assertEqual(0, rc)
-        self.assertEqual("browser locks measured 6/7 -- not measured: %s (no merged profile)"
+        self.assertEqual("browser locks measured 7/8 -- not measured: %s (no merged profile)"
                          % STEM, browser_cover.night_line(out, maps))
         # the aggregate's own JSON line is not an installed map
         self.assertIsNone(browser_cover.night_line('{"rev": "r1", "complete": true}\n', maps))

@@ -18,7 +18,10 @@ coordinator before anything goes public:
 
   prepare  master tip carries the release cut (version x.y.z in Cargo.toml and
            `## [x.y.z]` in CHANGELOG.md, made by `strand.sh merge --release`),
-           else exit 2. A detached worktree on that tip, german_scan in both
+           else exit 2. A detached worktree on that tip, the release's line
+           under `ROADMAP.md` § Shipped (the first sentence of the CHANGELOG
+           intro, committed on the cut before the gate, then
+           `check_roadmap_anchors.py` green; GH #1518), german_scan in both
            stages, `strand.sh gate release`, `pipeline.py release count
            --write` plus its commit, `make_export.py` with the release receipt,
            the release notes out of the CHANGELOG section, a check that the
@@ -80,7 +83,7 @@ import time
 import tomllib
 from pathlib import Path
 
-PREPARE = ("master", "worktree", "german-scan", "german-strings", "gate", "count",
+PREPARE = ("master", "worktree", "roadmap", "german-scan", "german-strings", "gate", "count",
            "export", "notes", "website-check")
 PUBLISH = ("verify", "push", "github-main", "master-ff", "tag", "ci", "release-run",
            "release-notes", "discussion", "website", "deploy", "docs", "live-check",
@@ -268,6 +271,106 @@ def intro_of(section):
     return " ".join(para)
 
 
+# ---- the roadmap step (GH #1518) -------------------------------------------
+# `docs/development-rules.md` § 1 and § 5b: between the CHANGELOG cut and the
+# export every release appears once under `ROADMAP.md` § Shipped, and
+# `scripts/check_roadmap_anchors.py` runs green. As a sentence in a prompt it
+# was dropped from 0.77.1 to 0.86.1: § Shipped stood at v0.77.0 while fifteen
+# releases shipped after it.
+SHIPPED_HEAD = re.compile(r"^##\s+Shipped\b")
+SHIPPED_BULLET = re.compile(r"^- v(\d+)\.(\d+)\.(\d+):")
+# The width of the lines already there (117 at most up to v0.77.0).
+SHIPPED_WIDTH = 116
+# A parenthesis that holds issue links only: `([#7](...))`, `([#1](...), [#2](...))`.
+ISSUE_LINK_GROUP = re.compile(r"\s*\((?:\[#\d+\]\([^)\s]*\)(?:,\s*)?)+\)")
+ISSUE_LINK = re.compile(r"\[(#\d+)\]\([^)\s]*\)")
+MD_LINK = re.compile(r"\[([^\]]*)\]\([^)\s]*\)")
+
+
+def first_sentence(text):
+    """Up to the first `.`, `!` or `?` outside parentheses and code spans that is
+    followed by a blank and a word that does not start lower-case."""
+    depth, code = 0, False
+    for i, ch in enumerate(text):
+        if ch == "`":
+            code = not code
+        elif code:
+            continue
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch in ".!?" and depth == 0:
+            rest = text[i + 1:]
+            if not rest.strip():
+                return text[:i + 1]
+            if rest[:1].isspace() and not rest.lstrip()[:1].islower():
+                return text[:i + 1]
+    return text
+
+
+def shipped_line(section, version):
+    """The § Shipped line of `version`: the first sentence of the CHANGELOG
+    section's intro word for word, its issue links reduced to the number (a
+    parenthesis of links alone goes), its first word lower-case unless it is an
+    identifier or an acronym, wrapped like the lines already there."""
+    import textwrap
+    intro = intro_of(section or "")
+    if not intro:
+        raise Red(f"CHANGELOG.md `## [{version}]` has no intro paragraph to take the "
+                  f"§ Shipped line from; write the line by hand, then run again with --reason")
+    text = ISSUE_LINK_GROUP.sub("", first_sentence(intro))
+    text = MD_LINK.sub(r"\1", ISSUE_LINK.sub(r"\1", text)).strip()
+    word = text.split(" ", 1)[0].rstrip(":,;")
+    if word[:1].isupper() and word.isalpha() and word[1:] == word[1:].lower():
+        text = text[0].lower() + text[1:]
+    return textwrap.fill(f"- v{version}: {text}", width=SHIPPED_WIDTH, subsequent_indent="  ",
+                         break_long_words=False, break_on_hyphens=False)
+
+
+def shipped_rows(text):
+    """The lines of § Shipped (heading to the next `## `), none without it."""
+    lines = text.split("\n")
+    head = next((i for i, row in enumerate(lines) if SHIPPED_HEAD.match(row)), None)
+    if head is None:
+        return []
+    end = next((i for i in range(head + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return lines[head + 1:end]
+
+
+def with_shipped_line(text, version, line):
+    """`text` with `line` under § Shipped, newest on top: above the first line of
+    an older release, else below the last release line. A release that already
+    has its line leaves the text byte-equal (a second run adds nothing)."""
+    lines = text.split("\n")
+    head = next((i for i, row in enumerate(lines) if SHIPPED_HEAD.match(row)), None)
+    if head is None:
+        raise Red("ROADMAP.md has no `## Shipped`")
+    end = next((i for i in range(head + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    new = tuple(int(x) for x in version.split("."))
+    at = after = None
+    for i in range(head + 1, end):
+        m = SHIPPED_BULLET.match(lines[i])
+        if not m:
+            continue
+        have = tuple(int(x) for x in m.groups())
+        if have == new:
+            return text
+        if have < new and at is None:
+            at = i
+        after = i + 1
+        while after < end and lines[after].startswith("  "):
+            after += 1
+    if at is None:
+        at = after
+    if at is None:  # no release line yet: below the section's text
+        at = end
+        while at > head + 1 and not lines[at - 1].strip():
+            at -= 1
+        line = "\n" + line
+    return "\n".join(lines[:at] + line.split("\n") + lines[at:])
+
+
 def workspace_version(cargo_toml):
     try:
         data = tomllib.loads(cargo_toml)
@@ -419,6 +522,50 @@ class Release:
             run(["git", "-C", self.root, "worktree", "add", "--detach", path, self.data["master"]],
                 what="worktree add")
         return {"worktree": str(path), "strand": self.a.strand}
+
+    def step_roadmap(self):
+        """The release's line under `ROADMAP.md` § Shipped, committed on the cut,
+        then the anchor check green (GH #1518, development-rules § 1/§ 5b).
+
+        Before the gate, so the release gate measures the line (anchor check,
+        German scan). A line under § Shipped and nothing else is a release
+        record (`turnaround.release_offending`), so a battery measured on the
+        cut still matches the release head; any other ROADMAP.md change is
+        foreign. A tree without ROADMAP.md writes nothing here; the gate's
+        `roadmap-anchors` station is red on it.
+
+        The line is the first sentence of the version's CHANGELOG intro, word
+        for word: that sentence has to say what the release ships, not frame it
+        ("a patch on 0.86.0" alone is a label). A line written by hand under
+        § Shipped on the cut wins; the step then adds nothing."""
+        roadmap = self.wt() / "ROADMAP.md"
+        if not roadmap.is_file():
+            print("release: roadmap -- no ROADMAP.md in the release tree, no line to write", flush=True)
+            return {"roadmap": "absent"}
+        section, _ = changelog_section((self.wt() / "CHANGELOG.md").read_text(), self.v)
+        if section is None:
+            raise Red(f"CHANGELOG.md has no `## [{self.v}]`")
+        text = roadmap.read_text()
+        # a line already there (by hand, or a run before) needs no intro and gets no twin
+        there = any(row.startswith(f"- v{self.v}:") for row in shipped_rows(text))
+        got = text if there else with_shipped_line(text, self.v, shipped_line(section, self.v))
+        state = "present"
+        if got != text:
+            roadmap.write_text(got)
+            issue = f" (#{self.a.issue})" if self.a.issue else ""
+            msg = (f"{self.a.wave} {self.a.strand}{issue}: ROADMAP § Shipped line for v{self.v} "
+                   f"from its CHANGELOG section\n")
+            with tempfile.NamedTemporaryFile("w", suffix=".msg", delete=False) as f:
+                f.write(msg)
+            try:
+                run(["git", "-C", self.wt(), "add", "--", "ROADMAP.md"], what="git add")
+                run(["git", "-C", self.wt(), "commit", "-q", "-F", f.name], what="git commit")
+            finally:
+                os.unlink(f.name)
+            state = "written"
+        run([sys.executable, "-I", self.wt() / "scripts/check_roadmap_anchors.py"],
+            what="check_roadmap_anchors")
+        return {"roadmap": state}
 
     def step_german_scan(self):
         run([sys.executable, self.wt() / "plans/p5.5-fixtures/german_scan.py", "-C", self.wt(), "--strict"],

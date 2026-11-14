@@ -7,6 +7,7 @@ pub mod curator_hive;
 pub mod curator_lead;
 #[path = "../support/curator_target.rs"]
 pub mod curator_target;
+pub mod gh_d54g_ack_lead;
 pub mod gh_d58_lead_a_composition_without_a_lead_runs_on_the_target_it_names;
 pub mod gh_d58_lead_a_fresh_lead_leaves_the_target_to_the_curate;
 pub mod gh_d58_lead_a_rebuild_without_a_lead_reaches_the_ledger;

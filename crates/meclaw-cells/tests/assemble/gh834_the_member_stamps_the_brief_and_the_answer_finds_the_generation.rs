@@ -341,6 +341,9 @@ fn stage_generation(root: &std::path::Path, who: &str) {
         // GH #1279: the screen judge's model is an `llm` cell this road
         // never reaches -- the judge ships off (`enabled` "0").
         inerts.push(format!("{talky}/screen_model"));
+        // D54g GH #1506: the route's second judge is an `llm` cell this road
+        // never reaches -- nothing is sharpened as shipped (`second_judge` "").
+        inerts.push(format!("{talky}/second_judge"));
         // D58 lead: the lead is its own hive (`lead@1.0.0`), a `ref` a
         // filesystem boot cannot resolve; the curator double above never
         // asks it, so it stands inert like the other nodes off this road.

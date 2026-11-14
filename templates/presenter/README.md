@@ -1,4 +1,4 @@
-# `presenter@2.0.0`
+# `presenter@2.0.1`
 
 When the decider is sure that something on the screen helps with what was just said,
 something is shown. Every turn with text becomes **one** call to a fast decider over the
@@ -101,7 +101,7 @@ after `data_wait_ms` the view is withdrawn.
 | `builtin_thresholds` | `{}` | a threshold of its own for one of the presenter's own topics (`search`, `work` and those of `builtin_topics`), by name, each in (0, 1]; a topic not named takes `threshold`, an app's topic keeps its manifest's |
 | `work_hint` | `Working on it…` | the hint's text |
 | `catalog` | the display's block copy | written by `scripts/display_sync.py` only |
-| `observed_topics` | `["search", "work"]` | the presenter's own observed topics offered to the decider |
+| `observed_topics` | `["search", "work"]` | the presenter's own observed topics offered to the decider, and the apps' topics the turn's tool results fill (below) |
 | `test_patterns` | a list of common test commands | substrings that make a bash command a test run |
 | `builtin_topics` | the residents' topics | the presenter's own topics with declared sources |
 | `verdict_source` | `selector` | where a turn's verdict comes from: `selector` is the one call above; `stamp` takes it from the talky's stamp on `in_verdict` and makes no call (see below); anything else is `selector` |
@@ -148,7 +148,7 @@ requester `app:presenter/decide`, and the grant with its birth event through `se
 ## Its own topics: tool results are data
 
 Since 1.1 the presenter observes the tools of the generation it is installed for: its app
-block declares `observes_tool_calls` (`web_search`, `web_fetch`, `bash`, `file`, `edit` --
+block declares `observes_tool_calls` (`web_search`, `web_fetch`, `bash`, `file`, `edit`, `weather` --
 the occupants of a generation's own `./tools`) and the string form of
 `observes_tool_results`, both onto `./stage`. Installing it therefore needs a `generation`.
 A call or a result is **data and nothing else**: it opens no window and asks the decider
@@ -182,6 +182,30 @@ may not hold their names):
   `tests` (the verdict of the last bash command that matched `test_patterns`). A shell
   command is named only "test run" or "shell command"; no file content and no command
   output ever reaches the screen.
+
+**An app's topic takes the results of its turn** when its name stands in `observed_topics`
+and one of its candidates binds a set that carries the exact name of an observed tool (a set
+`weather` is the set of the tool `weather`). The result of that tool fills the window of its
+turn, whichever tool it is and whichever app owns the topic: every result of the turn is one
+row of the set (a JSON object is the row, anything else the row `{text}`), in the order of
+the calls, under the round the result carries. The app is still asked and its own set fills
+the window as long as no result of the turn is there; the first result takes its place, and
+the app's set of that name is not taken again. Once a result of the turn is there and until
+the window is done, the candidate that binds the tool's set (the first such in the manifest)
+leads the window, even when the verdict chose another lead; that lead leaves, the verdict's
+further block stays, and without a result the verdict's lead stays. A result whose call was
+seen before the stamp of a turn that came without a `turn_id` finds the turn by the id the
+result carries. Such a window waits at least 15000 ms for its
+data and, on the stamp way, is not done while no result of the turn stands in it or a call
+of the turn is still running; `data_wait_ms` ends the wait with what stands. On the selector
+way a set never changes once it is there: the window is filled once, when no call of the
+turn is running any more (a verdict that comes while a call runs places none of the results
+yet), and an app's set that came first stays. A result is kept only for a turn in flight and
+only where such a topic stands; no observation opens a window. Without the topic's name in
+`observed_topics` nothing of this applies to the topic. The rows of `work`: while `search` or
+`work` is observed every listed tool is a step, as before, so from the factory a call of
+`weather` stands as the step `weather: <place>` in the window `work`; with app topics alone
+in the list only the calls of the tools they take are rows.
 
 A topic of `builtin_topics` may give a candidate a **source** instead of an app (an app's
 topic may not): `"source": {"read": "<resident>", "hop": {...}, "body": {...}, "rows":

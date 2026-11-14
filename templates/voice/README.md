@@ -1,4 +1,4 @@
-# `voice@2.9.0`
+# `voice@2.10.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -38,10 +38,11 @@ instantiating mutation put it -- and not a scope with a door, so there is no
 | in | the finished assistant turn. `context.call_id` picks the connection it is spoken into (`context.session_id` where that key is absent) |
 | in, `hop.route == 'in_advise'` | one section of advice appended to a RUNNING duplex session, without cutting anybody off: `hop.section` says whether it is a `fact` (said out loud), a `context` (thought), a `correction` (the standing instruction rewritten), an `interrupt` (a `correction` followed at once by a `fact` with the same words -- the guard stepping in; since #1404 the first `interrupt` of a `hop.turn_id` in a session acts and a later one of that turn is a no-op, trace `interrupt_deduped` -- the curator's early one and the guard's at the turn's end do not ask twice; since #1407 a `fact` with `hop.fact_source` "tool" -- the curator's `fact_from_tool` -- marks its `hop.turn_id`, and a later `fact` of that turn is a no-op, trace `fact_deduped`: the second round's sidecar fact is not said again; a delegation's answer is never dropped), a `renew` (no words: the call's next provider session opens, D48) or a `horizon` (#1400: no words either -- `body.seconds` fills `{seconds}` of `duplex.gpt_live.horizon_text`, which goes as one `correction`: at once on a quiet line; otherwise held by the connection to the first quiet moment (no spoken section open, the model's own audio `spoken_quiet_ms` past -- the takeover's rule), at the latest `spoken_cap_ms` after it came, a newer horizon replacing a held one, a held one lapsing when the answer goes out (a new spoken section, or an append that answers a delegation) -- and one still held when the call ends lapses silently; `hop.at_turn_end` is not read; an empty `horizon_text`, the default, drops it with a warning and refuses nothing). Duplex only -- a cascade session has no channel to append to and answers `wrong_engine`. A `context` that carries `hop.renewal_n` is the handover of a renewal (see `renewed` below): it goes to the renewed session before the caller's audio does, and the call follows at the next quiet moment of the line; a block for a renewal that failed is dropped |
 | in, `hop.route == 'in_session'` | who is speaking in one session, where somebody PROVED it ([#979](https://github.com/mmeyerlein/meclaw/issues/979)): `hop.call_id` (or `hop.session_id`) names the session and `hop.user_id` the verified sender, stamped on the session's `turn` and `delegation` as `user_id` and `verified_user`. No text, no answer. An empty `user_id` withdraws the name, and the name goes with the connection -- a session that connects again is named again or not at all. Only an edge the installing level draws reaches it -- in the `freeswitch` hive, the signalling half, which knows the caller the switch put through |
-| out, `hop.route == 'turn'` | one finished utterance as a user-origin text turn. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`voice`) and `mode` |
+| out, `hop.route == 'turn'` | one finished utterance as a user-origin text turn. `hop` carries `session_id` and `call_id`, `turn_id` (`<session_id>#<n>`), `platform` (`voice`) and `mode`; a duplex turn in which the end of the call cut the model off also carries `cut: true`, so a reader does not take the model's part of it for a statement that was made |
 | out, `hop.route == 'partial'` | an interim transcript, same body shape, `hop` carries `eager` beside the rest. OFF by default -- `params.emit_partials` turns it on |
 | out, `hop.route == 'spoken'` | what the ASSISTANT is saying while it is still saying it, same body shape, `hop` carries `speaker: 'assistant'`. Duplex only, and on the same `params.emit_partials` -- the two halves of one stream are ordered together or not at all |
 | out, `hop.route == 'speak_end'` | one synthesis is over. Empty `messages[]`; `hop` carries `session_id`, `call_id`, `speak_id` and `reason` (`done`, `cancelled`, `failed`) beside `platform`. OFF by default -- `params.emit_speak_end` turns it on |
+| out, `hop.route == 'first_audio'` | the first audio of an answer went out to the client. Empty `messages[]`. A duplex session emits one per answer at its first audible audio; `hop` carries `turn_id` (the open turn) and `t_first_audio_ms`, the time the closed `turn` later carries, on the session's clock. The way through a speech synthesis emits one per synthesis at its first audio frame, ahead of its `speak_end`; `hop` carries `speak_id` and `t_first_audio_ms` in milliseconds since the connection opened. OFF by default -- `params.emit_first_audio` turns it on, and the set that sets it draws the edge |
 | out, `hop.route == 'delegation'` | the duplex provider handed work to the client and named the handle: `hop` carries `delegation_id` and `offset_ms`, the body the user text of the open turn. Duplex only |
 | out, `hop.route == 'renewed'` | the provider session was renewed inside the SAME call -- same connection, same `call_id`, the caller's audio never cut -- because a live model ends a session at a limit of its own. Empty `messages[]`; `hop` carries `renewal_n` (counting from 1) and `renewed_at` (epoch milliseconds). The receiver answers with an `in_advise` `context` that carries `hop.renewal_n`: it reaches the new session at once, BEFORE the caller does, and the call goes over at the next quiet moment of the line -- no spoken section open, `spoken_quiet_ms` without the model's audio or a transcript -- at the latest `spoken_cap_ms` after the block; without a block the session is due after `renew_grace_ms`. What the old session still says reaches the caller until the new one speaks, never both at once. A renewal that fails before it takes over leaves the call on its session. Duplex only, and only where `renew_after_ms` is set |
 | out, `hop.route == 'error'` | the cell's own failure: empty `messages[]`, `hop.error_code` plus `msg_type: 'voice_error'`, `session_id` and `call_id` where a session exists, detail in `meta` |
@@ -85,7 +86,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.9.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.10.0",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -97,11 +98,18 @@ with `edge_schema`.
                                   "call_id": "has(hop.call_id) ? hop.call_id : ''",
                                   "session_id": "has(hop.session_id) ? hop.session_id : ''"}}},
     {"from": "./channels", "to": "./channels/voice",
-     "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'voice'",
+     "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.repeat) && has(context.channel_node) && context.channel_node == 'voice'",
      "modifier": {"set_hop": {"route": "'in_speak'"}}}
   ]
 }}
 ```
+
+**A repeat is not spoken.** An answer whose text already went out in its turn
+leaves the assistant marked `hop.repeat` (GH #1505): it ends the turn for a
+channel that writes, and it carries nothing new for a channel that speaks. The
+way down therefore asks `!has(hop.repeat)`; the condition belongs on this edge,
+which turns an answer into something to say, and not in the cell. An edge
+copied without it speaks the same sentence twice.
 
 **One edge up, not six.** Every outbound lane carries the same promotion and
 they differ only in the stamp the cell already wrote, so splitting them into one
@@ -231,7 +239,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.9.0",
+{"name": "channels/voice", "template": "voice@2.10.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -265,7 +273,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.9.0",
+{"name": "channels/voice", "template": "voice@2.10.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -459,8 +467,58 @@ default) it opens a second provider session while the first still runs, emits `r
 `renewal_n` and `renewed_at`, and hands the new session the `in_advise` `context` that carries
 `hop.renewal_n` before any of the caller's audio. The call goes over at the next quiet moment of
 the line, once that block has arrived or `renew_grace_ms` has passed; the old session's audio
-plays out until the new one speaks. A socket that drops still ends the call. A lane joined, so
+plays out until the new one speaks. A quiet moment needs the caller's turn closed as well: a
+caller who has begun a sentence finishes it with the old session. At the latest `spoken_cap_ms`
+after the block the call goes over anyway; where that happens inside a turn of the caller's, the
+new session first gets what was heard of that turn so far as a `thinking` append (a thought it
+reads and does not say), before the caller's audio reaches it, and the turn stays one turn. A
+socket that drops still ends the call. A lane joined, so
 it is the second place.
+
+### In `hold` behind a duplex provider, the key is the one door to the microphone
+
+A page that talks to a live model holds a key, as it does in front of a recogniser
+(d54g, measured in a browser against the live model: every hold reached the session,
+and a hold into the model's speech did not stop it). Three rules, none of them a param:
+
+- **Outside a hold, no frame reaches the model.** The connection drops a binary frame
+  that arrives before the first hold, between two holds or while the model speaks. It
+  makes no silence of it either: the model's ear is shut (`mute`) until the next hold.
+- **The release ends the utterance and keeps the last word.** The mute is the live
+  model's own word for "done" -- its socket has no commit and no turn trigger, so when
+  it answers stays its decision. The mute goes only once every frame of the hold has
+  left the connection's queue: the provider reads its control before its audio, and a
+  mute ahead of the last frames cut the end of the sentence off.
+- **A hold while the model speaks stops it.** The open spoken section ends as
+  `cancelled`, and the model's audio leaves as silence of the same length until the key
+  comes up. The live model has no event that cancels its speech, and the provider's own
+  guide puts a hard stop at the playback, which is this side of the socket.
+
+In `auto` nothing changes; the telephone runs there.
+
+### A page has sessions as a phone has calls
+
+In `hold` the provider session opens with the first hold, not when the page hangs on:
+a page that is merely open costs no provider time and greets nobody. Each session of a
+page carries a name of its own where a call carries its `call_id` -- the connection's
+name and the session's number, `<session>-1`, `<session>-2` -- and is reported like a
+call: `seed_ask` at its start, `usage` with `final` at its end, booked on its own.
+
+- **`duplex.hold_idle_ms`** (default `0`, off). After this long without a hold, without
+  audible speech of the model and without an open delegation, the session ends as a
+  call does (the open turn, the provider's close, the `final` usage). The page keeps
+  its connection; its next hold opens the next session under the next name. A set
+  switches it per instance in `override_params`. Whatever this is set to, a session
+  the cell gives up delivering to (`client_too_slow` under its name, or
+  `external_timeout_ms`) ends at once the same way, as a call does.
+- **The client frame `ready`.** The page says the key is about to go down (the pointer
+  on the key, the microphone granted). Where `duplex.prewarm_ttl_ms` is set, the
+  connection opens the next session on it, the way a ringing line does, and the first
+  hold adopts it -- measured on the live model, a page's first hold otherwise waited
+  2.7 s (median) for an answer against 1.7 s on a warm session. Without
+  `prewarm_ttl_ms`, and in `auto`, `ready` changes nothing. An early session that runs
+  out before a hold adopts it is reported like a ring nobody answered: `seed_ask` under
+  its name, no `usage`; the next session takes the next number.
 
 ## The door
 
@@ -478,7 +536,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.9.0",
+{"name": "channels/voice", "template": "voice@2.10.0",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -543,7 +601,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.9.0",
+{"name": "channels/voice", "template": "voice@2.10.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -555,7 +613,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.9.0",
+{"name": "channels/voice", "template": "voice@2.10.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -600,7 +658,7 @@ handing text to a synthesiser and no seam between them to tune. Two ship:
 
 | provider | what it is | the block carries |
 |---|---|---|
-| `gpt_live` | a hosted live model | `api_key`, `base_url`, `x_title`, `http_referer`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms`, `recover_max`, `fault_close_at_ms` (for labs only, default `0`), `horizon_text` (default `""`, #1400), `prewarm_ttl_ms`, `barge_duck_ms`, `barge_release_ms`, `barge_level_dbfs`, `barge_echo_margin_db` |
+| `gpt_live` | a hosted live model | `api_key`, `base_url`, `x_title`, `http_referer`, `model`, `voice`, `sample_rate`, `instructions`, `greeting`, `turn_gap_ms`, `backchannel_max_ms`, `spoken_quiet_ms`, `spoken_cap_ms`, `close_grace_ms`, `hold_idle_ms` (default `0`: a page's session lives as long as its connection, or until the cell gives up delivering to it), `tick_ms`, `keepalive_ms`, `delegation_grace_ms`, `delegation_fallback`, `renew_after_ms`, `renew_grace_ms`, `recover_max`, `fault_close_at_ms` (for labs only, default `0`), `horizon_text` (default `""`, #1400), `prewarm_ttl_ms`, `barge_duck_ms`, `barge_release_ms`, `barge_level_dbfs`, `barge_echo_margin_db`, `delegation` (default `{"type": "client"}`; `responses` lets the provider run the backend model, `responses.model` required), `safety_identifier` (≤ 128 characters), `start_input` (`{role, text}` list, ≤ 128 entries, used when no seed arrives), `delegation_history` (default `false`: the `delegation` lane carries the call so far, whole -- the cell cuts none of it, only the curator may, at the window of the target), `delegation_superseded` (`speak`, `think` or `drop`, default `speak`; `drop` emits `delegation_cancel`), `responses_fallback` (Responses settings sent once per session as `session.update` on `responses_validation_failed`, `responses` delegation only), `responses_superseded_note` (default empty; `responses` delegation only: a new Responses delegation sends it once as thinking for every older one still open), `advise_error_fallback` (default `false`: a failed answer of an open delegation says `delegation_fallback` at once), `advise_split_chars` (1 to 1800, unset = off: only ever lowers the ceiling an aside is split at), `advise_max_tokens` (default `500`) and `chars_per_token` (default `2.4`, 0.1 to 16): the ceiling of one aside is their product less a tenth, 1 080 characters as shipped, every aside is split at paragraphs, sentence ends, words, then hard, and `greeting`, `horizon_text` and `responses_superseded_note` over that ceiling refuse the birth; an aside the provider refuses by its event id is reported as `advise_append_refused` on the `error` lane (`meta.section`, `meta.chars`, `meta.provider_code`, `meta.delegation_id`), and a refused answer fails its delegation at once. An answer that names its delegation closes it by `in_advise` or by `in_speak`; `seed_max_tokens` (default `8192`: the most estimated tokens of a seed; the seed is cut to the start budget, #1507, see below), `seed_max_messages` (1 to 128, default `128`), `window_profile` (default `{}`, handed on uninterpreted as `limits.profile` on `seed_ask`) |
 | `echo` | the loopback, which needs no credential and knows only `sample_rate` | -- |
 
 **The live model names its app (GH #1455).** The session handshake carries
@@ -627,7 +685,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.9.0",
+{"name": "channels/voice", "template": "voice@2.10.0",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "credential_grant_id": "<grant of the live model's key>",
                                 "instructions": "<who the model is for this session>",
@@ -641,6 +699,19 @@ once after the session opens, so the model speaks first; empty means it waits
 for the caller. Both live in the `duplex` block, which carries a credential and
 is therefore off the runtime params surface exactly like `stt` and `tts`:
 rotation means depositing the key again and a restart, and tuning means a respawn.
+
+**The whole start window stays under the provider's limit (#1507).** The
+provider takes at most 16,384 tokens of instructions, so an `instructions` that
+alone is estimated over it is refused at the parse, with its tokens, characters
+and rate. Every estimate of the block counts characters divided by
+`chars_per_token` (until #1507 the seed counted characters/4, so the shipped
+rate makes the start window smaller). The start budget is the smaller of
+`seed_max_tokens` and what the estimated `instructions` and `greeting` leave of
+16,384; the seed is cut to it and to `seed_max_messages`, oldest first. With
+`seed_wait_ms` set, every `seed_ask` names these limits in `hop.limits`:
+`model`, `start_budget`, `feed_budget` (`advise_max_tokens`), `chars_per_token`
+and `profile` (`window_profile`), so the curator cuts the window by the same
+numbers.
 
 **A running session can still be told something, and that is the `in_advise`
 lane.** It is the one thing a duplex session offers that a cascade cannot: a
@@ -752,7 +823,7 @@ grants and the edges in the same mutation (`seed_rows` writes through the mutati
       },
       {
         "name": "voice",
-        "template": "voice@2.9.0"
+        "template": "voice@2.10.0"
       }
     ],
     "seed_rows": [
@@ -913,7 +984,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.9.0",
+{"name": "channels/voice", "template": "voice@2.10.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "credential_grant_id": "grant:cartesia@template-voice/tts",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -928,7 +999,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.9.0",
+{"name": "channels/voice", "template": "voice@2.10.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "credential_grant_id": "<grant of the elevenlabs key>",
                              "voice": "${ELEVENLABS_VOICE}"}}}
@@ -977,12 +1048,28 @@ A live model streams a continuous channel in real time, silence included, in 100
 chunks. While the session is parked the cell reads that channel, so the provider never
 waits on a queue nobody empties however long the line rings, and feeds the model 20 ms
 frames of digital silence, the line it would hear from a quiet caller. Everything
-before the first audible 20 ms (`barge_level_dbfs`, RMS) is dropped; from there the
-model's audio is kept, up to 15 s (the oldest goes first beyond that), and its events
-are kept whole. At the pickup the kept audio goes out at once — the greeting is the
-first thing the caller hears — and as much of the model's following silence as was
-sent ahead is dropped, so the line plays in real time again within that many seconds
-of quiet. Audible chunks always pass.
+before the first audible 20 ms (`barge_level_dbfs`, RMS) is dropped; from there what
+the model says is kept, with its own pauses, and its events are kept whole. Silence
+after its last word is the wait for the pickup: it is held back, joins what is kept
+only if the model speaks again within its greeting, and is dropped at the pickup, so a
+long ring is never queued in front of what the model says next. Only the greeting is
+parked: it is the model's first block, and it ends where the model starts a new one (a
+fragment more than `turn_gap_ms` after the block last spoke, the rule the cell forms its
+turns with). A second sentence the model says while the line still rings is dropped
+with its transcript: the caller never hears it, and no turn carries it. The cap on what is kept, 15 s (the
+oldest goes first beyond that), counts audible audio only: a ring longer than the
+cap leaves the greeting where it was. At the pickup the kept audio goes out at once —
+the greeting is the first thing the caller hears — and as much of the model's
+following silence as was sent ahead is dropped, so the line plays in real time again
+within that many seconds of quiet. Audible chunks always pass.
+
+An early session whose provider run is already over at the pickup — its handshake
+failed while the line rang, or it ran and ended — is not adopted. The connection
+opens a fresh session as it would without the knob, the caller hears one greeting,
+and the call's final `usage` is marked incomplete, because the close of the session
+that was thrown away never came. `barge_level_dbfs` is read by the early session as
+well as by the gate below, so its range (between -90 and 0, exclusive) is checked at
+birth whether or not `barge_duck_ms` is set.
 
 **`barge_duck_ms`** (default `0`), **`barge_release_ms`** (`300`), **`barge_level_dbfs`**
 (`-35`). When the caller's frames stay above the level for `barge_duck_ms` while the
@@ -995,7 +1082,13 @@ as text after the model has stopped. The model is told nothing and no spoken sec
 ends: whether the caller interrupted or only said "mhm" stays the model's call; a
 backchannel costs a few hundred milliseconds of its words. A silent model is never
 ducked. Both levels are RMS: the caller's per frame, the model's per chunk and over its
-last 300 ms.
+last 300 ms. A greeting adopted from a session that took the ring (`prewarm_ttl_ms`) is
+held: until it is over, the level alone does not close the gate, because noise on a line
+that has just been picked up (the handset, a room, a breath) sits at the level of speech;
+during the greeting the gate closes only once a fragment of the caller's own words has
+come in (the provider's transcript). The greeting ends where the park buffer cuts it, at
+the model's next block. After it, and on a session that did not take the ring, the gate
+ducks as described.
 
 **`barge_echo_margin_db`** (`10`). A caller frame closes the gate only when its RMS
 reaches the model's RMS over the last 300 ms minus this margin. An unbalanced telephone

@@ -141,9 +141,11 @@ class ReleaseMatchesBattery(unittest.TestCase):
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
 
     def test_roadmap_and_other_plans_paths_are_foreign(self):
-        # Review C1: ROADMAP.md (station roadmap-anchors), a wave ledger and the
-        # exporter under plans/ are no release record. 0.77.0 wrote ROADMAP.md
-        # and the ledger after the battery (6946a6ab..064ec541c): fail closed.
+        # Review C1: a wave ledger and the exporter under plans/ are no release
+        # record, and neither is a ROADMAP.md change other than a new release's
+        # own `- vX.Y.Z:` line under § Shipped (here: no § Shipped at all).
+        # 0.77.0 wrote ROADMAP.md and the ledger after the battery
+        # (6946a6ab..064ec541c): fail closed.
         files = self.bump()
         files.update({
             "ROADMAP.md": "# Roadmap\n\n- 0.77.0\n",
@@ -157,6 +159,30 @@ class ReleaseMatchesBattery(unittest.TestCase):
             if path in ("ROADMAP.md", "plans/live-2-2026-10-29/ledger.md",
                         "plans/export-fixtures/make_export.py"):
                 self.assertIn("foreign: " + path, res.stdout)
+
+    def test_a_shipped_line_in_the_roadmap_matches_the_battery(self):
+        # GH #1518: `release.sh prepare` commits the release's line under
+        # ROADMAP.md § Shipped on the cut, after the battery measured it. That
+        # line is a release record; any other ROADMAP.md change stays foreign.
+        roadmap = "# Roadmap\n\n## Now\n\n- a stream\n\n## Shipped\n\n- v0.76.6: the patch.\n"
+        write(self.repo, {"ROADMAP.md": roadmap})
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "candidate with shipped")
+        self.core = git(self.repo, "rev-parse", "HEAD")
+        files = self.bump()
+        files["ROADMAP.md"] = roadmap.replace("- v0.76.6:", "- v0.77.0: the release.\n- v0.76.6:")
+        self.release(files)
+        res = self.run_check(self.receipt())
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        for text in (roadmap.replace("- a stream\n", "- a stream\n- another\n"),
+                     roadmap.replace("- v0.76.6: the patch.\n", ""),
+                     roadmap.replace("- v0.76.6:", "- v0.76.6: a twin.\n- v0.76.6:")):
+            with self.subTest(text=text):
+                git(self.repo, "checkout", "-q", "--detach", self.core)
+                self.release(dict(self.bump(), **{"ROADMAP.md": text}))
+                res = self.run_check(self.receipt())
+                self.assertEqual(1, res.returncode, res.stdout + res.stderr)
+                self.assertIn("foreign: ROADMAP.md", res.stdout)
 
     def test_a_foreign_file_in_the_diff_is_refused(self):
         files = self.bump()

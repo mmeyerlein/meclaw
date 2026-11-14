@@ -1,4 +1,4 @@
-# `telegram-connector@2.2.7`
+# `telegram-connector@2.2.8`
 
 A Telegram chat as one cell. One `proxy`, one credential, one wire in and one
 wire out. No persona, no llm cell, no answer of its own -- it carries turns
@@ -132,7 +132,7 @@ grant and the two edges in the same mutation (`seed_rows` writes through the mut
       },
       {
         "name": "telegram-connector",
-        "template": "telegram-connector@2.2.7"
+        "template": "telegram-connector@2.2.8"
       }
     ],
     "seed_rows": [
@@ -218,7 +218,7 @@ cell, so `override_params` takes the flat form -- there is no path inside it to
 address:
 
 ```json
-{"name": "telegram-connector-2", "template": "telegram-connector@2.2.7",
+{"name": "telegram-connector-2", "template": "telegram-connector@2.2.8",
  "override_params": {"bot_token_grant_id": "grant:telegram-bot-2@template-telegram-connector/bot-2"}}
 ```
 
@@ -276,7 +276,7 @@ this node itself:
     "add_nodes": [
       {
         "name": "telegram",
-        "template": "telegram-connector@2.2.7",
+        "template": "telegram-connector@2.2.8",
         "birth": "inactive",
         "override_params": {
           "bot_token_grant_id": "",
@@ -330,7 +330,7 @@ credential -- the graph swap `swap_nodes` was re-dedicated for:
         "match": {"name": "telegram"},
         "with": {
           "name": "telegram-live",
-          "template": "telegram-connector@2.2.7",
+          "template": "telegram-connector@2.2.8",
           "params": {"bot_token_grant_id": "grant:telegram-bot@template-telegram-connector/bot"}
         }
       }
@@ -418,6 +418,15 @@ cell answers. One repeater per chat at most -- a second message in the same
 chat replaces the first one's repeater instead of stacking a second one on it --
 and the answer cancels it, so a chat that got its answer stops typing at once
 (GH #515).
+
+An interim message is not the answer (GH #1504). A message whose hop carries
+`interim` "1" -- the sentence a side call says while a tool runs -- leaves the
+repeater running and shows "typing…" again right behind it, because Telegram
+drops the status when a message arrives; before, every sent message ended the
+repeater, and behind such a sentence the chat showed nothing until the answer
+came. Only the first message without `interim` ends it, or the ceiling. A
+composition that lets this status show the work can drop the side call itself
+(the lead's knob `side_when`).
 
 **A failed chat action never costs the turn its answer.** It is logged and the
 next refresh tries again; the connector's four `error_code`s in the table above

@@ -146,8 +146,15 @@ TYPES = ("text", "int", "number", "boolean", "html")
 # occupants of a generation's own `./tools` hive (the `tools` template): their results are what the
 # string-form result observer hears from that hive. The file tool is `file` (op read,
 # write, list, stat), not `file_*`; the member's file space answers on its own road, which
-# no observer leg reaches (OR-DP.Q.1). A longer list is a pin change of the presenter.
-OBSERVED_TOOLS = ("web_search", "web_fetch", "bash", "file", "edit")
+# no observer leg reaches (OR-DP.Q.1). A longer list is a pin change of the presenter
+# (wave d54g: `weather` joined it).
+OBSERVED_TOOLS = ("web_search", "web_fetch", "bash", "file", "edit", "weather")
+
+# A topic fed by tools waits at least this long for its data: a tool result arrives
+# seconds after the verdict (the built-in `search` and `work` say the same number in
+# their manifests). Measured on a turn that asked for three places: the app answered
+# one second after the verdict, the tools after it.
+TOOL_WAIT_MS = 15000
 
 # The rolling work view: at most this many rows per session in the store (a view with a
 # ceiling; the colony log stays the record), and this many steps on the screen.
@@ -700,12 +707,26 @@ def builtin_topics(params):
     return out
 
 
+def fed_tools(manifest):
+    """The observed tools whose results fill a topic: a data set that carries the exact
+    name of an observed tool is that tool's set (one reading, no pattern)."""
+    sets = [c.get("set") for c in manifest.get("candidates") or [] if isinstance(c, dict)]
+    return [t for t in OBSERVED_TOOLS if t in sets]
+
+
 def all_topics(r, params):
-    """Every topic the decider is asked about: the presenter's own first, then the apps'."""
+    """Every topic the decider is asked about: the presenter's own first, then the apps'.
+    An app's topic named in `params.observed_topics` that has a set of an observed tool is
+    `kind: observed` as well (wave d54g): the results of its turn fill its window, and the
+    app's own set fills in until one is there. Without the name in the list nothing
+    changes for the topic."""
     out = builtin_topics(params)
+    names = params.get("observed_topics")
+    names = names if isinstance(names, list) else []
     for name, v in r["shows"].items():
         if name not in out:
-            out[name] = v
+            fed = name in names and v.get("owner") and fed_tools(v["manifest"])
+            out[name] = dict(v, kind="observed") if fed else v
     return out
 
 
@@ -1628,8 +1649,12 @@ def open_window(r, rec, v, topics, params, now):
     rec["keys"] = chosen(v, manifest, params)
     rec["state"] = "showing"
     rec["owner"] = show["owner"]
-    wait = manifest.get("data_wait_ms") or knob(params, "data_wait_ms")
-    rec["data_deadline"] = now + int(wait)
+    wait = int(manifest.get("data_wait_ms") or knob(params, "data_wait_ms"))
+    if show["owner"] and show.get("kind") == "observed":
+        # The app answers at once, the turn's tools seconds later: the window waits for
+        # the tools, or it would be done on the app's own set alone (§ 9b.14).
+        wait = max(wait, TOOL_WAIT_MS)
+    rec["data_deadline"] = now + wait
     if not rec.get("star_only"):
         rec["t_window"] = now - rec["arrived"]
         if stamped and rec.get("t_building") is None:
@@ -1649,10 +1674,16 @@ def open_window(r, rec, v, topics, params, now):
     # one (`feed`).
     view = [a_view(v["topic"], tree)] if not rec.get("star_only") else []
     out = view + ask + [bundle(PHASE_WRITE, older + w_pending(rec))]
-    if not show["owner"]:
-        sets = own_sets(r, rec, v["topic"], params) if show.get("kind") == "observed" else {}
-        if sets or rec["sets"]:
-            out += feed(r, rec, manifest, sets, params, now)
+    # What was observed before the verdict fills the window now -- of the presenter's own
+    # topic and of an app's topic alike (wave d54g).
+    sets = own_sets(r, rec, v["topic"], params) if show.get("kind") == "observed" else {}
+    if sets and show["owner"] and not stamped and tools_running(r, rec, manifest):
+        # § 9b.14, selector way: a set never changes once there, so the turn's results
+        # fill the window once, when no call of the turn runs any more (`refill`); fed at
+        # a verdict that came while a call ran, the window showed the part and closed.
+        sets = {}
+    if sets or (not show["owner"] and rec["sets"]):
+        out += feed(r, rec, manifest, sets, params, now)
     return out + clock_ops(r, now)
 
 
@@ -1672,6 +1703,10 @@ def lane_show_data(body, hop, ctx, params, now):
         return [error("foreign_data", "show_data for topic %s from %r; its owner is %s"
                       % (rec["topic"], sender, rec["owner"]))]
     sets = body.get("sets") if isinstance(body.get("sets"), dict) else {}
+    # The app's own set gives way to a result of the turn (wave d54g): a set the turn's
+    # tools already filled is not taken from the app again.
+    taken = tool_sets(r, rec, params)
+    sets = {k: v for k, v in sets.items() if k not in taken}
     return feed(r, rec, show["manifest"], sets, params, now)
 
 
@@ -1693,6 +1728,8 @@ def feed(r, rec, manifest, sets, params, now):
         # while a set that never came waits for the clock and is withdrawn -- the
         # difference would tell the screen that a set or rows of other rounds exist. Not
         # kept, it is the set that never came, in every step that follows.
+    if rec["first"] == "open":
+        lead_turn_data(r, rec, manifest, params, catalogue(params))
     new, fallback = resolve(rec, manifest, catalogue(params))
     if not new:
         if rec["placed"] and settled(rec, manifest):
@@ -2110,9 +2147,13 @@ def feed_stamp(r, rec, manifest, sets, params, now):
                 kn[1] = node
                 rebuilt = True
     rec["_nodes"] = nodes
+    rebuilt = lead_turn_data(r, rec, manifest, params, cat) or rebuilt
     new, fallback = resolve(rec, manifest, cat)
+    # § 9b.14 (wave d54g): a window fed by the turn's tools is not done on the app's own
+    # set alone, nor while a call of the turn is running -- `data_wait_ms` ends it.
+    ready = settled(rec, manifest) and not awaits_tools(r, rec, params)
     if not new and not rebuilt:
-        if rec["placed"] and settled(rec, manifest):
+        if rec["placed"] and ready:
             tree = stamp_done(rec, now, params)
             return [a_view(rec["topic"], tree),
                     bundle(PHASE_WRITE, w_journal(rec) + close(rec, now))] + clock_ops(r, now)
@@ -2135,7 +2176,7 @@ def feed_stamp(r, rec, manifest, sets, params, now):
     if first:
         rec["t_content"] = now - rec["arrived"]
         rec["fallback"] = fallback or "none"
-    if rec["placed"] and settled(rec, manifest):
+    if rec["placed"] and ready:
         tree = stamp_done(rec, now, params)
         legs += w_journal(rec) + close(rec, now)
     else:
@@ -2232,6 +2273,8 @@ def summarise(tool, args, patterns):
         return clip("fetch %s" % host_of(safe_link(args.get("url"))), SUMMARY_CHARS), ""
     if tool == "bash":
         return ("test run" if is_test(args.get("command"), patterns) else "shell command"), ""
+    if tool == "weather":
+        return clip("weather: %s" % (args.get("place") or ""), SUMMARY_CHARS), ""
     path = clip(args.get("path") or args.get("file") or "", SUMMARY_CHARS)
     if tool == "edit":
         return clip("edit %s" % path, SUMMARY_CHARS), path
@@ -2355,9 +2398,19 @@ def work_sets(rows, screen, params, rec=None):
             "tests": {"value": value, "audience_set": round_}}
 
 
-def observed_on(params):
+def observed_tools(r, params):
+    """The tools whose calls are rows of `work` (§ 9b.9): every listed tool while one of the
+    presenter's own topics is observed (as before the wave d54g, so the factory is
+    unchanged), else only the tools an observed app's topic takes (`all_topics`) -- a
+    topic of an app does not make every shell command a row."""
     names = params.get("observed_topics")
-    return isinstance(names, list) and any(n in BUILTIN for n in names)
+    if isinstance(names, list) and any(n in BUILTIN for n in names):
+        return set(OBSERVED_TOOLS)
+    out = set()
+    for v in all_topics(r, params).values():
+        if v.get("owner") and v.get("kind") == "observed":
+            out.update(fed_tools(v["manifest"]))
+    return out
 
 
 def lane_tool_call(body, hop, ctx, params, now):
@@ -2365,7 +2418,7 @@ def lane_tool_call(body, hop, ctx, params, now):
     r = ram()
     tool = str(hop.get("tool_name") or "")
     cid = str(hop.get("tool_call_id") or "") or turn_text(body, "tool_call")[0]
-    if tool not in OBSERVED_TOOLS or not cid or not observed_on(params):
+    if tool not in OBSERVED_TOOLS or not cid or tool not in observed_tools(r, params):
         return []
     key = round_key(ctx.get("audience_set"))
     summary, path = summarise(tool, call_args(body), test_patterns(params))
@@ -2401,6 +2454,22 @@ def lane_tool_result(body, hop, ctx, params, now):
     legs = w_work_row(row)
     out = []
     rec = r["pending"].get(row["turn_id"])
+    if rec is None and row["turn_id"]:
+        # A turn that came without a `turn_id` moved to its stamp's id after the call was
+        # booked on it (`rekey`, GH #1367): the result names the turn by that id, and the
+        # rows of the call's turn move along, so `tools_running` sees the calls still out.
+        # Without it a call seen before the stamp lost its result, and the window waited
+        # for `data_wait_ms` on the app's own set.
+        tid = str(hop.get("turn_id") or ctx.get("turn_id") or "")
+        moved = r["pending"].get(tid)
+        if moved is not None and moved["state"] in ("asking", "showing"):
+            old = row["turn_id"]
+            legs = []
+            for w in r["work"]:
+                if w["turn_id"] == old:
+                    w["turn_id"] = tid
+                    legs += w_work_row(w)
+            rec = moved
     if row["tool"] == "web_search" and not failed and rec is not None \
             and rec["state"] in ("asking", "showing"):
         # The round of the hits is the round the RESULT carries (the generation's own
@@ -2409,8 +2478,116 @@ def lane_tool_result(body, hop, ctx, params, now):
         obs = rec.setdefault("observed", {})
         obs["hits"] = (obs.get("hits") or []) + hits
         legs += w_pending(rec)
+    # Wave d54g: the result of a listed tool is data of its turn for every app topic it
+    # feeds (`all_topics`), whichever tool it is. Kept only where such a topic stands: a
+    # result no topic takes is never stored (a command's output, a file's content).
+    takers = [name for name, v in sorted(all_topics(r, params).items())
+              if v.get("owner") and v.get("kind") == "observed"
+              and row["tool"] in fed_tools(v["manifest"])]
+    if takers and not failed and rec is not None and rec["state"] in ("asking", "showing"):
+        obs = rec.setdefault("observed", {})
+        # The round is the round the RESULT carries, as for the hits (fail-closed); `seq`
+        # is the call's, so the set stands in the order of the calls.
+        obs["results"] = (obs.get("results") or []) + [
+            {"tool": row["tool"], "seq": row["seq"], "row": result_row(text),
+             "audience_set": as_round(ctx.get("audience_set")) or []}]
+        legs += w_pending(rec)
     out.append(bundle(PHASE_WRITE, legs))
-    return out + refill(r, "search", params, now) + refill(r, "work", params, now)
+    out += refill(r, "search", params, now) + refill(r, "work", params, now)
+    for name in takers:
+        out += refill(r, name, params, now)
+    return out
+
+
+def result_row(text):
+    """One tool result as one row of its set: a JSON object is the row, anything else is
+    the row `{text}` -- whole, never cut."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        data = None
+    return dict(data) if isinstance(data, dict) else {"text": str(text or "")}
+
+
+def turn_sets(rec, manifest, screen):
+    """The sets the turn's tool results give an app's topic: per observed tool the topic
+    has a set for, one row per result the screen may see, in the order of the calls; the
+    set carries the intersection of their rounds (OR-DP-10)."""
+    results = sorted((rec.get("observed") or {}).get("results") or [],
+                     key=lambda x: int(x.get("seq") or 0))
+    out = {}
+    for tool in fed_tools(manifest):
+        seen = [x for x in results if x.get("tool") == tool
+                and covers(x.get("audience_set"), screen)]
+        if seen:
+            out[tool] = {"rows": [dict(x["row"], audience_set=x["audience_set"])
+                                  for x in seen],
+                         "audience_set": meet(x["audience_set"] for x in seen)}
+    return out
+
+
+def tool_sets(r, rec, params):
+    """`turn_sets` of a turn whose topic is an app's topic fed by tools, else nothing."""
+    show = all_topics(r, params).get(rec.get("topic"))
+    if show is None or not show.get("owner") or show.get("kind") != "observed":
+        return {}
+    return turn_sets(rec, show["manifest"], window_round(rec, params))
+
+
+def tool_lead(r, rec, manifest, params):
+    """The candidate that shows the turn's data (§ 9b.9): once a result of the turn is
+    there, the first candidate in the manifest's order that binds a set the turn's tools
+    filled; None without a result or for a topic no tool feeds."""
+    taken = tool_sets(r, rec, params)
+    for c in manifest.get("candidates") or []:
+        if taken and c.get("set") in taken:
+            return c["key"]
+    return None
+
+
+def lead_turn_data(r, rec, manifest, params, cat):
+    """§ 9b.9: a result of the turn leads. Until the window is done the candidate of the
+    turn's data takes the first place, also when the verdict chose another lead -- that
+    block leaves, the verdict's further block stays. Measured on a turn that asked for
+    three places: the verdict's lead bound the app's own set, and the window showed the
+    home town while all three results had come. Nothing moves when that candidate cannot
+    be placed. Returns True when a placed block changed."""
+    key = tool_lead(r, rec, manifest, params)
+    if key is None or rec["keys"][0] == key or rec.get("built") == "done":
+        return False
+    cands = {c["key"]: c for c in manifest["candidates"]}
+    node = place(rec["topic"], cands[key], rec["sets"], cat)
+    if node is None:
+        return False
+    first = rec["keys"][0] if rec["first"] == "lead" else \
+        manifest["standard"] if rec["first"] == "standard" else None
+    rec["keys"] = [key] + [k for k in rec["keys"][1:] if k != key]
+    if first is None:
+        rec["first"] = "open"
+        return False
+    # The block of the first place is swapped for the lead of the turn's data.
+    rec["placed"] = [key] + [k for k in rec["placed"] if k not in (first, key)]
+    nodes = [kn for kn in rec.get("_nodes") or [] if kn[0] not in (first, key)]
+    rec["_nodes"] = [[key, node]] + [list(kn) for kn in nodes]
+    rec["first"] = "lead"
+    return True
+
+
+def tools_running(r, rec, manifest):
+    """True while a call of the turn for a tool that feeds the topic has no result yet."""
+    tools = fed_tools(manifest)
+    return any(w.get("turn_id") == rec["turn_id"] and w.get("state") == "running"
+               and w.get("tool") in tools for w in r["work"])
+
+
+def awaits_tools(r, rec, params):
+    """§ 9b.14 for an app's topic fed by tools: its window is not done while no result of
+    the turn stands in it or a call of the turn is still running. Any other topic: False."""
+    show = all_topics(r, params).get(rec.get("topic"))
+    if show is None or not show.get("owner") or show.get("kind") != "observed":
+        return False
+    return not turn_sets(rec, show["manifest"], window_round(rec, params)) \
+        or tools_running(r, rec, show["manifest"])
 
 
 def own_sets(r, rec, topic, params):
@@ -2419,18 +2596,30 @@ def own_sets(r, rec, topic, params):
                            window_round(rec, params))
     if topic == "work":
         return work_sets(r["work"], window_round(rec, params), params, rec)
-    return {}
+    return tool_sets(r, rec, params) if rec.get("topic") == topic else {}
 
 
 def refill(r, topic, params, now):
-    """Feed every open window of an observed topic whose first block is still missing."""
+    """Feed every open window of an observed topic whose first block is still missing.
+    A window of an app's topic fed by tools is fed until it is done on the stamp way (a
+    later result rebuilds the set, § 9b.5); on the selector way a set never changes once
+    there, so it is fed once, when no call of the turn is running any more."""
     out = []
     topics = all_topics(r, params)
     show = topics.get(topic)
     if show is None or show.get("kind") != "observed":
         return out
     for rec in sorted(r["pending"].values(), key=lambda x: x["arrived"]):
-        if rec["state"] == "showing" and rec["topic"] == topic and rec["first"] == "open":
+        if rec["state"] != "showing" or rec["topic"] != topic:
+            continue
+        stamped = rec.get("source") == SOURCE_STAMP
+        if show["owner"] and stamped:
+            due = rec.get("built") != "done"
+        elif show["owner"]:
+            due = rec["first"] == "open" and not tools_running(r, rec, show["manifest"])
+        else:
+            due = rec["first"] == "open"
+        if due:
             sets = own_sets(r, rec, topic, params)
             if sets:
                 out += feed(r, rec, show["manifest"], sets, params, now)

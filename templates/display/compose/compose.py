@@ -703,7 +703,23 @@ def step4_presence(state, now):
     window receives the touch (f) and, for § 4.13, the fresh window's `turn_id` counts for
     it; the fresh window receives `topic_dupe` — neither open nor present, no window, no
     tile, no rung, not computed — until the standing window loses its presence; windows of
-    the same owner are never compared; the judge does not lift it (Ruling 13.09.)."""
+    the same owner are never compared; the judge does not lift it (Ruling 13.09.).
+    § 9b.15: one turn, one window. The presenter's window is the one whose topic begins with
+    `show:` (§ 9b.2a). While such a window stands, a free card of its turn — a canvas window
+    of another owner, neither pinned nor `state: urgent`, that carries the same `turn_id` —
+    is `topic_dupe`, whatever its topic: here the turn decides, not the topic key. It is
+    compared in every pass and not only when it is fresh, so the order of the two writes
+    changes nothing; a card that is a dupe by its turn is not compared by topic and touches
+    nobody. An empty `turn_id` is no id. The mark falls when no such window stands any more
+    and no rival by topic either (R-54-1; wave d54g 2026-11-12).
+    § 9b.16: a pinned tile stays a tile. While the presenter's window of a turn stands, a
+    write of another owner that carries that `turn_id` on its own pinned window that is not
+    open is no touch: the touch (b) or (c) of step 3 is taken back — it leaves the touches
+    of the pass, and the window carries no `since` until its next touch, so it decays to
+    nothing at once, scores 0 whatever `relevance` the write carried, and stays a tile by
+    its pin. The verdict the touch cleared stays cleared. A pinned window that is open, a
+    fresh one (a) and a write beside no such window count as before (R-54-1; wave d54g
+    2026-11-12)."""
     views = state["views"]
     settings = state["settings"]
     touched = state["pass"]["touched"]
@@ -728,10 +744,37 @@ def step4_presence(state, now):
         return (not v.get("withdrawn") and not _ttl_expired(v, now)
                 and not v["curator"].get("topic_dupe") and _meets_presence(v, now, settings))
 
+    def shows(view):
+        """§ 9b.2a: the presenter's window carries `topic: show:<topic>`."""
+        topic = view.get("topic")
+        return isinstance(topic, str) and topic.startswith("show:")
+
+    def turn_windows(oid):
+        """§ 9b.15, § 9b.16: the standing presenter windows of the turn `oid` carries; never
+        for a presenter window itself, never for an empty `turn_id`, never within one owner."""
+        v = views[oid]
+        tid = v.get("turn_id")
+        if not tid or shows(v):
+            return []
+        return [o for o, w in views.items()
+                if o != oid and w.get("owner") != v.get("owner") and shows(w)
+                and w.get("turn_id") == tid and standing(o)]
+
+    def free_card(view):
+        """§ 9b.15: what yields to the window of its turn. A pinned window is a tile and
+        stays (§ 9b.16), a modal is no card (the chat carries the turn's id too, § 8.8),
+        and an urgent is never taken off the screen by a rule about duplicates."""
+        return (layer_of(view) == "canvas" and view.get("pinned") is not True
+                and view.get("state") != "urgent")
+
     # § 4.12 — the topic check for the fresh windows of this pass. "A standing window"
     # here is a present one: a decayed view has no window to duplicate.  # Decision 16.09. 12
     for oid in [o for o in new if o in views]:
         v = views[oid]
+        if free_card(v) and turn_windows(oid):
+            # § 9b.15: a dupe by its turn; it is not compared by topic and touches nobody.
+            v["curator"]["topic_dupe"] = True
+            continue
         topic = v.get("topic")
         if not topic:
             continue
@@ -746,14 +789,33 @@ def step4_presence(state, now):
             _app_touch(views[o], now)
             if v.get("turn_id"):
                 state["pass"]["topic_turn_ids"][o] = v["turn_id"]
-    # `topic_dupe` falls when the standing window loses its presence.
+    # § 9b.15 — the other direction: a free card that stood first yields in the pass in
+    # which the presenter's window of its turn stands.
+    for oid, v in views.items():
+        if not v["curator"].get("topic_dupe") and free_card(v) and turn_windows(oid):
+            v["curator"]["topic_dupe"] = True
+    # `topic_dupe` falls when the standing window loses its presence: the rival by topic
+    # (§ 4.12) and the presenter's window of the turn (§ 9b.15) alike.
     for oid, v in views.items():
         if v["curator"].get("topic_dupe"):
             still = [o for o, w in views.items()
                      if o != oid and w.get("owner") != v.get("owner")
                      and w.get("topic") == v.get("topic") and standing(o)]
-            if not still:
+            if not still and not (free_card(v) and turn_windows(oid)):
                 v["curator"]["topic_dupe"] = False
+
+    # § 9b.16 — a pinned tile stays a tile: the write of this pass, when it carries the
+    # `turn_id` of a turn whose presenter window stands, is no touch. In the measured turn
+    # the tile's app raised its own pinned tile to a second window beside the window of the
+    # turn (three windows for one question).
+    written = state["pass"].get("written")
+    if written is not None and written[0] in views:
+        oid = written[0]
+        v = views[oid]
+        if (touched.get(oid) in ("b", "c") and v.get("pinned") is True
+                and not v["curator"].get("open") and turn_windows(oid)):
+            del touched[oid]
+            v["curator"]["since"] = None
 
     # Presence.
     for oid, v in views.items():
@@ -6714,7 +6776,8 @@ OS_CLIENT_JS = (
     "      var el = this.el, mount = el.dataset.mount || \"voice\";\n"
     "      var st = { sent: 0, flushed: 0, drainMs: 0, drained: 0, played: 0, turns: 0, speakEnd: 0, hello: null, code: null,\n"
     "                 taps: 0, touches: 0, holdMs: 0, prebuffered: 0, setupMs: 0, refused: 0,\n"
-    "                 holdsRefused: 0, holdsUnlinked: 0, holds: 0, takesLost: 0, ringed: 0, bound: false, audio: false, phase: \"\", said: \"\" };\n"
+    "                 holdsRefused: 0, holdsUnlinked: 0, holds: 0, takesLost: 0, ringed: 0, bound: false, audio: false, phase: \"\", said: \"\",\n"
+    "                 readies: 0, speakStart: 0, firstAudioMs: -1 };\n"
     "      root.__displayMic = st;\n"
     "      var state = el.querySelector('[data-role=\"state\"]'), btn = el.querySelector(\"button\");\n"
     "      var cols = document.querySelector(\".display-columns\");\n"
@@ -6857,9 +6920,14 @@ OS_CLIENT_JS = (
     "      // while it still synthesises; once the last chunk is sent (`done`) it has\n"
     "      // nothing to cancel, yet seconds can still be queued here and would play\n"
     "      // over the take and in front of the next answer. So the press drops them\n"
-    "      // itself, as the voice test page does -- except behind a duplex provider,\n"
-    "      // where a hold only opens the model's ear and cuts no turn.\n"
-    "      function bargeIn() { if (!(st.hello && st.hello.duplex)) hush(); }\n"
+    # itself, as the voice test page does. Behind a live model too (d54g
+    # weblive): a hold into the model's speech stops it -- the cell ends its
+    # section and sends silence until the release -- and what the page still
+    # has queued is that speech, 107 to 161 ms of it measured after the hold
+    # (measured in a browser against the live model, 2026-11-13). Without this
+    # line the person heard the model
+    # go on over the first words of the take.
+    "      function bargeIn() { hush(); }\n"
     "      // K8 (a) on OR-T10-10: a frame goes out on a live link or not at all. Phoenix\n"
     "      // keeps a push its channel cannot send (`pushBuffer`) and sends it on the\n"
     "      // rejoin by itself, so the question is asked here, at the source, and ONE\n"
@@ -6872,6 +6940,23 @@ OS_CLIENT_JS = (
     "      // (`lose`): nothing is dropped silently and nothing is sent later.\n"
     "      function unsent() { if (holding || draining) { lose(); markLink(); } }\n"
     "      function frame(obj) { if (pushable()) chan.push(\"frame\", obj); else unsent(); }\n"
+    # The early word (d54g weblive, display-hive.md § 5.4). Behind a live model
+    # the page says `ready` as soon as a press is likely -- the pointer came onto
+    # the mark, a finger touched it, a press began, the microphone was granted --
+    # and the cell may open the page's next session on it, so the first hold does
+    # not pay for the opening (2661 ms median from the lift to the first sound on
+    # a fresh page, against 1696 ms on a warm one, measured in a browser against
+    # the live model, 2026-11-13). Once
+    # per approach: the frame spends `readied`, a pointer that leaves and a take
+    # that ends give it back. Behind a cascade there is nothing to warm, and on a
+    # link that cannot carry it the frame is not sent at all -- it is a hint, and
+    # a hint that waits for a rejoin would arrive about a moment long gone.
+    "      var readied = false;\n"
+    "      function readyUp() {\n"
+    "        if (readied || holding || draining || !(st.hello && st.hello.duplex) || !pushable()) return;\n"
+    "        readied = true; chan.push(\"frame\", { type: \"ready\" }); st.readies++;\n"
+    "      }\n"
+    "      function readyOff() { readied = false; }\n"
     "      function onFrame(f) {\n"
     "        if (f.type === \"hello\") {\n"
     "          st.hello = f;\n"
@@ -6885,7 +6970,7 @@ OS_CLIENT_JS = (
     "        }\n"
     "        else if (f.type === \"partial\") { /* the words live in the chat application now (D-18) */ }\n"
     "        else if (f.type === \"turn\") { st.turns++; st.text = f.text; phase(\"\"); }\n"
-    "        else if (f.type === \"speak_start\") { phase(\"speaking\"); }\n"
+    "        else if (f.type === \"speak_start\") { st.speakStart++; phase(\"speaking\"); }\n"
     "        else if (f.type === \"speak_end\") { if (f.reason === \"cancelled\") hush(); st.speakEnd++; phase(\"\"); }\n"
     "        else if (f.type === \"error\") { say(f.code); phase(\"error\"); }\n"
     "      }\n"
@@ -6897,6 +6982,19 @@ OS_CLIENT_JS = (
     "        var src = ctx.createBufferSource(); src.buffer = b; src.connect(ctx.destination);\n"
     "        var t = Math.max(ctx.currentTime + 0.02, playAt); src.start(t); playAt = t + b.duration; st.played++;\n"
     "        queued.push(src); src.onended = function () { var i = queued.indexOf(src); if (i >= 0) queued.splice(i, 1); };\n"
+    "        if (liftAt && st.firstAudioMs < 0 && audible(f32)) st.firstAudioMs = Math.round(performance.now() - liftAt + 1000 * (t - ctx.currentTime));\n"
+    "      }\n"
+    # From the lift to the first audible sound of the answer, measured where the
+    # person hears it: the moment the frame is SCHEDULED to play, not the moment
+    # it arrived (d54g weblive, the number an outside probe read, 2026-11-13).
+    # A live model streams silence between its words, so a frame counts only
+    # once it is audible -- the level the probe used, an RMS of 0.004 (OR-d54g.weblive.1).
+    # A reading for whoever measures the page, never a verdict and never a wait.
+    "      var liftAt = 0, AUDIBLE_RMS = 0.004;\n"
+    "      function audible(f32) {\n"
+    "        var sum = 0;\n"
+    "        for (var i = 0; i < f32.length; i++) sum += f32[i] * f32[i];\n"
+    "        return f32.length > 0 && Math.sqrt(sum / f32.length) > AUDIBLE_RMS;\n"
     "      }\n"
     "      // A close is the end of a CALL, never of the button: a wall screen is\n"
     "      // looked at all day and the next press is a new call. Only a refused\n"
@@ -6910,7 +7008,9 @@ OS_CLIENT_JS = (
     "      // The state line when nothing is happening: what the cell said it is\n"
     "      // made of, and an empty line before it has said anything. Said for a\n"
     "      // screen reader; the mark itself shows its phase in light.\n"
-    "      function idleText() { return st.hello ? st.hello.stt + (st.hello.tts ? \"/\" + st.hello.tts : \"\") : \"\"; }\n"
+    # Behind a live model `stt` and `tts` both name the one provider that hears
+    # and speaks, and the line says it once.
+    "      function idleText() { return st.hello ? st.hello.stt + (st.hello.tts && !st.hello.duplex ? \"/\" + st.hello.tts : \"\") : \"\"; }\n"
     "      // The join is AWAITED, and that is not politeness: a text push is\n"
     "      // buffered by the client until the join is acknowledged, a raw binary\n"
     "      // push is not. Audio sent between `join()` and its `ok` would either\n"
@@ -6962,6 +7062,7 @@ OS_CLIENT_JS = (
     "          // earlier refusal off the mark, and a microphone granted a\n"
     "          // minute later must not need a reload (GH #720, OR-H0.15).\n"
     "          clearMark();\n"
+    "          readyUp();\n"
     "        } catch (e) {\n"
     "          // A refused or missing microphone is the ordinary case, not a crash:\n"
     "          // an unhandled rejection here left the button doing nothing at all,\n"
@@ -7076,7 +7177,7 @@ OS_CLIENT_JS = (
     "        // No link, no microphone: the press is answered at the threshold (re-check\n"
     "        // tv-bn M10e H2).\n"
     "        if (!linked()) return;\n"
-    "        arm(); if (!worklet) mic();\n"
+    "        arm(); readyUp(); if (!worklet) mic();\n"
     "      }\n"
     "      var holding = false, pressed = false, draining = false, drainTimer = null;\n"
     "      var lastFrameAt = 0, gapMax = 0, micLat = 0;\n"
@@ -7177,6 +7278,7 @@ OS_CLIENT_JS = (
     "        // gesture, but never empty.\n"
     "        if (!armed) arm();\n"
     "        if (!joined && !(await join())) return;\n"
+    "        readyUp();\n"
     "        // The playback context was built on join, which is not a gesture: under\n"
     "        // an autoplay policy it starts suspended and its clock does not run, so\n"
     "        // the gap-free scheduling would schedule against a stopped clock. This is\n"
@@ -7281,7 +7383,7 @@ OS_CLIENT_JS = (
     "      // (`a_hold_whose_channel_ends_is_closed_by_the_cell`).\n"
     "      var lost = false;\n"
     "      function lose() {\n"
-    "        holding = false; draining = false; lost = true; st.takesLost++;\n"
+    "        holding = false; draining = false; lost = true; st.takesLost++; readied = false;\n"
     "        if (drainTimer) { clearTimeout(drainTimer); drainTimer = null; }\n"
     "        btn.setAttribute(\"aria-pressed\", \"false\"); disarm();\n"
     "      }\n"
@@ -7356,6 +7458,9 @@ OS_CLIENT_JS = (
     "        // A take ends at its lift: that press was a hold too.\n"
     "        if (was && byPointer) st.holds++;\n"
     "        holding = false; btn.setAttribute(\"aria-pressed\", \"false\"); say(idleText()); phase(\"sending\");\n"
+    # The clock of `firstAudioMs` starts at the lift, and the next approach may
+    # say `ready` again.
+    "        liftAt = performance.now(); st.firstAudioMs = -1; readied = false;\n"
     "        // The ring belongs to the take that just ended. `begin()` disarmed\n"
     "        // on the way in, but a second finger on the mark re-arms it, and\n"
     "        // leaving it armed here would keep the ring filling BETWEEN takes:\n"
@@ -7408,6 +7513,7 @@ OS_CLIENT_JS = (
     "      // handler: the ring has to be armed before anything else reads the\n"
     "      // gesture, and the element is what a finger lands on.\n"
     "      el.addEventListener(\"pointerdown\", warm, true);\n"
+    "      el.addEventListener(\"pointerenter\", readyUp); el.addEventListener(\"pointerleave\", readyOff);\n"
     "      btn.addEventListener(\"pointerdown\", down); btn.addEventListener(\"pointerup\", up); btn.addEventListener(\"pointercancel\", up); btn.addEventListener(\"lostpointercapture\", up); btn.addEventListener(\"click\", onClick);\n"
     "      window.addEventListener(\"blur\", onBlur); document.addEventListener(\"visibilitychange\", onHide);\n"
     "      root.addEventListener(\"keydown\", keydown);\n"
@@ -7425,6 +7531,7 @@ OS_CLIENT_JS = (
     "        btn.removeEventListener(\"pointerdown\", down); btn.removeEventListener(\"pointerup\", up); btn.removeEventListener(\"pointercancel\", up); btn.removeEventListener(\"lostpointercapture\", up);\n"
     "        btn.removeEventListener(\"click\", onClick);\n"
     "        el.removeEventListener(\"pointerdown\", warm, true);\n"
+    "        el.removeEventListener(\"pointerenter\", readyUp); el.removeEventListener(\"pointerleave\", readyOff);\n"
     "        disarm(); micWait = null;\n"
     "        pressAt = 0; byPointer = false; ready = false;\n"
     "        gesture = \"\";\n"

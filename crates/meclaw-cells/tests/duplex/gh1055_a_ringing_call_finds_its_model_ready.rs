@@ -21,8 +21,7 @@ use crate::duplex_cell; // harness_fold: mod duplex_cell;
 use meclaw_cells::voice::duck::DuckParams;
 use meclaw_core::serde_json::json;
 use meclaw_core::{Body, Message, MessageBuilder, Path};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -234,13 +233,20 @@ const LATER: i16 = 12_000;
 /// GH #1055 R1: a live model streams a continuous channel, silence included,
 /// in real time — 100 ms chunks (S0 a1/a2). Here it says nothing for a second,
 /// greets for a second, and goes on streaming silence while the line rings
-/// for five; then the caller picks up.
+/// for three more; then the caller picks up, and one second of the model's
+/// stream later the model says a word.
 ///
 /// What the caller must get: the greeting first and at once (not the second
-/// of silence before it), exactly once, and after it a line in real time
-/// again — not the whole ring queued in front of every later word. And the
-/// model's loop must never wait on a channel nobody reads while it rings: a
-/// blocked provider loop stops its keepalive and its socket reads.
+/// of silence before it), exactly once, and after it the later word with no
+/// more silence in front of it than the model streamed since the pickup — not
+/// the ring queued in front of every later word. And the model's loop must
+/// never wait on a channel nobody reads while it rings: a blocked provider
+/// loop stops its keepalive and its socket reads.
+///
+/// The judgement is an order of frames and a count of them, never a clock:
+/// the later word used to come 4.5 s after the pickup, behind the whole
+/// backlog, and a bound on elapsed time hid the silence of the ring that the
+/// park buffer still sent ahead (the review's finding C1).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gh1055_a_model_streaming_silence_through_the_ring_greets_once_and_in_real_time() {
     let raw = duplex_cell::duplex_params(json!({"default_mode": "auto", "audio_out_frame_ms": 20}));
@@ -249,34 +255,38 @@ async fn gh1055_a_model_streaming_silence_through_the_ring_greets_once_and_in_re
     live.send(line_fact("call_ringing", "call-r1")).await;
     let session = live.session().await;
 
-    // The model: 10 chunks of silence, 10 of greeting, silence on, one later
-    // word 4.5 s after the pickup (chunk 95).
-    let sent = Arc::new(AtomicU64::new(0));
+    // The model through the ring, paced as a live model paces: 10 chunks of
+    // silence, 10 of greeting, 30 of silence. That is 50 chunks into a queue
+    // of 32 nobody but the park pump reads.
     let out = session.audio_out.clone();
-    let counter = Arc::clone(&sent);
     let model = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(100));
-        for n in 0..110u64 {
+        for n in 0..50u64 {
             tick.tick().await;
             let c = match n {
                 10..20 => chunk(GREET),
-                95 => chunk(LATER),
                 _ => chunk(0),
             };
-            if out.send(c).await.is_err() {
-                return;
-            }
-            counter.store(n + 1, Ordering::SeqCst);
+            out.send(c)
+                .await
+                .expect("the session takes the model's audio");
         }
     });
-
-    // The line rings for five seconds.
-    tokio::time::sleep(Duration::from_millis(5_000)).await;
-    let by_pickup = sent.load(Ordering::SeqCst);
-    assert!(
-        by_pickup >= 45,
-        "the model streamed on through the ring without waiting, sent {by_pickup} of 50 chunks"
-    );
+    // The model got rid of every chunk: it streamed on through the ring
+    // without waiting on anybody.
+    tokio::time::timeout(duplex_cell::marker(), model)
+        .await
+        .expect("HANG: the model streams through the ring without waiting on a full queue")
+        .expect("the model's task ends");
+    // ... and the park pump has taken up all of it before the pickup.
+    meclaw_testing::wait::until(
+        "the parked session's audio queue is taken up by the park pump",
+        || {
+            let empty = session.audio_out.capacity() == session.audio_out.max_capacity();
+            async move { empty }
+        },
+    )
+    .await;
     // While it rang the model heard a line: silence, at the wire's 20 ms.
     let mut fed = 0usize;
     while let Ok(f) = live.audio.try_recv() {
@@ -291,45 +301,52 @@ async fn gh1055_a_model_streaming_silence_through_the_ring_greets_once_and_in_re
         "the ring feeds the model silence, got {fed} frames"
     );
 
-    let picked_up = Instant::now();
     let (mut client, hello) = live
         .connect("session=call-r1&sample_rate=16000&mode=auto")
         .await;
     assert_eq!(hello["duplex"], true, "got {hello}");
 
-    // The first frame the caller hears is the greeting's first.
+    // The first frame the caller hears is the greeting's first. It is also
+    // the proof of the adoption: what the model sends from here on, it sends
+    // after the pickup.
     assert_eq!(
         next_audio(&mut client).await,
         frame(GREET),
         "the greeting first, not the silence before it"
     );
+    // One second of the model's stream after the pickup, then a word.
+    const AFTER_PICKUP_MS: usize = 1_000;
+    for _ in 0..AFTER_PICKUP_MS / 100 {
+        session.audio_out.send(chunk(0)).await.expect("audio");
+    }
+    session.audio_out.send(chunk(LATER)).await.expect("audio");
+
     let mut greeting_frames = 1usize;
-    let mut greeting_over = false;
-    let mut heard_ms = 20u64;
+    let mut silent_frames = 0usize;
     loop {
         let f = next_audio(&mut client).await;
         if f == frame(LATER) {
             break;
         }
         if f == frame(GREET) {
-            assert!(!greeting_over, "a second greeting reached the caller");
+            assert_eq!(silent_frames, 0, "a second greeting reached the caller");
             greeting_frames += 1;
         } else {
             assert!(f.iter().all(|b| *b == 0), "only the greeting and silence");
-            greeting_over = true;
+            silent_frames += 1;
         }
-        heard_ms += (f.len() / 2) as u64 * 1_000 / 16_000;
     }
-    let elapsed = picked_up.elapsed().as_millis() as u64;
     assert_eq!(greeting_frames, 50, "exactly one greeting, whole");
-    // Real time again: what reached the caller before the later word is not
-    // more than the time since the pickup (plus a frame or two of slack).
+    // Real time again: the silence in front of the later word is at most
+    // what the model streamed after the pickup. Three seconds of the ring's
+    // silence were parked behind the greeting; none of it is on the line.
+    let silence_ms = silent_frames * 20;
     assert!(
-        heard_ms <= elapsed + 300,
-        "a backlog survives the pickup: {heard_ms} ms of audio in {elapsed} ms"
+        silence_ms <= AFTER_PICKUP_MS,
+        "a backlog survives the pickup: {silence_ms} ms of silence between the greeting \
+         and the word the model said {AFTER_PICKUP_MS} ms after the pickup"
     );
     assert_eq!(live.starts.load(Ordering::SeqCst), 1, "one call, one model");
-    model.abort();
 }
 
 /// GH #1055 R6: a media connection at another format than the early session

@@ -50,11 +50,15 @@ struct Session {
 }
 
 fn start(mock: &MockGptLive) -> Session {
+    start_with(params(&mock.base_url()))
+}
+
+fn start_with(params: GptLiveParams) -> Session {
     let (audio_in_tx, audio_in_rx) = mpsc::channel(32);
     let (audio_out_tx, audio_out_rx) = mpsc::channel(32);
     let (events_tx, events_rx) = mpsc::channel(64);
     let (control_tx, control_rx) = mpsc::channel(16);
-    let provider = GptLiveDuplex::new(params(&mock.base_url())).with_timeouts(ProviderTimeouts {
+    let provider = GptLiveDuplex::new(params).with_timeouts(ProviderTimeouts {
         external: Duration::from_millis(5_000),
         idle: Duration::from_millis(30_000),
     });
@@ -238,6 +242,7 @@ async fn voice_duplex_gpt_live_maps_every_documented_event() {
         DuplexEvent::Warning {
             detail: "one append was too long".to_string(),
             provider_code: None,
+            client_event_id: None,
         },
         DuplexEvent::Closed {
             reason: "drained".to_string(),
@@ -257,4 +262,266 @@ async fn voice_duplex_gpt_live_maps_every_documented_event() {
         verdict.is_ok(),
         "a provider that closed in an orderly way is not a failure: {verdict:?}"
     );
+}
+
+/// The error the provider raises when it rejects the Responses settings of a
+/// running session (A15).
+fn validation_failed(event_id: &str) -> LiveAction {
+    LiveAction::Send(json!({
+        "type": "error",
+        "event_id": event_id,
+        "error": {
+            "code": "responses_validation_failed",
+            "message": "service_tier priority is not available"
+        }
+    }))
+}
+
+/// Runs a session that raises the validation error twice and returns every
+/// client event the fake received; the caller's audio after both warnings is
+/// the marker that the adapter has acted on both.
+async fn two_validation_errors(extra: serde_json::Value) -> Vec<serde_json::Value> {
+    let mock = MockGptLive::start(LiveScript {
+        session_id: "sess_fix".to_string(),
+        actions: vec![
+            validation_failed("event_e1"),
+            validation_failed("event_e2"),
+            LiveAction::RequireAudioBytes(640),
+            LiveAction::CloseWith {
+                reason: "drained",
+                usage_seconds: 3.0,
+            },
+        ],
+        ..LiveScript::default()
+    })
+    .await
+    .expect("bind fake");
+    let mut raw = json!({
+        "api_key": "test-key",
+        "base_url": mock.base_url(),
+        "instructions": "Be brief.",
+        "delegation": {"type": "responses", "responses": {"model": "gpt-6-sol"}},
+    });
+    for (k, v) in extra.as_object().expect("an object") {
+        raw[k] = v.clone();
+    }
+    let mut session = start_with(serde_json::from_value(raw).expect("params parse"));
+    let mut warnings = 0;
+    while warnings < 2 {
+        let event = tokio::time::timeout(FAILURE_TIMEOUT, session.events.recv())
+            .await
+            .expect("HANG: no warning")
+            .expect("the session runs");
+        if let DuplexEvent::Warning { provider_code, .. } = event {
+            assert_eq!(
+                provider_code.as_deref(),
+                Some("responses_validation_failed")
+            );
+            warnings += 1;
+        }
+    }
+    session
+        .audio_in
+        .send(vec![0u8; 640])
+        .await
+        .expect("the session takes audio");
+    while let Ok(Some(event)) = tokio::time::timeout(FAILURE_TIMEOUT, session.events.recv()).await {
+        if matches!(event, DuplexEvent::Closed { .. }) {
+            break;
+        }
+    }
+    mock.client_events()
+        .await
+        .into_iter()
+        .filter(|e| e["type"] == "session.update")
+        .collect()
+}
+
+/// POC gpt-live-1 round 3 (A15): with `responses_fallback` set, a
+/// `responses_validation_failed` is corrected with ONE `session.update` per
+/// session that carries the fallback as the Responses settings; the second
+/// error of the same session sends nothing more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejected_responses_setting_is_corrected_once() {
+    let updates = two_validation_errors(json!({
+        "responses_fallback": {"service_tier": "auto"}
+    }))
+    .await;
+    assert_eq!(
+        updates,
+        vec![json!({
+            "type": "session.update",
+            "session": {
+                "delegation": {
+                    "type": "responses",
+                    "responses": {"service_tier": "auto"}
+                }
+            }
+        })],
+        "exactly one correction, in the shape of the client event"
+    );
+}
+
+/// Without `responses_fallback` the adapter sends no `session.update` at all,
+/// as it always did: the warning is the whole reaction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_a_fallback_nothing_is_corrected() {
+    let updates = two_validation_errors(json!({})).await;
+    assert_eq!(updates, Vec::<serde_json::Value>::new());
+}
+
+/// Wave d54g, strand deleg: the `error` that refuses one append names the
+/// append by the id this side chose, and the adapter hands that id on. The
+/// event is written after the provider's documentation (`client_event_id`
+/// on the root, as on the acknowledgement `session.*.appended`); no refusal
+/// was on record when this was written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_append_names_its_client_event() {
+    let mock = MockGptLive::start(LiveScript {
+        session_id: "sess_fix".to_string(),
+        actions: vec![
+            LiveAction::Send(json!({
+                "type": "error",
+                "event_id": "event_r1",
+                "client_event_id": "append-1",
+                "error": {
+                    "code": "invalid_value",
+                    "message": "Context append text must not exceed 500 tokens."
+                }
+            })),
+            LiveAction::Send(json!({
+                "type": "error",
+                "event_id": "event_r2",
+                "error": {
+                    "code": "invalid_value",
+                    "message": "Context append text must not exceed 500 tokens."
+                }
+            })),
+            LiveAction::CloseWith {
+                reason: "drained",
+                usage_seconds: 1.0,
+            },
+        ],
+        ..LiveScript::default()
+    })
+    .await
+    .expect("bind fake");
+    let mut session = start(&mock);
+    let mut warnings = Vec::new();
+    while let Ok(Some(event)) = tokio::time::timeout(FAILURE_TIMEOUT, session.events.recv()).await {
+        match event {
+            DuplexEvent::Warning {
+                detail,
+                provider_code,
+                client_event_id,
+            } => warnings.push((detail, provider_code, client_event_id)),
+            DuplexEvent::Closed { .. } => break,
+            _ => {}
+        }
+    }
+    let refused = "Context append text must not exceed 500 tokens.".to_string();
+    assert_eq!(
+        warnings,
+        vec![
+            (
+                refused.clone(),
+                Some("invalid_value".to_string()),
+                Some("append-1".to_string())
+            ),
+            (refused, Some("invalid_value".to_string()), None),
+        ],
+        "the refusal carries the id of the append where the provider names it, and none \
+         where it does not"
+    );
+}
+
+/// d54g callseam -- only what was spoken reaches a turn: the adapter removes
+/// the control marks of its model from the output transcript.
+///
+/// Measured on a live colony (2026-11-07): a turn's text read
+/// `... is due.|message|>Today the call ...` -- a piece of a mark of the form
+/// `<|...|>` in the middle of what the model had said. The delegation mark has
+/// the same form. The transcript arrives in chunks, so a mark can be whole in
+/// one chunk, split over two, or reach this side as the piece the measurement
+/// shows. The pattern belongs to the adapter (the form of this provider's
+/// marks) and judges no meaning; the caller's transcript is not touched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh_d54g_callseam_control_marks_never_reach_a_turn_text() {
+    let mock = MockGptLive::start(LiveScript {
+        session_id: "sess_marks".to_string(),
+        actions: vec![
+            // A whole mark inside one chunk.
+            LiveAction::Transcript {
+                speaker: "assistant",
+                delta: "The doctor is booked.<|message|>",
+                start_ms: 100,
+                end_ms: 900,
+            },
+            // A mark split over a chunk boundary.
+            LiveAction::Transcript {
+                speaker: "assistant",
+                delta: " It is on Friday.<|mes",
+                start_ms: 900,
+                end_ms: 1_500,
+            },
+            LiveAction::Transcript {
+                speaker: "assistant",
+                delta: "sage|> At nine.",
+                start_ms: 1_500,
+                end_ms: 2_000,
+            },
+            // The piece as it was measured: the mark without its opening.
+            LiveAction::Transcript {
+                speaker: "assistant",
+                delta: " That is due.|message|>Today the call is due.",
+                start_ms: 2_000,
+                end_ms: 3_200,
+            },
+            LiveAction::CloseWith {
+                reason: "drained",
+                usage_seconds: 3.2,
+            },
+        ],
+        ..LiveScript::default()
+    })
+    .await
+    .expect("bind fake");
+
+    let mut session = start(&mock);
+    let mut spoken = String::new();
+    while let Ok(Some(event)) = tokio::time::timeout(FAILURE_TIMEOUT, session.events.recv()).await {
+        match event {
+            DuplexEvent::Transcript {
+                speaker: Speaker::Assistant,
+                delta,
+                ..
+            } => {
+                for piece in ["<|", "|>", "|", "message", "mes", "sage"] {
+                    assert!(
+                        !delta.contains(piece),
+                        "a piece of a control mark (`{piece}`) is in the transcript a turn \
+                         is made of: {delta:?}"
+                    );
+                }
+                spoken.push_str(&delta);
+            }
+            DuplexEvent::Closed { .. } => break,
+            _ => {}
+        }
+    }
+
+    // What was spoken is all there, in order; how the adapter spaces the seam
+    // a mark leaves is its own business.
+    let words = |s: &str| s.split_whitespace().collect::<String>();
+    assert_eq!(
+        words(&spoken),
+        words("The doctor is booked. It is on Friday. At nine. That is due.Today the call is due."),
+        "the transcript without its marks is exactly what the model said: {spoken:?}"
+    );
+
+    let verdict = tokio::time::timeout(FAILURE_TIMEOUT, session.join)
+        .await
+        .expect("the session ended")
+        .expect("the session task did not panic");
+    assert!(verdict.is_ok(), "an orderly close: {verdict:?}");
 }

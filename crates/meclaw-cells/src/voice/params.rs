@@ -274,6 +274,7 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "call_mark_every_s",
     "x_title",
     "http_referer",
+    "emit_first_audio",
 ];
 
 /// Everything a `voice` cell needs to serve one WebSocket endpoint.
@@ -410,6 +411,21 @@ pub struct VoiceParams {
     pub x_title: Option<String>,
     /// As [`Self::x_title`], for `HTTP-Referer`.
     pub http_referer: Option<String>,
+    /// Whether the first audio of an answer is stamped on the `first_audio`
+    /// lane the moment it goes out (d54g callseam), on both ways a cell
+    /// speaks. A duplex session stamps the first audible audio of the model's
+    /// answer: hop `turn_id` and `t_first_audio_ms`, the time the closed
+    /// `turn` later carries, on the session's clock. A cascade stamps the
+    /// first chunk of a synthesis: hop `speak_id` and `t_first_audio_ms` on
+    /// the connection's clock. Until now a measurement had the time only at
+    /// the END of the turn (duplex) or not at all (cascade).
+    ///
+    /// **Off by default**, the rule of `emit_speak_end` (R-V8'): without an
+    /// edge that drains it every stamp would dead-letter. One switch at the
+    /// top level rather than one inside `duplex`: a cascade cell has no
+    /// `duplex` block to carry it. Settled at birth: the I/O half reads it
+    /// once per life.
+    pub emit_first_audio: bool,
 }
 
 /// GH #1059: the three provider slots of a voice cell that can spend a
@@ -599,6 +615,13 @@ pub struct GptLiveParams {
     /// default [`DEFAULT_CLOSE_GRACE_MS`].
     #[serde(default = "GptLiveParams::default_close_grace_ms")]
     pub close_grace_ms: u64,
+    /// How long a page session in `hold` may stay idle -- no hold, no audible
+    /// speech of the model, no delegation open -- before the connection ends
+    /// its provider session, in milliseconds; `0` (the default) never ends it
+    /// before the connection ends (d54g weblive). The page keeps its
+    /// connection, and its next hold opens a new session.
+    #[serde(default)]
+    pub hold_idle_ms: u64,
     /// How often the connection hands the turn machine the time, in
     /// milliseconds; default [`DEFAULT_DUPLEX_TICK_MS`] (R-L7).
     #[serde(default = "GptLiveParams::default_tick_ms")]
@@ -686,6 +709,25 @@ pub struct GptLiveParams {
     /// it always was, and no `seed_ask` lane is emitted.
     #[serde(default)]
     pub seed_wait_ms: u64,
+    /// The most tokens a seed may carry, by this cell's own estimate
+    /// (`chars_per_token`); default
+    /// [`crate::voice::providers::gpt_live::SEED_MAX_TOKENS`], the provider's
+    /// bound of a start input. It is the ceiling of the `start_budget` the
+    /// `seed_ask` lane names, and the seed is cut to that budget: to this
+    /// value, or to less where the instructions and the greeting leave less
+    /// (wave d54g, strand kprofil: it was a constant no set could move).
+    #[serde(default = "GptLiveParams::default_seed_max_tokens")]
+    pub seed_max_tokens: u64,
+    /// The most messages a seed may carry, from 1 to
+    /// [`crate::voice::providers::gpt_live::SEED_MAX_MESSAGES`] (the
+    /// provider's bound, and the default).
+    #[serde(default = "GptLiveParams::default_seed_max_messages")]
+    pub seed_max_messages: usize,
+    /// What this cell uses its model for, as whoever builds its start window
+    /// reads it. Never read here: it leaves on the `seed_ask` lane as
+    /// `limits.profile`, as written. Default `{}`.
+    #[serde(default = "GptLiveParams::default_window_profile")]
+    pub window_profile: JsonValue,
     /// How many characters the caller's transcript must have grown by before
     /// the next `partial` lane emission (D48: the speculative stream a curator
     /// reads while the caller speaks). `0` (the default) together with
@@ -704,6 +746,289 @@ pub struct GptLiveParams {
     /// wants the caller's deltas has no edge for `spoken`).
     #[serde(default)]
     pub emit_spoken: Option<bool>,
+    /// The session's `delegation` object, sent as written. Not set (the
+    /// default) sends `{"type": "client"}`, as it always did: the model hands
+    /// its work back to this colony. `{"type": "responses", "responses":
+    /// {"model": …}}` lets the provider run the backend model itself; such
+    /// delegations never reach the cell. The mode is fixed for the session.
+    #[serde(default)]
+    pub delegation: Option<JsonValue>,
+    /// The session's `safety_identifier`: a stable, privacy-preserving id of
+    /// the end user (at most 128 characters). Not set sends none.
+    #[serde(default)]
+    pub safety_identifier: Option<String>,
+    /// The history the session opens with (`session.input`) when no seed
+    /// arrives; a seed wins. Empty texts stay out, as in a seed.
+    #[serde(default)]
+    pub start_input: Vec<StartInputMessage>,
+    /// Whether the `delegation` lane carries the call so far (closed turns,
+    /// then the open turn's caller text) instead of the open turn's caller
+    /// text alone. `false` (the default) sends what it always sent. The
+    /// history is never cut here: the cell produces it whole, and what the
+    /// target's window takes is decided by the curator in front of the target.
+    #[serde(default)]
+    pub delegation_history: bool,
+    /// What happens to an answer for a delegation that a newer one of the
+    /// same call has overtaken. `speak` (the default) says it as always;
+    /// `think` hands it to the model as thinking; `drop` hands it to nobody
+    /// and emits one `delegation_cancel` when the delegation is overtaken.
+    /// Under `think` and `drop` the deadline's fallback of such a delegation
+    /// says nothing.
+    #[serde(default)]
+    pub delegation_superseded: SupersededAnswer,
+    /// The Responses settings a `session.update` sends, once per session,
+    /// when the provider rejects the configured ones
+    /// (`responses_validation_failed`). Only with a `responses` delegation;
+    /// only the fields [`RESPONSES_UPDATE_FIELDS`] names. Not set: the
+    /// rejection is a warning and nothing more, as it always was.
+    #[serde(default)]
+    pub responses_fallback: Option<JsonValue>,
+    /// The thinking a new Responses delegation sends, once for every older
+    /// one still open, so the model treats that one's result as outdated
+    /// (A45: the provider cannot cancel backend work in progress). Only with
+    /// a `responses` delegation. Empty (the default) sends nothing, as it
+    /// always did.
+    #[serde(default)]
+    pub responses_superseded_note: String,
+    /// Whether an answer that failed (`hop.error_code`) for an open
+    /// delegation closes it at once with `delegation_fallback` instead of
+    /// being said. `false` (the default) treats it as any answer.
+    #[serde(default)]
+    pub advise_error_fallback: bool,
+    /// A lower ceiling for the cut of one append, in characters (1 to
+    /// [`crate::voice::connection::APPEND_MAX_CHARS`]). It only ever lowers
+    /// the cut: the ceiling that holds is the smaller of this and
+    /// [`Self::append_limit_chars`]. Not set, that one holds alone.
+    #[serde(default)]
+    pub advise_split_chars: Option<usize>,
+    /// The most tokens the provider takes in one append; default
+    /// [`DEFAULT_ADVISE_MAX_TOKENS`], the number in its own refusal
+    /// ("Context append text must not exceed 500 tokens").
+    #[serde(default = "GptLiveParams::default_advise_max_tokens")]
+    pub advise_max_tokens: u32,
+    /// How many characters this cell counts as one token of an append, from
+    /// [`MIN_CHARS_PER_TOKEN`] to [`MAX_CHARS_PER_TOKEN`]; default
+    /// [`DEFAULT_CHARS_PER_TOKEN`]. Together with `advise_max_tokens` it is
+    /// the ceiling an append is cut at ([`Self::append_limit_chars`]).
+    #[serde(default = "GptLiveParams::default_chars_per_token")]
+    pub chars_per_token: f64,
+}
+
+/// The default of `duplex.advise_max_tokens`: the provider's documented
+/// ceiling of one append.
+pub const DEFAULT_ADVISE_MAX_TOKENS: u32 = 500;
+
+/// The default of `duplex.chars_per_token`.
+///
+/// Read off the call whose appends the provider refused (wave d54g, strand
+/// deleg): German text with dates, times and names, where an append of
+/// 1 747 characters was refused as over 500 tokens -- under 3.5 characters a
+/// token. 2.4 is set well below that on purpose; with the tenth of margin
+/// the shipped ceiling is 1 080 characters, where the old one was 1 800.
+pub const DEFAULT_CHARS_PER_TOKEN: f64 = 2.4;
+
+/// The smallest `duplex.chars_per_token`.
+pub const MIN_CHARS_PER_TOKEN: f64 = 0.1;
+
+/// The largest `duplex.chars_per_token`.
+pub const MAX_CHARS_PER_TOKEN: f64 = 16.0;
+
+/// What a `gpt_live` cell does with the answer to a superseded delegation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupersededAnswer {
+    /// Spoken like every answer (the default).
+    #[default]
+    Speak,
+    /// Sent as `session.thinking.append`: known to the model, not said.
+    Think,
+    /// Not sent at all; the overtaking emits `delegation_cancel`.
+    Drop,
+}
+
+/// The fields a `session.update` may carry under
+/// `session.delegation.responses` (the provider's
+/// `ResponsesDelegationUpdateConfig`); `duplex.responses_fallback` takes
+/// these and no others.
+pub const RESPONSES_UPDATE_FIELDS: [&str; 9] = [
+    "instructions",
+    "max_output_tokens",
+    "model",
+    "parallel_tool_calls",
+    "reasoning",
+    "service_tier",
+    "text",
+    "tool_choice",
+    "tools",
+];
+
+/// One entry of a `gpt_live` block's `start_input`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartInputMessage {
+    /// `developer`, `user` or `assistant`.
+    pub role: String,
+    /// The text of the message.
+    pub text: String,
+}
+
+/// The most characters a `safety_identifier` may have (the provider's limit).
+pub const SAFETY_IDENTIFIER_MAX_CHARS: usize = 128;
+
+/// Checks `duplex.responses_fallback`: a non-empty object of Responses
+/// settings, on a session whose delegation is `responses` (A15, A36).
+fn check_responses_fallback(g: &GptLiveParams, fallback: &JsonValue) -> Result<(), String> {
+    let responses = g
+        .delegation
+        .as_ref()
+        .and_then(|d| d.get("type"))
+        .and_then(|t| t.as_str())
+        == Some("responses");
+    if !responses {
+        return Err(
+            "duplex.responses_fallback: needs a `responses` delegation (duplex.delegation)"
+                .to_string(),
+        );
+    }
+    let Some(obj) = fallback.as_object().filter(|o| !o.is_empty()) else {
+        return Err("duplex.responses_fallback: must be a non-empty object".to_string());
+    };
+    if let Some(bad) = obj
+        .keys()
+        .find(|k| !RESPONSES_UPDATE_FIELDS.contains(&k.as_str()))
+    {
+        return Err(format!(
+            "duplex.responses_fallback: `{bad}` is not a Responses setting a session.update \
+             takes (one of {})",
+            RESPONSES_UPDATE_FIELDS.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// Checks the three opening keys of a `gpt_live` block: `delegation`,
+/// `safety_identifier`, `start_input`. Refused at the parse, where a spawn
+/// still fails loudly, rather than by the provider in the middle of a call.
+fn check_gpt_live_opening(g: &GptLiveParams) -> Result<(), String> {
+    if let Some(d) = &g.delegation {
+        let Some(obj) = d.as_object() else {
+            return Err("duplex.delegation: must be an object with a `type`".to_string());
+        };
+        match obj.get("type").and_then(|t| t.as_str()) {
+            Some("client") => {}
+            Some("responses") => {
+                let model = obj
+                    .get("responses")
+                    .and_then(|r| r.get("model"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or_default();
+                if model.trim().is_empty() {
+                    return Err("duplex.delegation: a `responses` delegation requires \
+                         `responses.model`, a non-empty string (the backend model)"
+                        .to_string());
+                }
+            }
+            _ => {
+                return Err(
+                    "duplex.delegation: `type` must be \"client\" or \"responses\"".to_string(),
+                );
+            }
+        }
+    }
+    if let Some(fallback) = &g.responses_fallback {
+        check_responses_fallback(g, fallback)?;
+    }
+    if !g.responses_superseded_note.is_empty() && !g.is_responses_delegation() {
+        return Err(
+            "duplex.responses_superseded_note: needs a `responses` delegation \
+             (duplex.delegation)"
+                .to_string(),
+        );
+    }
+    if let Some(id) = &g.safety_identifier
+        && id.chars().count() > SAFETY_IDENTIFIER_MAX_CHARS
+    {
+        return Err(format!(
+            "duplex.safety_identifier: at most {SAFETY_IDENTIFIER_MAX_CHARS} characters"
+        ));
+    }
+    if let Some(n) = g.advise_split_chars
+        && !(1..=crate::voice::connection::APPEND_MAX_CHARS).contains(&n)
+    {
+        return Err(format!(
+            "duplex.advise_split_chars: must be between 1 and {}",
+            crate::voice::connection::APPEND_MAX_CHARS
+        ));
+    }
+    if g.advise_max_tokens == 0 {
+        return Err("duplex.advise_max_tokens: must be a positive integer".to_string());
+    }
+    if !(MIN_CHARS_PER_TOKEN..=MAX_CHARS_PER_TOKEN).contains(&g.chars_per_token) {
+        return Err(format!(
+            "duplex.chars_per_token: must be between {MIN_CHARS_PER_TOKEN} and \
+             {MAX_CHARS_PER_TOKEN}"
+        ));
+    }
+    // Wave d54g, strand kprofil: the provider takes 16 384 tokens of
+    // instructions and nothing checked them; instructions over that bound
+    // alone leave no room for a start window, and the provider would refuse
+    // the session at the first call. Estimated at the block's own rate.
+    {
+        use crate::voice::providers::gpt_live::{INSTRUCTIONS_MAX_TOKENS, est_tokens};
+        let tokens = est_tokens(&g.instructions, g.chars_per_token);
+        if tokens > INSTRUCTIONS_MAX_TOKENS {
+            return Err(format!(
+                "duplex.instructions: {tokens} tokens by the cell's estimate ({} characters \
+                 at chars_per_token {}), over the provider's limit of \
+                 {INSTRUCTIONS_MAX_TOKENS}",
+                g.instructions.chars().count(),
+                g.chars_per_token
+            ));
+        }
+    }
+    if g.seed_max_tokens == 0 {
+        return Err("duplex.seed_max_tokens: must be a positive integer".to_string());
+    }
+    if !(1..=crate::voice::providers::gpt_live::SEED_MAX_MESSAGES).contains(&g.seed_max_messages) {
+        return Err(format!(
+            "duplex.seed_max_messages: must be between 1 and {}",
+            crate::voice::providers::gpt_live::SEED_MAX_MESSAGES
+        ));
+    }
+    // The three texts that travel as ONE append each. Checked here, where a
+    // spawn still fails loudly: over the ceiling the provider refuses the
+    // append whole, in the middle of a call.
+    let limit = g.append_limit_chars();
+    for (key, text) in [
+        ("greeting", &g.greeting),
+        ("horizon_text", &g.horizon_text),
+        ("responses_superseded_note", &g.responses_superseded_note),
+    ] {
+        let chars = text.chars().count();
+        if chars > limit {
+            return Err(format!(
+                "duplex.{key}: {chars} characters, over the append limit of {limit} \
+                 (advise_max_tokens x chars_per_token, less a tenth)"
+            ));
+        }
+    }
+    if g.start_input.len() > crate::voice::providers::gpt_live::SEED_MAX_MESSAGES {
+        return Err(format!(
+            "duplex.start_input: at most {} entries",
+            crate::voice::providers::gpt_live::SEED_MAX_MESSAGES
+        ));
+    }
+    if let Some(bad) = g
+        .start_input
+        .iter()
+        .find(|m| !matches!(m.role.as_str(), "developer" | "user" | "assistant"))
+    {
+        return Err(format!(
+            "duplex.start_input: role {:?} is not one of developer, user, assistant",
+            bad.role
+        ));
+    }
+    Ok(())
 }
 
 /// The audio format a `gpt_live` session runs on the wire (R-LS-3).
@@ -770,6 +1095,51 @@ impl GptLiveParams {
     }
     fn default_delegation_grace_ms() -> u64 {
         DEFAULT_DELEGATION_GRACE_MS
+    }
+    /// Whether the session's delegation is `responses`: the provider runs the
+    /// backend model itself.
+    pub fn is_responses_delegation(&self) -> bool {
+        self.delegation
+            .as_ref()
+            .and_then(|d| d.get("type"))
+            .and_then(|t| t.as_str())
+            == Some("responses")
+    }
+
+    /// The ceiling of one append in characters: `advise_max_tokens` times
+    /// `chars_per_token`, less a tenth of margin, and never under one. The
+    /// rate is counted in thousandths of a character, so the shipped numbers
+    /// give 1 080 exactly on every machine.
+    pub fn append_limit_chars(&self) -> usize {
+        let milli_chars = (self.chars_per_token * 1_000.0).round() as u64;
+        let limit = u64::from(self.advise_max_tokens)
+            .saturating_mul(milli_chars)
+            .saturating_mul(9)
+            / 10_000;
+        usize::try_from(limit).map_or(usize::MAX, |n| n.max(1))
+    }
+
+    /// The ceiling an append is CUT at: [`Self::append_limit_chars`], or
+    /// `advise_split_chars` where that is lower.
+    pub fn advise_split_limit(&self) -> usize {
+        let limit = self.append_limit_chars();
+        self.advise_split_chars.map_or(limit, |n| n.min(limit))
+    }
+
+    fn default_advise_max_tokens() -> u32 {
+        DEFAULT_ADVISE_MAX_TOKENS
+    }
+    fn default_seed_max_tokens() -> u64 {
+        crate::voice::providers::gpt_live::SEED_MAX_TOKENS
+    }
+    fn default_seed_max_messages() -> usize {
+        crate::voice::providers::gpt_live::SEED_MAX_MESSAGES
+    }
+    fn default_window_profile() -> JsonValue {
+        JsonValue::Object(meclaw_core::serde_json::Map::new())
+    }
+    fn default_chars_per_token() -> f64 {
+        DEFAULT_CHARS_PER_TOKEN
     }
     fn default_delegation_fallback() -> String {
         DEFAULT_DELEGATION_FALLBACK.to_string()
@@ -1241,6 +1611,7 @@ impl VoiceParams {
                 // socket. Refused at the parse, where a spawn still fails
                 // loudly, rather than at the second it would be noticed.
                 if let DuplexParams::GptLive(g) = &parsed {
+                    check_gpt_live_opening(g)?;
                     if g.tick_ms == 0 {
                         return Err(
                             "duplex.tick_ms: must be a positive integer (the session's clock \
@@ -1272,14 +1643,19 @@ impl VoiceParams {
                     // both would make the knob a typo that ducks nothing or
                     // everything. A release of nothing would open the gate on
                     // the caller's first stop consonant.
+                    // The level is checked whether or not ducking is on: a
+                    // session parked while the line rings tells the model's
+                    // speech from its silence at the same level
+                    // (`prewarm_ttl_ms`), and a level never or always reached
+                    // keeps nothing or everything of the ring.
+                    if !(g.barge_level_dbfs < 0.0 && g.barge_level_dbfs > -90.0) {
+                        return Err(
+                            "duplex.barge_level_dbfs: must lie between -90 and 0 (exclusive); \
+                             telephone speech sits around -20 to -30 dBFS"
+                                .to_string(),
+                        );
+                    }
                     if g.barge_duck_ms > 0 {
-                        if !(g.barge_level_dbfs < 0.0 && g.barge_level_dbfs > -90.0) {
-                            return Err(
-                                "duplex.barge_level_dbfs: must lie between -90 and 0 (exclusive); \
-                                 telephone speech sits around -20 to -30 dBFS"
-                                    .to_string(),
-                            );
-                        }
                         // A negative margin asks the caller to be LOUDER than
                         // the model, which a telephone caller never is; past
                         // 60 dB it no longer tells an echo from anything.
@@ -1364,6 +1740,7 @@ impl VoiceParams {
         };
 
         let emit_usage = read_bool(obj, "emit_usage", false)?;
+        let emit_first_audio = read_bool(obj, "emit_first_audio", false)?;
         let call_marks = read_call_marks(obj)?;
 
         for key in obj.keys() {
@@ -1395,6 +1772,7 @@ impl VoiceParams {
             call_marks,
             x_title,
             http_referer,
+            emit_first_audio,
         };
         parsed.check_secrets()?;
         // Whether the duplex block NAMED a rate: the parsed struct cannot say,
@@ -1917,11 +2295,22 @@ pub struct VoiceOverlay {
     /// As [`Self::x_title`], for `HTTP-Referer`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_referer: Option<String>,
+    /// Whether the `first_audio` lane is ordered (d54g callseam), carried and
+    /// refused by an update for the reason `emit_usage` is: the I/O half
+    /// reads it once per life. Not written while off, so a cell that never
+    /// orders it stores the same overlay bytes as before the key existed.
+    #[serde(skip_serializing_if = "switch_is_off")]
+    pub emit_first_audio: bool,
 }
 
 /// The wire form of a `"0"` | `"1"` switch.
 pub fn flag01(on: bool) -> String {
     if on { "1" } else { "0" }.to_string()
+}
+
+/// Whether a boolean switch is off (serde skip predicate).
+fn switch_is_off(v: &bool) -> bool {
+    !*v
 }
 
 /// Whether a `"0"` | `"1"` switch is off (serde skip predicate).
@@ -1949,7 +2338,8 @@ impl OverlayParams for VoiceOverlay {
 
     /// The credential rounds' ceiling (GH #1059), the three D48 call
     /// settings (`emit_usage`, `call_marks_s`, `call_mark_every_s`, GH #1379)
-    /// and the app attribution (`x_title`, `http_referer`, GH #1455),
+    /// the app attribution (`x_title`, `http_referer`, GH #1455) and the
+    /// `first_audio` lane's switch (`emit_first_audio`, d54g callseam),
     /// all read once per life. Nothing else is refused here for being the key
     /// it is; the provider blocks — grants included — are out of reach because they
     /// are not *known* keys, which is a different sentence and a better one —
@@ -1962,6 +2352,7 @@ impl OverlayParams for VoiceOverlay {
         "call_mark_every_s",
         "x_title",
         "http_referer",
+        "emit_first_audio",
     ];
 
     fn parse(raw: &JsonValue) -> Result<Self, String> {
@@ -2005,6 +2396,7 @@ impl OverlayParams for VoiceOverlay {
                 },
             x_title,
             http_referer,
+            emit_first_audio,
         } = VoiceParams::parse(raw)?;
         let obj = raw.as_object().ok_or("params: must be object")?;
         Ok(Self {
@@ -2028,6 +2420,7 @@ impl OverlayParams for VoiceOverlay {
             call_mark_every_s,
             x_title,
             http_referer,
+            emit_first_audio,
         })
     }
 }
@@ -2058,6 +2451,10 @@ mod tests {
         assert!(
             !p.emit_speak_end,
             "R-V8' again: the speak_end lane is ordered, not assumed"
+        );
+        assert!(
+            !p.emit_first_audio,
+            "and again: the first_audio lane is ordered, not assumed"
         );
         assert_eq!(p.external_timeout_ms, 5000);
         assert_eq!(p.provider_idle_timeout_ms, 30000);
@@ -2462,6 +2859,43 @@ mod tests {
         }
     }
 
+    /// GH #1055 M2: the level is also where a session parked while the line
+    /// rings stops dropping the model's silence, so it is bounded whether or
+    /// not ducking is on.
+    #[test]
+    fn the_barge_level_is_checked_without_a_duck_time() {
+        for extra in [json!({}), json!({"prewarm_ttl_ms": 20_000})] {
+            for bad in [0.0, 5.0, -90.0, -120.0] {
+                let mut duplex = json!({
+                    "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                    "barge_duck_ms": 0, "barge_level_dbfs": bad
+                });
+                if let (Some(obj), Some(more)) = (duplex.as_object_mut(), extra.as_object()) {
+                    for (k, v) in more {
+                        obj.insert(k.clone(), v.clone());
+                    }
+                }
+                let raw = json!({"mount": "voice", "duplex": duplex});
+                let err = VoiceParams::parse(&raw)
+                    .map(|_| ())
+                    .expect_err("a level outside -90..0 is refused with ducking off");
+                assert!(
+                    err.starts_with("duplex.barge_level_dbfs:"),
+                    "{extra} / {bad}: {err}"
+                );
+            }
+        }
+        // A level inside the bounds parses with ducking off, as it always did.
+        let raw = json!({
+            "mount": "voice",
+            "duplex": {
+                "provider": "gpt_live", "api_key": "k", "instructions": "x",
+                "barge_duck_ms": 0, "barge_level_dbfs": -30.0, "prewarm_ttl_ms": 20_000
+            }
+        });
+        VoiceParams::parse(&raw).expect("a level inside the bounds parses");
+    }
+
     /// A grace of zero would take every renewal over without its handover; the
     /// renewal is switched off with `renew_after_ms: 0`, not with this.
     #[test]
@@ -2854,6 +3288,7 @@ mod tests {
             ("credential_backoff_max_ms", json!(1000)),
             ("x_title", json!("other")),
             ("http_referer", json!("https://example.org")),
+            ("emit_first_audio", json!(true)),
         ] {
             let mut update = meclaw_core::serde_json::Map::new();
             update.insert(key.into(), value);
@@ -2909,5 +3344,283 @@ mod tests {
         )
         .expect("and round-trips through the one parser");
         assert!(matches!(back.stt, SttParams::Deepgram(_)));
+    }
+
+    fn live_with(extra: JsonValue) -> Result<VoiceParams, String> {
+        let mut duplex = json!({"provider": "gpt_live", "api_key": "k", "instructions": "x"});
+        if let (Some(obj), Some(more)) = (duplex.as_object_mut(), extra.as_object()) {
+            for (k, v) in more {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        VoiceParams::parse(&json!({"mount": "voice", "duplex": duplex}))
+    }
+
+    /// D54g kprofil (GH #1507, contract point 2): the provider takes at most
+    /// 16 384 tokens of instructions, and they cannot change after the start.
+    /// Instructions that are over that bound alone leave no start window at
+    /// all, so the parse refuses them and names the length, by the rate the
+    /// block estimates with (`chars_per_token`).
+    #[test]
+    fn an_instruction_over_the_provider_limit_is_a_parse_error() {
+        // 65 536 characters at four characters a token: 16 384 tokens.
+        let at_the_limit = "word".repeat(16_384);
+        live_with(json!({"chars_per_token": 4, "instructions": at_the_limit}))
+            .expect("instructions at the provider's limit parse");
+
+        // Four characters more: 16 385 tokens.
+        let over = format!("{at_the_limit}more");
+        let err = live_with(json!({"chars_per_token": 4, "instructions": over}))
+            .expect_err("instructions over the provider's limit");
+        assert!(err.starts_with("duplex.instructions:"), "{err}");
+        assert!(
+            err.contains("16385") || err.contains("65540"),
+            "the error names the length, in tokens or characters: {err}"
+        );
+        assert!(err.contains("16384"), "and the limit: {err}");
+    }
+
+    /// POC gpt-live-1 (A10/A11): the delegation is an object, its `type` is
+    /// `client` or `responses`, and a Responses delegation names its model.
+    #[test]
+    fn gpt_live_delegation_is_checked_at_the_parse() {
+        let ok = live_with(json!({"delegation": {
+            "type": "responses", "responses": {"model": "gpt-6-luna"}
+        }}))
+        .expect("a Responses delegation with a model parses");
+        let Some(DuplexParams::GptLive(g)) = &ok.duplex else {
+            panic!("a gpt_live block");
+        };
+        assert_eq!(
+            g.delegation.as_ref().and_then(|d| d["type"].as_str()),
+            Some("responses")
+        );
+        live_with(json!({"delegation": {"type": "client"}})).expect("client parses");
+        for (bad, why) in [
+            (json!("responses"), "not an object"),
+            (json!({"type": "server"}), "unknown type"),
+            (json!({"type": "responses"}), "no responses block"),
+            (
+                json!({"type": "responses", "responses": {"model": ""}}),
+                "empty model",
+            ),
+        ] {
+            let err = live_with(json!({ "delegation": bad })).expect_err(why);
+            assert!(err.starts_with("duplex.delegation:"), "{why}: {err}");
+        }
+    }
+
+    /// POC gpt-live-1 (A43): `safety_identifier` is at most 128 characters.
+    #[test]
+    fn gpt_live_safety_identifier_is_bounded() {
+        live_with(json!({"safety_identifier": "a".repeat(128)})).expect("128 fits");
+        let err = live_with(json!({"safety_identifier": "a".repeat(129)})).expect_err("129");
+        assert!(err.starts_with("duplex.safety_identifier:"), "{err}");
+    }
+
+    /// POC gpt-live-1 (A39): `start_input` takes the three roles and at most
+    /// 128 entries.
+    #[test]
+    fn gpt_live_start_input_is_checked_at_the_parse() {
+        live_with(json!({"start_input": [{"role": "developer", "text": "Greet."}]}))
+            .expect("a developer message parses");
+        let err = live_with(json!({"start_input": [{"role": "system", "text": "x"}]}))
+            .expect_err("system is not a live role");
+        assert!(err.starts_with("duplex.start_input:"), "{err}");
+        let many: Vec<JsonValue> = (0..129)
+            .map(|_| json!({"role": "user", "text": "x"}))
+            .collect();
+        let err = live_with(json!({ "start_input": many })).expect_err("129 entries");
+        assert!(err.starts_with("duplex.start_input:"), "{err}");
+    }
+
+    /// POC gpt-live-1 round 2 (A75-A78, A83, A94): the three delegation
+    /// knobs default to what the cell always did and are checked at the parse.
+    #[test]
+    fn gpt_live_delegation_knobs_default_and_parse() {
+        let plain = live_with(json!({})).expect("no knobs parse");
+        let Some(DuplexParams::GptLive(g)) = &plain.duplex else {
+            panic!("a gpt_live block");
+        };
+        assert!(!g.delegation_history);
+        assert_eq!(g.delegation_superseded, SupersededAnswer::Speak);
+        assert_eq!(g.advise_split_chars, None);
+
+        let set = live_with(json!({
+            "delegation_history": true,
+            "delegation_superseded": "think",
+            "advise_split_chars": 400,
+        }))
+        .expect("the knobs parse");
+        let Some(DuplexParams::GptLive(g)) = &set.duplex else {
+            panic!("a gpt_live block");
+        };
+        assert!(g.delegation_history);
+        assert_eq!(g.delegation_superseded, SupersededAnswer::Think);
+        assert_eq!(g.advise_split_chars, Some(400));
+
+        live_with(json!({"delegation_superseded": "mumble"}))
+            .expect_err("speak or think, nothing else");
+        for bad in [0, 1801] {
+            let err = live_with(json!({ "advise_split_chars": bad })).expect_err("out of range");
+            assert!(
+                err.starts_with("duplex.advise_split_chars:"),
+                "{bad}: {err}"
+            );
+        }
+        // The history has no ceiling of its own any more: the key is gone,
+        // and the strict parse says so instead of ignoring it.
+        live_with(json!({"delegation_history_max_chars": 4000}))
+            .expect_err("no such key: the history is never cut in this cell");
+    }
+
+    /// Wave d54g, strand deleg: the ceiling of one append is counted in
+    /// tokens -- `advise_max_tokens` (500) times `chars_per_token` (2.4), less
+    /// a tenth, 1 080 characters as shipped -- and the three fixed texts that
+    /// travel as ONE append each are held to it where the params are read: a
+    /// text over it is a parse error that names its key and both lengths, not
+    /// a refusal in the middle of a call.
+    #[test]
+    fn a_fixed_text_over_the_append_limit_is_a_parse_error() {
+        let responses = json!({"type": "responses", "responses": {"model": "gpt-6-luna"}});
+        for key in ["greeting", "horizon_text", "responses_superseded_note"] {
+            let block = |chars: usize| {
+                let mut extra = json!({"delegation": responses});
+                extra[key] = json!("x".repeat(chars));
+                extra
+            };
+            live_with(block(1_080)).unwrap_or_else(|e| panic!("{key}: 1 080 fits: {e}"));
+            let err = live_with(block(1_081)).expect_err("one over");
+            assert!(err.starts_with(&format!("duplex.{key}:")), "{key}: {err}");
+            assert!(
+                err.contains("1081") && err.contains("1080"),
+                "the error names the length and the limit: {err}"
+            );
+        }
+
+        // The instance moves the ceiling, and the fixed texts follow it:
+        // 100 tokens at 2 characters, less a tenth, is 180 characters.
+        let moved = |chars: usize| {
+            json!({
+                "advise_max_tokens": 100,
+                "chars_per_token": 2.0,
+                "greeting": "x".repeat(chars),
+            })
+        };
+        live_with(moved(180)).expect("180 fits the moved ceiling");
+        let err = live_with(moved(181)).expect_err("over the moved ceiling");
+        assert!(err.starts_with("duplex.greeting:"), "{err}");
+        assert!(err.contains("181") && err.contains("180"), "{err}");
+
+        // `advise_split_chars` lowers the cut of an append that is split; it
+        // is not the provider's ceiling, so a fixed text between the two
+        // still parses.
+        live_with(json!({"advise_split_chars": 400, "greeting": "x".repeat(900)}))
+            .expect("a greeting under the provider's ceiling parses");
+
+        let err = live_with(json!({"advise_max_tokens": 0})).expect_err("zero tokens");
+        assert!(err.starts_with("duplex.advise_max_tokens:"), "{err}");
+        for bad in [json!(0), json!(-1.5), json!(0.05), json!(17)] {
+            let err = live_with(json!({ "chars_per_token": bad })).expect_err("out of range");
+            assert!(err.starts_with("duplex.chars_per_token:"), "{bad}: {err}");
+        }
+    }
+
+    /// Wave d54g, strand deleg: the three fixed texts are held to the token
+    /// ceiling (`advise_max_tokens` times `chars_per_token`, less a tenth) and
+    /// to nothing else. `advise_split_chars` is where an append is cut, not
+    /// what the provider refuses: a fixed text over it alone still parses.
+    #[test]
+    fn a_fixed_text_is_held_to_the_token_ceiling_not_to_advise_split_chars() {
+        let responses = json!({"type": "responses", "responses": {"model": "gpt-6-luna"}});
+        for key in ["greeting", "horizon_text", "responses_superseded_note"] {
+            let block = |chars: usize| {
+                let mut extra = json!({"delegation": responses, "advise_split_chars": 400});
+                extra[key] = json!("x".repeat(chars));
+                extra
+            };
+            live_with(block(401))
+                .unwrap_or_else(|e| panic!("{key}: over advise_split_chars alone parses: {e}"));
+            live_with(block(1_080)).unwrap_or_else(|e| panic!("{key}: 1 080 fits: {e}"));
+            let err = live_with(block(1_081)).expect_err("one over the token ceiling");
+            assert!(err.starts_with(&format!("duplex.{key}:")), "{key}: {err}");
+            assert!(
+                err.contains("1081") && err.contains("1080"),
+                "the error names the length and the token ceiling: {err}"
+            );
+        }
+    }
+
+    /// POC gpt-live-1 round 3 (A94/A45, A15, A86/A87): `drop`, the
+    /// Responses correction and the fast error path parse, default off, and a
+    /// correction is checked against the fields `session.update` takes.
+    #[test]
+    fn gpt_live_round_three_knobs_default_and_parse() {
+        let plain = live_with(json!({})).expect("no knobs parse");
+        let Some(DuplexParams::GptLive(g)) = &plain.duplex else {
+            panic!("a gpt_live block");
+        };
+        assert_eq!(g.responses_fallback, None);
+        assert!(!g.advise_error_fallback);
+
+        let responses = json!({"type": "responses", "responses": {"model": "gpt-6-sol"}});
+        let set = live_with(json!({
+            "delegation": responses,
+            "delegation_superseded": "drop",
+            "responses_fallback": {"service_tier": "auto"},
+            "advise_error_fallback": true,
+        }))
+        .expect("the knobs parse");
+        let Some(DuplexParams::GptLive(g)) = &set.duplex else {
+            panic!("a gpt_live block");
+        };
+        assert_eq!(g.delegation_superseded, SupersededAnswer::Drop);
+        assert_eq!(g.responses_fallback, Some(json!({"service_tier": "auto"})));
+        assert!(g.advise_error_fallback);
+
+        for (bad, why) in [
+            (json!("auto"), "not an object"),
+            (json!({}), "empty"),
+            (json!({"voice": "flitz"}), "not a Responses setting"),
+        ] {
+            let err = live_with(json!({"delegation": responses, "responses_fallback": bad}))
+                .expect_err(why);
+            assert!(
+                err.starts_with("duplex.responses_fallback:"),
+                "{why}: {err}"
+            );
+        }
+        let err = live_with(json!({"responses_fallback": {"service_tier": "auto"}}))
+            .expect_err("a client delegation has no Responses settings");
+        assert!(err.starts_with("duplex.responses_fallback:"), "{err}");
+    }
+
+    /// POC gpt-live-1 (A45): the superseded note is off by default, parses
+    /// with a `responses` delegation and is refused without one.
+    #[test]
+    fn gpt_live_the_responses_superseded_note_needs_a_responses_delegation() {
+        let plain = live_with(json!({})).expect("parses");
+        let Some(DuplexParams::GptLive(g)) = &plain.duplex else {
+            panic!("a gpt_live block");
+        };
+        assert_eq!(g.responses_superseded_note, "", "off as shipped");
+
+        let responses = json!({"type": "responses", "responses": {"model": "gpt-6-sol"}});
+        let set = live_with(json!({
+            "delegation": responses,
+            "responses_superseded_note": "That request is outdated.",
+        }))
+        .expect("the note parses");
+        let Some(DuplexParams::GptLive(g)) = &set.duplex else {
+            panic!("a gpt_live block");
+        };
+        assert_eq!(g.responses_superseded_note, "That request is outdated.");
+
+        let err = live_with(json!({"responses_superseded_note": "outdated"}))
+            .expect_err("a client delegation has no Responses work to supersede");
+        assert!(
+            err.starts_with("duplex.responses_superseded_note:"),
+            "{err}"
+        );
     }
 }

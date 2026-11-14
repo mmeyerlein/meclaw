@@ -1,4 +1,4 @@
-# `freeswitch@3.1.4`
+# `freeswitch@3.1.5`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -279,7 +279,7 @@ and the three grants seeded there in the same declaration (`seed_rows`).
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.1.4",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.1.5",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -299,7 +299,7 @@ and the three grants seeded there in the same declaration (`seed_rows`).
                                   "call_id": "has(hop.call_id) ? hop.call_id : ''",
                                   "session_id": "has(hop.session_id) ? hop.session_id : ''"}}},
     {"from": "./channels", "to": "./channels/freeswitch",
-     "condition": "has(hop.route) && hop.route == 'answer' && has(context.channel_node) && context.channel_node == 'freeswitch'",
+     "condition": "has(hop.route) && hop.route == 'answer' && !has(hop.repeat) && has(context.channel_node) && context.channel_node == 'freeswitch'",
      "modifier": {"set_hop": {"route": "'in_speak'"}}},
 
     {"from": "./channels/freeswitch", "to": "./channels",
@@ -388,7 +388,9 @@ on its own answer edge. A vault filled for the broker this hive carried up to
 
 **The channel half** is the first two edges, and they are the `voice` channel's
 own two, word for word (`templates/voice/README.md` § *Wiring it into a member*):
-one promotion up, one restamp down. `call_id` is promoted on **all three**
+one promotion up, one restamp down. The restamp asks `!has(hop.repeat)`
+(GH #1505): an answer whose text already went out in its turn ends the turn for
+a channel that writes and is not spoken into a call a second time. `call_id` is promoted on **all three**
 outbound lanes and not only on `turn`, because a failure that happened inside a
 call carries that call, and an edge that promoted the call only on the happy
 path would make every failure look like it came from nowhere. `user_id` is the
@@ -611,7 +613,11 @@ connects with `?session=<uuid>` adopts it, greeting included. The hive hands
 `call_ringing` and `call_ended` to `voice` as well as to `signal`; nothing changes
 unless `duplex.prewarm_ttl_ms` is set, and a ring nobody answers costs at most that
 long of provider time. Set the hang-up hook before the ring, so a caller who gives up
-while it rings closes the early session at once rather than at the deadline.
+while it rings closes the early session at once rather than at the deadline. How long
+the line rings does not change what the caller hears: the silence the model streams
+while it waits for the pickup is neither played nor counted against what is kept of
+its greeting, and an early session whose provider gave up during the ring is replaced
+by a fresh one when the stream connects (`voice` README, *Early session and ducking*).
 
 `call_uuid` is the **same** UUID that hangs on the stream URL as `?session=`. For an
 outbound call the channel mints it and hands it to the switch as
@@ -1271,7 +1277,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.1.4`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.1.5`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1284,7 +1290,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.1.4"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.1.5"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

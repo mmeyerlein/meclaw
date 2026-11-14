@@ -140,6 +140,72 @@ harness = "simple_agent"
 match = "^gh_d58_proof_"
 harness = "curator_proof"
 
+# d54g (GH #1502): the pins of the wave in binaries of their own or beside their
+# hive's pins, set by the coordinator in the opening commit (no strand edits this
+# file). They stand before the first `uses` rule: the helpers `curator_hive` and
+# `assemble_cell` would otherwise take the files into `curator` or `assemble`,
+# and `assemble` stands at max_files.
+[[rule]]
+match = "^gh_d54g_oneanswer_once"
+harness = "assemble_once"
+
+[[rule]]
+match = "^gh_d54g_(oneanswer_repeat|ack_typing)"
+harness = "proxy"
+
+[[rule]]
+match = "^gh_d54g_ack_lead"
+harness = "curator_lead"
+
+[[rule]]
+match = "^gh_d54g_ack_listen"
+harness = "curator_live"
+
+[[rule]]
+match = "^gh_d54g_stamp_route"
+harness = "assemble_judge"
+
+[[rule]]
+match = "^gh_d54g_stamp_notes"
+harness = "curator_frame"
+
+# d58-3 (GH #1522): the pins of the wave beside their hive's pins, set by the
+# coordinator in the opening commit (no strand edits this file); before the
+# first `uses` rule for the same reason as the d54g rules above.
+[[rule]]
+match = "^gh_d583_kern_route"
+harness = "assemble_judge"
+
+[[rule]]
+match = "^gh_d583_(kern|namen)_"
+harness = "curator_targets"
+
+[[rule]]
+match = "^gh_d583_(grenzen|wort)_"
+harness = "curator_sections"
+
+[[rule]]
+match = "^gh_d583_(tag|ballast)_"
+harness = "curator_walls"
+
+[[rule]]
+match = "^gh_d583_schnell_"
+harness = "curator_lead"
+
+[[rule]]
+match = "^gh_d54g_kprofil_window"
+harness = "curator_live"
+
+[[rule]]
+match = "^gh_d54g_kprofil_feed"
+harness = "curator_feed"
+
+# GH #1436 (d54g d58rest, OR-54g-62): the pins of the carried note sit beside
+# the corpus of the curator they guard, so no curator part moves.
+[[rule]]
+match = "^gh1436_[f-k]_"
+harness = "curator_3"
+
 [[rule]]
 uses = "^support/curator_hive\\.rs$"
 harness = "curator"
