@@ -693,10 +693,11 @@ async fn run_session(
                     .reset(tokio::time::Instant::now() + timeouts.idle);
                 liveness.mark_success();
                 let guarded = opening.pass(marks.spoken(map_event(&text)), &session_id, |bytes| {
-                    audio_ms(law, format.sample_rate, bytes)
+                    audio_measure(law, format.sample_rate, bytes)
                 });
-                // GH #1537: the opening answer went on past the greeting; the
-                // model is told once to stop and wait for the caller.
+                // GH #1537: the opening answer went on past the greeting's
+                // audio budget (GH #1545); the model is told once to stop and
+                // wait for the caller.
                 if guarded.stop {
                     let frame = append_frame(
                         AppendKind::Instructions,
@@ -1053,7 +1054,7 @@ async fn finalise(
         let guarded = opening
             .guard
             .pass(map_event(&text), opening.session_id, |bytes| {
-                audio_ms(law, opening.rate, bytes)
+                audio_measure(law, opening.rate, bytes)
             });
         match guarded.mapped {
             Mapped::Finished {
@@ -1530,6 +1531,19 @@ const GREETING_SHARE: f64 = 0.5;
 /// stops the run-on tail.
 const GREETING_HARD_SHARE: f64 = 2.0;
 
+/// The audio an opening answer may carry before the greeting's characters
+/// count, in ms (GH #1545): room for a breath and a slow first word.
+const GREETING_LEAD_MS: f64 = 1_000.0;
+
+/// The audio an opening answer may carry per character of its greeting, in
+/// ms (GH #1545).
+///
+/// Measured on test lines (0.88.0): a greeting of 89 characters took about
+/// 6 s of audio, 67 ms per character. 90 ms leaves a third on top for a
+/// slower voice or a longer paraphrase; together with [`GREETING_LEAD_MS`]
+/// that greeting may carry 9 s, and an invented tail behind it is cut there.
+const GREETING_MS_PER_CHAR: f64 = 90.0;
+
 /// The quotation marks a spoken greeting may stand in: opener and the
 /// closers that end it.
 const GREETING_QUOTES: &[(char, &[char])] = &[
@@ -1580,12 +1594,19 @@ fn greeting_hard_limit(greeting: &str) -> usize {
     ((chars as f64 * GREETING_HARD_SHARE).ceil() as usize).max(1)
 }
 
+/// The audio a greeting of `chars` characters may carry, in ms, counted from
+/// its first audible chunk (GH #1545).
+fn greeting_budget_ms(chars: usize) -> f64 {
+    GREETING_LEAD_MS + GREETING_MS_PER_CHAR * chars as f64
+}
+
 /// What [`OpeningGuard::pass`] decided about one mapped frame.
 struct Guarded {
     /// The frame as it goes on: unchanged, cut at the greeting's end, or
     /// [`Mapped::Ignore`] for what is dropped.
     mapped: Mapped,
-    /// Send [`OPENING_STOP`] now: the first part of the tail was dropped.
+    /// Send [`OPENING_STOP`] now: the first audible audio past the
+    /// greeting's budget was dropped.
     stop: bool,
 }
 
@@ -1599,18 +1620,29 @@ struct Guarded {
 ///
 /// Armed only on a session that greets, from the greeting until the caller
 /// speaks (their first transcript fragment) or the colony asks for speech
-/// itself (a `commentary` append). While armed, the model may speak until
-/// its transcript holds [`GREETING_SHARE`] of the spoken greeting's
-/// characters; the next sentence end after that point closes the greeting
-/// (read off the model's own transcript by its marks); without one, the
-/// greeting is closed hard at [`GREETING_HARD_SHARE`] of the spoken
-/// greeting's characters. From that end on, every
-/// transcript fragment of the model is dropped, and its audio passes only
-/// as far as the greeting's own length on the model's clock (the audio
-/// carries no timing of its own, the transcript does): the chunk in which
-/// that length runs out still passes, so the greeting is never cut, and
-/// what follows it does not. Audio that arrives before its transcript said
-/// where the greeting ends cannot be told apart and passes.
+/// itself (a `commentary` append). Two clocks, two halves:
+///
+/// - **Text.** The model may speak until its transcript holds
+///   [`GREETING_SHARE`] of the spoken greeting's characters; the next
+///   sentence end after that point closes the greeting (read off the
+///   model's own transcript by its marks); without one, the greeting is
+///   closed hard at [`GREETING_HARD_SHARE`] of the spoken greeting's
+///   characters. From that end on, every transcript fragment of the model
+///   is dropped, so the tail reaches neither the turn nor memory.
+/// - **Audio** (GH #1545). The transcript runs seconds ahead of the audio
+///   and the model streams silence before its first word, so the audio is
+///   measured on its own clock: from the first audible chunk on, it may
+///   carry [`greeting_budget_ms`] of the spoken greeting's characters, or
+///   of the characters said up to the sentence end that closed the
+///   greeting where that is more. The chunk in which the budget runs out
+///   still passes, so a greeting within it is never cut. Past the budget,
+///   audible audio is dropped, silence passes, and later transcript is
+///   dropped too; the budget closes the opening even when the transcript
+///   stalls before it said the greeting.
+///
+/// The model is told to stop ([`OPENING_STOP`]) once, when the first
+/// audible audio past the budget is dropped -- never because the transcript
+/// ran ahead, so never in the middle of the greeting.
 struct OpeningGuard {
     /// Whether the guard still watches the session.
     armed: bool,
@@ -1622,14 +1654,19 @@ struct OpeningGuard {
     hard: usize,
     /// The model's transcript of the opening answer passed so far.
     heard: String,
-    /// Whether the greeting has been said whole.
+    /// Whether the greeting has been said whole: from here on the model's
+    /// transcript is dropped.
     done: bool,
-    /// The model's clock at the first fragment of the opening answer.
-    first_ms: Option<u64>,
-    /// How much audio the greeting may carry, in ms, once its end is known.
-    budget_ms: Option<f64>,
-    /// The audio passed so far, in ms.
-    passed_ms: f64,
+    /// The characters of the spoken greeting, the base of the audio budget.
+    spoken_chars: usize,
+    /// How much audio the greeting may carry, in ms, from its first audible
+    /// chunk on.
+    budget_ms: f64,
+    /// The audio passed since the first audible chunk, in ms; `None` before
+    /// it.
+    spoken_ms: Option<f64>,
+    /// Whether the audio budget ran out: audible audio is dropped.
+    over: bool,
     /// Characters of the model's transcript dropped.
     dropped_chars: usize,
     /// Audio dropped, in ms.
@@ -1647,9 +1684,10 @@ impl OpeningGuard {
             hard: greeting_hard_limit(greeting),
             heard: String::new(),
             done: false,
-            first_ms: None,
-            budget_ms: None,
-            passed_ms: 0.0,
+            spoken_chars: spoken_greeting(greeting).chars().count(),
+            budget_ms: greeting_budget_ms(spoken_greeting(greeting).chars().count()),
+            spoken_ms: None,
+            over: false,
             dropped_chars: 0,
             dropped_ms: 0.0,
             stopped: false,
@@ -1680,9 +1718,15 @@ impl OpeningGuard {
         }
     }
 
-    /// One mapped frame through the guard. `ms_of` is the length of an
-    /// audio chunk on this session, in ms.
-    fn pass(&mut self, mapped: Mapped, session_id: &str, ms_of: impl Fn(&[u8]) -> f64) -> Guarded {
+    /// One mapped frame through the guard. `measure` gives an audio chunk's
+    /// length on this session in ms and whether any of it is audible
+    /// ([`audio_measure`]).
+    fn pass(
+        &mut self,
+        mapped: Mapped,
+        session_id: &str,
+        measure: impl Fn(&[u8]) -> (f64, bool),
+    ) -> Guarded {
         if !self.armed {
             return Guarded {
                 mapped,
@@ -1709,7 +1753,6 @@ impl OpeningGuard {
                 if self.closed() {
                     return self.drop_text(&delta);
                 }
-                self.first_ms.get_or_insert(start_ms);
                 // Sentence ends are read off everything heard so far, so a
                 // sentence split across fragments still ends where it ends.
                 let before = self.heard.chars().count();
@@ -1717,11 +1760,11 @@ impl OpeningGuard {
                 let limit = self.limit;
                 let hard = self.hard;
                 let after = before + delta.chars().count();
-                let end = sentence_ends(&whole)
+                let sentence = sentence_ends(&whole)
                     .into_iter()
                     .find(|&e| e > before && e >= limit)
-                    .filter(|&e| e <= hard)
-                    .or((after >= hard).then_some(hard.max(before)));
+                    .filter(|&e| e <= hard);
+                let end = sentence.or((after >= hard).then_some(hard.max(before)));
                 let Some(end) = end else {
                     self.heard = whole;
                     return Guarded {
@@ -1740,19 +1783,21 @@ impl OpeningGuard {
                 // provider's fragments carry no finer timing).
                 self.done = true;
                 self.heard = whole;
+                // A greeting said longer than the quote, up to its own
+                // sentence end, may carry its length in audio; a hard cut
+                // is no greeting's end and grants nothing (GH #1545).
+                if let Some(said) = sentence {
+                    self.budget_ms = greeting_budget_ms(said.max(self.spoken_chars));
+                }
                 let cut = end - before;
                 let total = delta.chars().count();
                 let kept: String = delta.chars().take(cut).collect();
                 let rest: String = delta.chars().skip(cut).collect();
                 let span = end_ms.saturating_sub(start_ms) as f64;
                 let greeting_end = start_ms as f64 + span * cut as f64 / total.max(1) as f64;
-                let first = self.first_ms.unwrap_or(start_ms) as f64;
-                self.budget_ms = Some((greeting_end - first).max(0.0));
-                let stop = if rest.trim().is_empty() {
-                    false
-                } else {
-                    self.drop_text(&rest).stop
-                };
+                if !rest.trim().is_empty() {
+                    self.drop_text(&rest);
+                }
                 Guarded {
                     mapped: Mapped::Emit(DuplexEvent::Transcript {
                         speaker: Speaker::Assistant,
@@ -1760,26 +1805,36 @@ impl OpeningGuard {
                         start_ms,
                         end_ms: greeting_end.round() as u64,
                     }),
-                    stop,
+                    stop: false,
                 }
             }
             Mapped::Audio(bytes) => {
-                let ms = ms_of(&bytes);
-                match self.budget_ms {
-                    Some(budget) if self.passed_ms >= budget => {
-                        self.dropped_ms += ms;
-                        Guarded {
-                            mapped: Mapped::Ignore,
-                            stop: self.first_drop(),
-                        }
+                let (ms, audible) = measure(&bytes);
+                // The audio clock starts with the first audible chunk: the
+                // silence the model streams before its first word is no
+                // part of the greeting (GH #1545).
+                if !self.over && (audible || self.spoken_ms.is_some()) {
+                    let spoken = self.spoken_ms.get_or_insert(0.0);
+                    if *spoken >= self.budget_ms {
+                        // The greeting's audio is used up: what follows is
+                        // the tail, on both clocks, also when the
+                        // transcript never closed the greeting.
+                        self.over = true;
+                        self.done = true;
+                    } else {
+                        *spoken += ms;
                     }
-                    _ => {
-                        self.passed_ms += ms;
-                        Guarded {
-                            mapped: Mapped::Audio(bytes),
-                            stop: false,
-                        }
-                    }
+                }
+                if self.over && audible {
+                    self.dropped_ms += ms;
+                    return Guarded {
+                        mapped: Mapped::Ignore,
+                        stop: self.first_drop(),
+                    };
+                }
+                Guarded {
+                    mapped: Mapped::Audio(bytes),
+                    stop: false,
                 }
             }
             other => Guarded {
@@ -1789,16 +1844,18 @@ impl OpeningGuard {
         }
     }
 
-    /// A piece of the model's transcript past the greeting is dropped.
+    /// A piece of the model's transcript past the greeting is dropped. The
+    /// transcript runs ahead of the audio, so its tail asks for no stop: the
+    /// greeting may still be playing (GH #1545).
     fn drop_text(&mut self, text: &str) -> Guarded {
         self.dropped_chars += text.chars().count();
         Guarded {
             mapped: Mapped::Ignore,
-            stop: self.first_drop(),
+            stop: false,
         }
     }
 
-    /// `true` exactly once: the first time anything is dropped.
+    /// `true` exactly once: the first time audible audio is dropped.
     fn first_drop(&mut self) -> bool {
         !std::mem::replace(&mut self.stopped, true)
     }
@@ -2013,6 +2070,20 @@ fn audio_ms(law: Option<Law>, rate: u32, bytes: &[u8]) -> f64 {
         bytes.len() / 2
     };
     samples as f64 * 1000.0 / f64::from(rate.max(1))
+}
+
+/// The length of one chunk of the model's audio in ms ([`audio_ms`]) and
+/// whether any 20 ms of it is audible (GH #1545), at the gate's default level
+/// ([`crate::voice::duck::DEFAULT_BARGE_LEVEL_DBFS`]): the adapter knows no
+/// line's own level, and the model's silence is far below any of them.
+fn audio_measure(law: Option<Law>, rate: u32, bytes: &[u8]) -> (f64, bool) {
+    let level = crate::voice::duck::linear(crate::voice::duck::DEFAULT_BARGE_LEVEL_DBFS);
+    let audible = match law {
+        Some(law) => crate::voice::duck::first_audible(&g711::expand(law, bytes), rate, level),
+        None => crate::voice::duck::first_audible(bytes, rate, level),
+    }
+    .is_some();
+    (audio_ms(law, rate, bytes), audible)
 }
 
 /// The model's audio for the client: G.711 expanded to PCM16, PCM16 as it is.
@@ -2854,6 +2925,12 @@ mod tests {
         assert_eq!(greeting_hard_limit("  "), 1);
     }
 
+    /// A test chunk's length (one ms per byte) and whether it is audible
+    /// (any byte not zero), for [`OpeningGuard::pass`].
+    fn measure(b: &[u8]) -> (f64, bool) {
+        (b.len() as f64, b.iter().any(|&x| x != 0))
+    }
+
     /// GH #1537: a tail run on without a sentence end is cut at twice the
     /// spoken greeting; the stop is asked for once.
     #[test]
@@ -2866,13 +2943,13 @@ mod tests {
                 end_ms,
             })
         };
-        let ms = |b: &[u8]| b.len() as f64;
+        let ms = measure;
         // Spoken greeting "Hi there" (8): half is 4, twice is 16.
         let mut guard = OpeningGuard::new(true, "Say \"Hi there\" now");
         let g = guard.pass(said("Hi there, but", 0, 1_300), "s", ms);
         assert!(!g.stop && matches!(g.mapped, Mapped::Emit(_)));
         let g = guard.pass(said(" listen, I fish", 1_300, 2_800), "s", ms);
-        assert!(g.stop, "the first dropped piece asks for the stop");
+        assert!(!g.stop, "dropped text alone asks for no stop (GH #1545)");
         match g.mapped {
             Mapped::Emit(DuplexEvent::Transcript { delta, end_ms, .. }) => {
                 assert_eq!(delta, " li", "cut at sixteen characters");
@@ -2884,12 +2961,18 @@ mod tests {
             guard.pass(said(" today.", 2_800, 3_500), "s", ms).mapped,
             Mapped::Ignore
         ));
+        assert_eq!(
+            guard.budget_ms,
+            greeting_budget_ms(8),
+            "a hard cut grants no budget beyond the spoken greeting"
+        );
     }
 
-    /// GH #1537: the greeting ends inside a fragment -- the fragment is cut
-    /// after the greeting, the stop is asked for once, later text and the
-    /// audio past the greeting's length are dropped, and the caller's first
-    /// words end the guard.
+    /// GH #1537, GH #1545: the greeting ends inside a fragment -- the
+    /// fragment is cut after the greeting and later text is dropped without
+    /// a stop; the audio passes up to its budget on the audio clock, audible
+    /// audio past it is dropped and asks for the stop once, silence passes;
+    /// the caller's first words end the guard.
     #[test]
     fn gh1537_the_opening_guard_cuts_after_the_greeting() {
         let said = |delta: &str, start_ms: u64, end_ms: u64| {
@@ -2900,12 +2983,13 @@ mod tests {
                 end_ms,
             })
         };
-        let ms = |b: &[u8]| b.len() as f64;
+        let ms = measure;
+        // "Say one sentence." (17): the budget is 1 000 + 17 * 90 = 2 530.
         let mut guard = OpeningGuard::new(true, "Say one sentence.");
         let g = guard.pass(said("Hello", 0, 500), "s", ms);
         assert!(!g.stop);
         let g = guard.pass(said(" there. I went", 500, 1_500), "s", ms);
-        assert!(g.stop, "the first dropped piece asks for the stop");
+        assert!(!g.stop, "the transcript runs ahead: its tail asks no stop");
         match g.mapped {
             Mapped::Emit(DuplexEvent::Transcript { delta, end_ms, .. }) => {
                 assert_eq!(delta, " there.");
@@ -2913,23 +2997,31 @@ mod tests {
             }
             _ => panic!("the greeting's part passes"),
         }
-        // The greeting is 1 000 ms long: 600 + 600 passes (the chunk that
-        // runs over is still the greeting's), the next chunk is dropped.
-        assert!(matches!(
-            guard.pass(Mapped::Audio(vec![0; 600]), "s", ms).mapped,
-            Mapped::Audio(_)
-        ));
-        assert!(matches!(
-            guard.pass(Mapped::Audio(vec![0; 600]), "s", ms).mapped,
-            Mapped::Audio(_)
-        ));
-        let g = guard.pass(Mapped::Audio(vec![0; 600]), "s", ms);
+        // Five audible chunks of 600 start inside 2 530 and pass (the last
+        // runs over); the sixth is dropped and asks for the stop, once.
+        for _ in 0..5 {
+            assert!(matches!(
+                guard.pass(Mapped::Audio(vec![9; 600]), "s", ms).mapped,
+                Mapped::Audio(_)
+            ));
+        }
+        let g = guard.pass(Mapped::Audio(vec![9; 600]), "s", ms);
+        assert!(matches!(g.mapped, Mapped::Ignore) && g.stop, "the stop");
+        let g = guard.pass(Mapped::Audio(vec![9; 600]), "s", ms);
         assert!(matches!(g.mapped, Mapped::Ignore) && !g.stop, "asked once");
+        assert!(
+            matches!(
+                guard.pass(Mapped::Audio(vec![0; 600]), "s", ms).mapped,
+                Mapped::Audio(_)
+            ),
+            "silence past the budget passes"
+        );
         assert!(matches!(
             guard.pass(said(" fishing.", 1_500, 2_000), "s", ms).mapped,
             Mapped::Ignore
         ));
         assert_eq!(guard.dropped_chars, " I went".len() + " fishing.".len());
+        assert_eq!(guard.dropped_ms, 1_200.0);
         let caller = Mapped::Emit(DuplexEvent::Transcript {
             speaker: Speaker::User,
             delta: "Hi".to_string(),
@@ -2947,9 +3039,81 @@ mod tests {
             Mapped::Emit(_)
         ));
         assert!(matches!(
-            guard.pass(Mapped::Audio(vec![0; 600]), "s", ms).mapped,
+            guard.pass(Mapped::Audio(vec![9; 600]), "s", ms).mapped,
             Mapped::Audio(_)
         ));
+    }
+
+    /// GH #1545: silence before the first audible chunk does not count
+    /// against the budget, and the budget closes the opening without any
+    /// transcript: later text is dropped.
+    #[test]
+    fn gh1545_the_audio_clock_starts_at_the_first_audible_chunk() {
+        let ms = measure;
+        // "Hi there" (8): the budget is 1 000 + 8 * 90 = 1 720.
+        let mut guard = OpeningGuard::new(true, "Say \"Hi there\" now");
+        for _ in 0..10 {
+            let g = guard.pass(Mapped::Audio(vec![0; 600]), "s", ms);
+            assert!(matches!(g.mapped, Mapped::Audio(_)) && !g.stop);
+        }
+        assert_eq!(guard.spoken_ms, None, "leading silence is not counted");
+        for _ in 0..3 {
+            assert!(matches!(
+                guard.pass(Mapped::Audio(vec![9; 600]), "s", ms).mapped,
+                Mapped::Audio(_)
+            ));
+        }
+        let g = guard.pass(Mapped::Audio(vec![9; 600]), "s", ms);
+        assert!(matches!(g.mapped, Mapped::Ignore) && g.stop);
+        let g = guard.pass(
+            Mapped::Emit(DuplexEvent::Transcript {
+                speaker: Speaker::Assistant,
+                delta: "Hi".to_string(),
+                start_ms: 0,
+                end_ms: 300,
+            }),
+            "s",
+            ms,
+        );
+        assert!(
+            matches!(g.mapped, Mapped::Ignore),
+            "the budget closed the text too"
+        );
+    }
+
+    /// GH #1545: a greeting said longer than its quote, up to its own
+    /// sentence end, may carry its own length in audio.
+    #[test]
+    fn gh1545_a_longer_greeting_sentence_widens_the_budget() {
+        let mut guard = OpeningGuard::new(true, "Say \"Hi there\" now");
+        let g = guard.pass(
+            Mapped::Emit(DuplexEvent::Transcript {
+                speaker: Speaker::Assistant,
+                delta: "Hi there, pal. So".to_string(),
+                start_ms: 0,
+                end_ms: 900,
+            }),
+            "s",
+            measure,
+        );
+        assert!(!g.stop);
+        // "Hi there, pal." (14) ends inside twice the quote (16).
+        assert_eq!(guard.budget_ms, greeting_budget_ms(14));
+    }
+
+    /// GH #1545: on a G.711 session a chunk is measured after expansion:
+    /// the law's silence byte is silent, speech is audible.
+    #[test]
+    fn gh1545_audio_measure_reads_g711_and_pcm() {
+        let rate = 8_000;
+        let silence = g711::compress(Law::A, &vec![0u8; 320]);
+        let (ms, audible) = audio_measure(Some(Law::A), rate, &silence);
+        assert_eq!(ms, 20.0);
+        assert!(!audible);
+        let loud: Vec<u8> = (0..160).flat_map(|_| 8_000i16.to_le_bytes()).collect();
+        assert!(audio_measure(Some(Law::A), rate, &g711::compress(Law::A, &loud)).1);
+        assert!(audio_measure(None, rate, &loud).1);
+        assert!(!audio_measure(None, rate, &[0u8; 320]).1);
     }
 
     /// GH #1537: a session that does not greet is never guarded.
@@ -2965,7 +3129,7 @@ mod tests {
                     end_ms: 900,
                 }),
                 "s",
-                |b| b.len() as f64,
+                measure,
             );
             assert!(!g.stop);
             assert!(

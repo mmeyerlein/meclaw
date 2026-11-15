@@ -27,6 +27,18 @@
 //! - (g) the caller hangs up during the tail: what the model says while the
 //!   close is under way does not pass either.
 //!
+//! GH #1545 moved the audio half of the promise to the audio clock: the
+//! transcript runs seconds ahead of the audio and the model streams silence
+//! before its first word, so a budget read off transcript timestamps cut the
+//! greeting itself. The greeting's audio now passes from its first audible
+//! chunk up to a budget of [`BUDGET_LEAD_MS`] plus [`BUDGET_MS_PER_CHAR`] per
+//! character of the spoken greeting; audible audio past that is dropped and
+//! only then is the model told to stop. Two more pins:
+//! - (h) leading silence and a transcript far ahead of the audio: the whole
+//!   greeting reaches the caller and no stop is sent;
+//! - (i) the transcript stalls inside the greeting: the audio still ends at
+//!   the budget, the stop is sent once, and the later tail text is dropped.
+//!
 //! Measured with the shipped `gpt_live` adapter against the strict mock
 //! socket of `meclaw_testing::mock_gpt_live`: (a) inside a duplex cell, (b)
 //! to (g) on the adapter's own channels. Loopback sockets, so real time
@@ -67,6 +79,28 @@ const TAIL_WORD: &str = "Quillfeather";
 
 /// One 100 ms chunk of PCM16 at the cell's rate.
 const CHUNK_BYTES: usize = (duplex_cell::RATE as usize / 10) * 2;
+
+/// The audio budget of the opening answer before the greeting's characters
+/// count (GH #1545), as the adapter has it.
+const BUDGET_LEAD_MS: usize = 1_000;
+
+/// The audio budget per character of the spoken greeting (GH #1545), as the
+/// adapter has it.
+const BUDGET_MS_PER_CHAR: usize = 90;
+
+/// The characters of the spoken greeting of [`GREETING`] (all of it).
+const GREETING_CHARS: usize = 50;
+
+/// The characters of the spoken greeting of [`QUOTING_GREETING`] (the
+/// quotation).
+const QUOTED_CHARS: usize = 48;
+
+/// How many 100 ms chunks of audible audio pass on a greeting of `chars`
+/// spoken characters (GH #1545): every chunk that starts inside the budget,
+/// so the one in which it runs out still passes.
+fn budget_chunks(chars: usize) -> usize {
+    (BUDGET_LEAD_MS + BUDGET_MS_PER_CHAR * chars).div_ceil(100)
+}
 
 /// A `gpt_live` block against `mock` that greets with `greeting`.
 fn gpt_live_params(mock: &MockGptLive, greeting: &str) -> GptLiveParams {
@@ -140,15 +174,19 @@ async fn gh1537_the_tail_of_the_opening_answer_reaches_nobody() {
     // The greeting, one sentence over one second, and its second of audio.
     actions.push(model(SAID_GREETING, 0, 1_000));
     actions.extend(audio(10, 0x11));
-    // The invented tail, two more sentences and two seconds of audio.
+    // The invented tail, two more sentences and six seconds of audio: it
+    // runs past the audio budget (GH #1545).
     actions.push(model(" I just came back from the lake.", 1_000, 2_000));
     actions.push(model(" My bicycle Quillfeather was in it.", 2_000, 3_000));
-    actions.extend(audio(20, 0x22));
-    // The marker: the adapter told the model to stop. Then the call ends.
+    actions.extend(audio(60, 0x22));
+    // The marker: the adapter told the model to stop. The call ends once
+    // the caller answered, so the cell does not discard audio still on its
+    // way when the session closes.
     actions.push(LiveAction::ExpectAppend {
         kind: "instructions",
         contains: "",
     });
+    actions.push(LiveAction::RequireAudioBytes(1));
     actions.push(LiveAction::CloseWith {
         reason: "normal",
         usage_seconds: 3.0,
@@ -172,10 +210,26 @@ async fn gh1537_the_tail_of_the_opening_answer_reaches_nobody() {
     .await;
     let (mut client, _hello) = live.connect("session=gh1537-a&mode=auto").await;
 
+    // The caller hears the audio budget's worth, then answers.
+    let budget = budget_chunks(GREETING_CHARS) * CHUNK_BYTES;
+    let mut heard = 0usize;
+    while heard < budget {
+        let frame = client
+            .next_frame(marker())
+            .await
+            .unwrap_or_else(|_| panic!("HANG: the caller heard {heard} of {budget} bytes"));
+        if let Some(bytes) = frame.as_audio() {
+            heard += bytes.len();
+        }
+    }
+    client
+        .send_audio(&[0u8; CHUNK_BYTES])
+        .await
+        .expect("the socket is open");
+
     let seen = until_final(&mut live).await;
 
-    // Everything the caller heard, up to the end of the call.
-    let mut heard = 0usize;
+    // Everything else the caller heard, up to the end of the call.
     while let Ok(frame) = client.next_frame(marker()).await {
         if let Some(bytes) = frame.as_audio() {
             heard += bytes.len();
@@ -198,9 +252,8 @@ async fn gh1537_the_tail_of_the_opening_answer_reaches_nobody() {
         "the greeting itself is spoken: {seen:?}"
     );
     assert_eq!(
-        heard,
-        10 * CHUNK_BYTES,
-        "the caller hears the greeting's audio and none of the tail's"
+        heard, budget,
+        "the caller hears the greeting's audio and the tail's only up to the audio budget"
     );
     let stops = instruction_appends(&mock).await;
     assert_eq!(stops.len(), 1, "the model is told once to stop: {stops:?}");
@@ -402,7 +455,7 @@ async fn gh1537_the_quoted_greeting_stops_before_the_first_tail_sentence() {
     actions.extend(audio(10, 0x55));
     actions.push(model(" I just came back from the lake.", 1_000, 2_000));
     actions.push(model(" My bicycle Quillfeather was in it.", 2_000, 3_000));
-    actions.extend(audio(20, 0x66));
+    actions.extend(audio(60, 0x66));
     let mock = opening_mock(actions).await;
 
     let (said, heard) = said_and_heard(start_greeting(&mock, false, QUOTING_GREETING)).await;
@@ -411,7 +464,11 @@ async fn gh1537_the_quoted_greeting_stops_before_the_first_tail_sentence() {
         said, "Hello, this is your companion, glad we can talk.",
         "the greeting passes, the tail's first sentence does not"
     );
-    assert_eq!(heard, 10 * CHUNK_BYTES, "only the greeting's audio passes");
+    assert_eq!(
+        heard,
+        budget_chunks(QUOTED_CHARS) * CHUNK_BYTES,
+        "audio passes up to the audio budget, no further"
+    );
     let stops = instruction_appends(&mock).await;
     assert_eq!(stops.len(), 1, "the model is told once to stop: {stops:?}");
 }
@@ -426,7 +483,7 @@ async fn gh1537_a_greeting_in_two_short_sentences_passes_whole() {
     ];
     actions.extend(audio(15, 0x77));
     actions.push(model(" I just came back from the lake.", 1_500, 2_500));
-    actions.extend(audio(10, 0x88));
+    actions.extend(audio(50, 0x88));
     let mock = opening_mock(actions).await;
 
     let (said, heard) = said_and_heard(start_greeting(&mock, false, QUOTING_GREETING)).await;
@@ -435,7 +492,11 @@ async fn gh1537_a_greeting_in_two_short_sentences_passes_whole() {
         said, "Hello! This is your companion, glad we can talk.",
         "both sentences of the greeting pass, the tail does not"
     );
-    assert_eq!(heard, 15 * CHUNK_BYTES, "only the greeting's audio passes");
+    assert_eq!(
+        heard,
+        budget_chunks(QUOTED_CHARS) * CHUNK_BYTES,
+        "audio passes up to the audio budget, no further"
+    );
     let stops = instruction_appends(&mock).await;
     assert_eq!(stops.len(), 1, "the model is told once to stop: {stops:?}");
 }
@@ -453,7 +514,7 @@ async fn gh1537_a_run_on_tail_is_cut_at_twice_the_greeting() {
     let mut actions = vec![model(SAID, 0, 1_000)];
     actions.extend(audio(10, 0x99));
     actions.push(model(RUN_ON, 1_000, 2_000));
-    actions.extend(audio(20, 0xAA));
+    actions.extend(audio(60, 0xAA));
     let mock = opening_mock(actions).await;
 
     let (said, heard) = said_and_heard(start_greeting(&mock, false, QUOTING_GREETING)).await;
@@ -463,8 +524,8 @@ async fn gh1537_a_run_on_tail_is_cut_at_twice_the_greeting() {
     assert!(!said.contains(TAIL_WORD), "{said}");
     assert_eq!(
         heard,
-        15 * CHUNK_BYTES,
-        "audio passes up to the cut, half-way through the run-on fragment"
+        budget_chunks(QUOTED_CHARS) * CHUNK_BYTES,
+        "audio passes up to the budget of the spoken greeting, not of the text cut"
     );
     let stops = instruction_appends(&mock).await;
     assert_eq!(stops.len(), 1, "the model is told once to stop: {stops:?}");
@@ -486,7 +547,7 @@ async fn gh1537_a_close_during_the_tail_passes_none_of_it() {
     ));
     actions.extend(audio(10, 0xBB));
     actions.push(model(" I just came back from the lake.", 1_000, 2_000));
-    actions.extend(audio(10, 0xCC));
+    actions.extend(audio(50, 0xCC));
     // The stop is acknowledged; the test closes the session on that
     // acknowledgement. The mock then stops reading, so it does not answer the
     // `session.close` at once as it otherwise would: like the real service,
@@ -547,7 +608,11 @@ async fn gh1537_a_close_during_the_tail_passes_none_of_it() {
         said, "Hello, this is your companion, glad we can talk.",
         "nothing of the tail passes, before or after the close"
     );
-    assert_eq!(heard, 10 * CHUNK_BYTES, "only the greeting's audio passes");
+    assert_eq!(
+        heard,
+        budget_chunks(QUOTED_CHARS) * CHUNK_BYTES,
+        "audio passes up to the audio budget, nothing after the close"
+    );
 }
 
 /// The audio that left a session whose events were read up to its `Closed`.
@@ -560,4 +625,101 @@ async fn heard_after_closed(session: Session) -> usize {
         .expect("the audio reader ran");
     let _ = tokio::time::timeout(marker(), session.join).await;
     heard
+}
+
+/// Pin (h), GH #1545: the model streams 1.5 s of silence before its first
+/// word, its transcript says the whole greeting within one second while the
+/// greeting's audio takes almost five, and a short tail follows in the
+/// transcript only. Every chunk of the greeting reaches the caller, the
+/// silence around it too, the tail's text does not, and nothing tells the
+/// model to stop: no audible audio went past the budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1545_a_greeting_after_leading_silence_reaches_the_caller_whole() {
+    let mut actions = vec![LiveAction::ExpectAppend {
+        kind: "commentary",
+        contains: "Say this one sentence",
+    }];
+    actions.extend(audio(15, 0x00));
+    actions.push(model(
+        "Hello, this is your companion, glad we can talk.",
+        0,
+        1_000,
+    ));
+    actions.push(model(" So, Quillfeather.", 1_000, 1_300));
+    actions.extend(audio(48, 0x55));
+    actions.extend(audio(10, 0x00));
+    actions.push(LiveAction::CloseWith {
+        reason: "normal",
+        usage_seconds: 7.0,
+    });
+    let mock = MockGptLive::start(LiveScript {
+        actions,
+        ..LiveScript::default()
+    })
+    .await
+    .expect("the mock socket binds");
+
+    let (said, heard) = said_and_heard(start_greeting(&mock, false, QUOTING_GREETING)).await;
+
+    assert_eq!(
+        said, "Hello, this is your companion, glad we can talk.",
+        "the greeting's text passes, the tail's does not"
+    );
+    assert!(
+        48 < budget_chunks(QUOTED_CHARS) && 15 + 48 > budget_chunks(QUOTED_CHARS),
+        "the script tells counted silence from uncounted"
+    );
+    assert_eq!(
+        heard,
+        (15 + 48 + 10) * CHUNK_BYTES,
+        "the greeting reaches the caller whole, with the silence around it"
+    );
+    let stops = instruction_appends(&mock).await;
+    assert!(
+        stops.is_empty(),
+        "no audible audio past the budget, no stop: {stops:?}"
+    );
+}
+
+/// Pin (i), GH #1545: the transcript stops after a few words of the greeting
+/// and the model talks on for eight seconds. The audio still ends at the
+/// budget, the model is told once to stop, and transcript that comes later
+/// is dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1545_a_stalled_transcript_still_ends_the_opening_at_the_budget() {
+    let mut actions = vec![LiveAction::ExpectAppend {
+        kind: "commentary",
+        contains: "Say this one sentence",
+    }];
+    actions.push(model("Hello, this is", 0, 600));
+    actions.extend(audio(80, 0x66));
+    actions.push(model(" my bicycle Quillfeather.", 600, 1_200));
+    actions.push(LiveAction::ExpectAppend {
+        kind: "instructions",
+        contains: "",
+    });
+    actions.push(LiveAction::CloseWith {
+        reason: "normal",
+        usage_seconds: 8.0,
+    });
+    let mock = MockGptLive::start(LiveScript {
+        actions,
+        ..LiveScript::default()
+    })
+    .await
+    .expect("the mock socket binds");
+
+    let (said, heard) = said_and_heard(start_greeting(&mock, false, QUOTING_GREETING)).await;
+
+    assert_eq!(
+        said, "Hello, this is",
+        "the tail's transcript does not pass"
+    );
+    assert_eq!(
+        heard,
+        budget_chunks(QUOTED_CHARS) * CHUNK_BYTES,
+        "the audio ends at the budget although the transcript never closed the greeting"
+    );
+    let stops = instruction_appends(&mock).await;
+    assert_eq!(stops.len(), 1, "the model is told once to stop: {stops:?}");
 }

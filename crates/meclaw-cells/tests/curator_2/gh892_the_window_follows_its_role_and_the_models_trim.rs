@@ -184,8 +184,11 @@ async fn gh892_the_window_follows_its_role_and_the_models_trim() {
     until_row(
         &ledger,
         // GH #1448: the plan of blocks the answers write ahead names the
-        // turn too -- the rebuild's plan is the one with a cover.
-        "SELECT value FROM state WHERE key LIKE 'window_plan:%' AND value LIKE '%\"cover\":%'",
+        // turn too, cover included, once any rebuild wrote one -- so the wait
+        // reads the plan's `released` list, which only the rebuild that took
+        // the release writes (GH #1546: under load an earlier rebuild made
+        // the cover test pass before it).
+        "SELECT json_extract(value, '$.released') FROM state WHERE key LIKE 'window_plan:%'",
         &first_id,
         "a cold cache rebuilt the window with the release in its plan",
     )

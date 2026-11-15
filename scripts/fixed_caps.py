@@ -66,6 +66,16 @@ values it allows, and what the source around the value has to show --
                    a key of the config JSON, a string literal or a field
                    access in Rust code.
 
+A rule names its `values` or, for a map a render script writes from the model
+catalog (`input_soft_fallback` {model_id: input_soft}), its `catalog` field
+instead (GH #1544): the hit `<key>.<model_id> = v` is justified exactly while
+the catalog row of `<model_id>` holds `v` in that field. A current render is
+green; a stale render, a model without a row and a missing catalog are not
+justified. The catalog is the file `--catalog` names, else `CATALOG_FILE` of
+the tree, else -- only in a tree without one (a repository whose catalog comes
+from a release asset) -- the file `FIXED_CAPS_CATALOG` names. A diff at the
+tree's catalog grades the whole scope: a new row value can stale a render.
+
 Every rule carries its reason in English. The baseline is a count per
 fingerprint `<path>|<name>|<value>` (line numbers stay out, so moving code is
 no finding); one occurrence more than the baseline holds is RED.
@@ -95,6 +105,8 @@ USAGE
 =====
     fixed_caps.py [--repo DIR]                 grade the whole scope
     fixed_caps.py [--repo DIR] --list          every finding with its verdict
+    fixed_caps.py [--repo DIR] [--catalog FILE] ...
+                                               read the catalog rules against FILE
     fixed_caps.py [--repo DIR] --write-baseline
                                                write the baseline from the tree
                                                (every finding no rule justifies)
@@ -119,8 +131,12 @@ import wall_clock  # the frozen-copy reading (OR-58-116)
 CHECK = "fixed-caps"
 RULES_FILE = "scripts/fixed_caps_rules.json"
 BASELINE_FILE = "scripts/fixed_caps_baseline.json"
+# The model catalog a `catalog` rule reads (GH #1544); `--catalog` names
+# another file, the environment one for a tree that carries none.
+CATALOG_FILE = "templates/llm-registry/store/seed/models.jsonl"
+CATALOG_ENV = "FIXED_CAPS_CATALOG"
 # The files whose change makes the precheck grade the whole scope.
-SELF_FILES = ("scripts/fixed_caps.py", RULES_FILE, BASELINE_FILE)
+SELF_FILES = ("scripts/fixed_caps.py", RULES_FILE, BASELINE_FILE, CATALOG_FILE)
 
 Finding = collections.namedtuple("Finding", "level check message")
 # kind: "NUM" or "RATE"; path: repo-relative; line: the line in the file (for a
@@ -705,6 +721,35 @@ def load_rules(repo):
     return rules
 
 
+def load_catalog(repo, path=None):
+    """model_id -> row of the catalog (`models.jsonl`, its schema line aside):
+    `path`, else `CATALOG_FILE` of the tree, else -- a tree without one -- the
+    file `FIXED_CAPS_CATALOG` names. Empty when no file is found: a catalog
+    rule then justifies nothing."""
+    own = os.path.join(repo, CATALOG_FILE)
+    if not path:
+        path = own if os.path.isfile(own) else os.environ.get(CATALOG_ENV)
+    text = _read(path) if path else None
+    rows = {}
+    for line in (text or "").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("model_id"), str):
+            rows[row["model_id"]] = row
+    return rows
+
+
+def _rendered(hit, field, catalog):
+    """`hit` is `<key>.<model_id> = v` and the catalog row of `<model_id>`
+    holds `v` in `field`."""
+    _, sep, model = str(hit.name).partition(".")
+    row = (catalog or {}).get(model) if sep else None
+    v = row.get(field) if row else None
+    return _num(v) and v == hit.value
+
+
 def parse_baseline(text):
     """fingerprint -> count of a baseline text."""
     return {"%s|%s|%s" % (e["path"], e["name"], e["value"]): int(e["count"])
@@ -725,12 +770,16 @@ def fp_path(fp):
     return path[:-len("#script")] if path.endswith("#script") else path
 
 
-def rule_for(hit, rules):
-    """The first rule that justifies `hit`, else None."""
+def rule_for(hit, rules, catalog=None):
+    """The first rule that justifies `hit`, else None; `catalog` (model_id ->
+    row) answers the catalog rules."""
     for r in rules:
         if not r["_names"].search(str(hit.name)):
             continue
-        if hit.value not in r.get("values", ()):
+        if "catalog" in r:
+            if not _rendered(hit, r["catalog"], catalog):
+                continue                  # stale, no row or no catalog: not justified
+        elif hit.value not in r.get("values", ()):
             continue                      # a rule without values justifies no value
         if "kind" in r and hit.kind != r["kind"]:
             continue
@@ -749,16 +798,17 @@ def rule_for(hit, rules):
     return None
 
 
-def grade(repo, paths, whole=False, copies=frozenset()):
+def grade(repo, paths, whole=False, copies=frozenset(), catalog=None):
     """The findings over `paths` (the whole scope with `whole`); a frozen copy
-    of `copies` is stock and not graded."""
+    of `copies` is stock and not graded; `catalog` names the catalog file."""
     rules, base = load_rules(repo), load_baseline(repo)
+    rows = load_catalog(repo, catalog)
     by_fp = collections.OrderedDict()
     for path in paths:
         if path in copies:
             continue
         for hit in hits_of(repo, path):
-            if rule_for(hit, rules) is None:
+            if rule_for(hit, rules, rows) is None:
                 by_fp.setdefault(fingerprint(hit), []).append(hit)
     out = []
     for fp, hits in by_fp.items():
@@ -816,14 +866,14 @@ def ratchet(repo, base):
             for fp, held, n in grown if fp_path(fp) not in copies]
 
 
-def grade_tree(repo, base=tb._UNSET):
+def grade_tree(repo, base=tb._UNSET, catalog=None):
     """The whole scope of the tree at `repo` against its merge base: frozen
     copies aside, the baseline held against the base's (the CLI and the
     tree's own pin)."""
     if base is tb._UNSET:
         base = tb.merge_base(repo)
     files = scope_files(repo)
-    out = grade(repo, files, whole=True, copies=copies_of(repo, base, files))
+    out = grade(repo, files, whole=True, copies=copies_of(repo, base, files), catalog=catalog)
     return out + (ratchet(repo, base) if base else [])
 
 
@@ -847,12 +897,12 @@ def scan(files, repo, base=tb._UNSET):
     return grade(repo, paths, copies=copies_of(repo, base, paths)) + out
 
 
-def write_baseline(repo):
-    rules = load_rules(repo)
+def write_baseline(repo, catalog=None):
+    rules, rows = load_rules(repo), load_catalog(repo, catalog)
     counts = collections.Counter()
     for path in scope_files(repo):
         for hit in hits_of(repo, path):
-            if rule_for(hit, rules) is None:
+            if rule_for(hit, rules, rows) is None:
                 counts[(fingerprint(hit).rsplit("|", 2)[0], hit.name, hit.value)] += 1
     entries = [{"path": p, "name": n, "value": v, "count": c}
                for (p, n, v), c in sorted(counts.items(), key=lambda kv: (kv[0][0], kv[0][1], str(kv[0][2])))]
@@ -870,24 +920,26 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    ap.add_argument("--catalog", help="the catalog file the catalog rules read (default: %s of the tree)"
+                    % CATALOG_FILE)
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--write-baseline", action="store_true", help="write the baseline from the tree")
     mode.add_argument("--list", action="store_true", help="every finding with its verdict")
     args = ap.parse_args(argv)
     repo = os.path.abspath(args.repo)
     if args.write_baseline:
-        n, total = write_baseline(repo)
+        n, total = write_baseline(repo, args.catalog)
         print("%s: %d entries, %d occurrences" % (BASELINE_FILE, n, total))
         return 0
     if args.list:
-        rules, base = load_rules(repo), load_baseline(repo)
+        rules, base, rows = load_rules(repo), load_baseline(repo), load_catalog(repo, args.catalog)
         for path in scope_files(repo):
             for hit in hits_of(repo, path):
-                r = rule_for(hit, rules)
+                r = rule_for(hit, rules, rows)
                 verdict = "rule:" + r["id"] if r else ("baseline" if fingerprint(hit) in base else "NEW")
                 print("%s\t%s\t%s\t%s\t%s" % (verdict, hit.kind, location(hit), hit.name, hit.value))
         return 0
-    findings = grade_tree(repo)
+    findings = grade_tree(repo, catalog=args.catalog)
     for f in findings:
         print("%s %s: %s" % (f.level, f.check, f.message))
     red = sum(1 for f in findings if f.level == "RED")

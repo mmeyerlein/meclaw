@@ -101,6 +101,10 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.88.1: this patch release keeps the greeting of a live voice session whole: the guard on the opening answer of a
+  `gpt_live` session measures the greeting on the audio clock instead of the transcript, so a greeting is no longer
+  cut mid-sentence, an invented tail is still stopped after the greeting's budget, and a stalled transcript no
+  longer lets it through.
 - v0.88.0: this release finishes the curator's new form: bounds, budgets and rates come from the target's catalog
   row instead of fixed numbers, no shipped default names a composition, product or model, and the window keeps what
   a conversation needs without word lists:

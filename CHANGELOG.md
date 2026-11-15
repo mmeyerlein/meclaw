@@ -12,6 +12,18 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.88.1] — 2026-11-15
+
+This patch release keeps the greeting of a live voice session whole: the guard on the opening answer of a `gpt_live` session measures the greeting on the audio clock instead of the transcript, so a greeting is no longer cut mid-sentence, an invented tail is still stopped after the greeting's budget, and a stalled transcript no longer lets it through ([#1545](https://github.com/mmeyerlein/meclaw/issues/1545)). Two kit fixes ship with it: the gate-receipt stations are never served from the cache, and a `fixed-caps` rule can read values rendered from the model catalog ([#1543](https://github.com/mmeyerlein/meclaw/issues/1543), [#1544](https://github.com/mmeyerlein/meclaw/issues/1544)).
+
+### Fixed
+
+- `gpt_live`: the guard on the opening answer of a greeting session no longer cuts the greeting itself. It measured the greeting's audio against the transcript's timestamps, which run seconds ahead of the audio, and counted the silence before the first word; on lines with an early session during ringing only 1.3 to 2.5 s of a 6 s greeting reached the caller, and the stop instruction went out mid-sentence. The audio is now measured on its own clock from the first audible chunk, with a budget of 1 000 ms plus 90 ms per character of the greeting; audible audio past it is dropped and only then is the model told to stop. The budget also closes the opening when the transcript stalls, which had let a whole invented monologue through ([#1545](https://github.com/mmeyerlein/meclaw/issues/1545)).
+
+- Kit: the gate-receipt stations (`corpus`, `scenarios:builder`, `recall-harness`, `roadmap-anchors`) are never cached and run fresh in every mode, so a second release gate on the same lane within 24 hours no longer serves them from the cache; the export audit proves R11, R12, R14 and R17 only with a GREEN station of the gate it reads, so a CACHED one had turned the export red although the gate was green ([#1543](https://github.com/mmeyerlein/meclaw/issues/1543)).
+- Kit: the precheck check `fixed-caps` reads a map rendered from the model catalog (`input_soft_fallback` {model_id: input_soft}) against the catalog instead of as fixed numbers: a rule may name a `catalog` field instead of `values`, and the value is justified exactly while the model's row holds it -- a current render is green, a stale render or a model without a row is red. The catalog is the file `--catalog` names, else the tree's `templates/llm-registry/store/seed/models.jsonl` (a diff at it grades every render), else -- in a tree without one -- the file `FIXED_CAPS_CATALOG` names ([#1544](https://github.com/mmeyerlein/meclaw/issues/1544)).
+- **Template versions (#1545):** third digit for the pins that follow, `builder@1.34.1`, `builder-librarian@2.2.113`, `meclaw-os@2.4.11`.
+
 ## [0.88.0] — 2026-11-15
 
 This release finishes the curator's new form: bounds, budgets and rates come from the target's catalog row instead of fixed numbers, no shipped default names a composition, product or model, and the window keeps what a conversation needs without word lists:

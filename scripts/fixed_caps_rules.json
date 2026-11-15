@@ -33,6 +33,12 @@
    "reason": "The window of a target with no catalog row; with a row, the row's input_soft sizes the window."
   },
   {
+   "id": "input-soft-fallback-rendered",
+   "names": "^input_soft_fallback\\..+$",
+   "catalog": "input_soft",
+   "reason": "A map {model_id: input_soft} a render script writes from the model catalog; each value is justified only while it is the input_soft of that model's catalog row, so a stale render or a model without a row stays a finding."
+  },
+  {
    "id": "embed-input-soft-fallback",
    "names": "^embed_input_soft_fallback$",
    "values": [2048],

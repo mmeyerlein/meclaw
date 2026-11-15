@@ -8,6 +8,7 @@ built binary. These tests build a tiny git workspace from
 JSON: no cargo runs here.
 """
 
+import ast
 import datetime
 import json
 import os
@@ -24,7 +25,7 @@ FIX = HERE / "fixtures" / "pipeline_w3"
 sys.path.insert(0, str(SCRIPTS))
 
 from scripts.pipeline import cache, executor, gate, narrow, store  # noqa: E402
-from scripts.tests import kit_time, store_isolation  # noqa: E402
+from scripts.tests import kit_time, private_tree, store_isolation  # noqa: E402
 
 FINGERPRINT = {"rustc": "rustc 1.80.0", "cargo": "cargo 1.80.0", "nextest": "0.9.143",
                "node": "v20.0.0", "playwright": "1.40.0", "linker": "cc 13",
@@ -591,7 +592,9 @@ class CacheTable(unittest.TestCase):
 
     def test_cache_wildcard_label_input(self):
         root = fixture_tree(self)
-        st = plain_station("scenarios:builder", ["python3", "x.py"])
+        # `scenarios:memory`, a cached station: `scenarios:builder` is NEVER
+        # cached since GH #1543 and so never judged here.
+        st = plain_station("scenarios:memory", ["python3", "x.py"])
         st["inputs"] = ["template:*"]
         st["reason"] = ["template:builder: templates/builder/template.json"]
         self.assertEqual(cache.uncovered_triggers(simple_plan([st]), root,
@@ -599,7 +602,7 @@ class CacheTable(unittest.TestCase):
         st["inputs"] = ["template:display"]
         self.assertEqual(cache.uncovered_triggers(simple_plan([st]), root,
                                                   fixture_metadata(root)),
-                         [("scenarios:builder", "template:builder: templates/builder/template.json")])
+                         [("scenarios:memory", "template:builder: templates/builder/template.json")])
 
 
 class DepInfoCli(unittest.TestCase):
@@ -700,6 +703,41 @@ class CacheStore(unittest.TestCase):
         self.assertEqual(found("strand", "lane-a"), ["k-clippy", "k-tests-x", "k-tests-y"])
         self.assertEqual(found("integration", "lane-c"),
                          ["k-clippy", "k-tests-x", "k-tests-y"])
+
+    def test_gate_receipt_stations_are_never_cached(self):
+        """GH #1543: the export audit proves R11/R12/R14/R17 only with a GREEN
+        station of this release gate; a CACHED one is no proof. Every
+        gate-receipt station is NEVER: no row is recorded, and a fresh GREEN
+        row of the same lane is no hit in any mode."""
+        stations = set(cache.GATE_RECEIPT_STATIONS)
+        self.assertEqual(stations, {"corpus", "scenarios:builder", "recall-harness",
+                                    "roadmap-anchors"})
+        self.assertEqual(sorted(stations - cache.NEVER), [])
+        keys = {(s, ""): {"key": "k-" + s, "inputs": [], "repo": "meclaw"} for s in stations}
+        cache.record(self.db, "run-000000000002", "lane-a", keys,
+                     [{"station": s, "part": "", "verdict": "GREEN"} for s in stations])
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM cache").fetchone()[0], 0)
+        now = datetime.datetime(2026, 11, 15, 6, 0, 0, tzinfo=datetime.timezone.utc)
+        for s in stations:
+            self.db.execute(
+                "INSERT OR REPLACE INTO cache VALUES (?, ?, '', 'GREEN', ?, 'lane-a', ?, ?)",
+                ("k-" + s, s, "run-000000000003", "2026-11-15T05:00:00Z",
+                 json.dumps({"repo": "meclaw", "inputs": []})))
+        for mode in ("release", "integration", "strand"):
+            self.assertEqual(cache.lookup(self.db, keys, "meclaw", mode, "lane-a", now), [], mode)
+
+    @private_tree.private("plans/export-fixtures/make_export.py")   # plans/ never travels
+    def test_gate_receipt_stations_are_the_export_audits(self):
+        """GH #1543: `cache.GATE_RECEIPT_STATIONS` is exactly the station set
+        `make_export.GATE_RECEIPT_STATIONS` reads as proof -- a new proof
+        station there without a NEVER entry here is red."""
+        src = (private_tree.REPO / "plans/export-fixtures/make_export.py").read_text(
+            encoding="utf-8")
+        node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                    and any(getattr(t, "id", None) == "GATE_RECEIPT_STATIONS"
+                            for t in n.targets))
+        self.assertEqual(set(ast.literal_eval(node.value).values()),
+                         set(cache.GATE_RECEIPT_STATIONS))
 
 
 class CacheBrowserDuty(unittest.TestCase):

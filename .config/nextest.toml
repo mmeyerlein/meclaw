@@ -256,6 +256,17 @@ success-output = "immediate-final"
 filter = 'binary_id(=meclaw-cells::gh867_a_display_runs_under_a_strict_csp_browser)'
 success-output = "immediate-final"
 
+# GH #1546: the leash of gh1061_the_organism in `default`, as `quota` has it
+# (60 s x 17 = 1020 s, >= 3x its P95 of 327 s under load, tv-br § M10m3). It
+# runs three daemons one after the other; its own hang marks add up past the
+# 240 s of `default`, and in the release gate (tests beside gate-selftest,
+# export-tree-kit and the browser stations) it ran 130-157 s and was killed at
+# 240 s after its verdict held -- a kill without a diagnosis. Only the leash
+# moves; every claim and every hang mark of the test stays.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw::gh1061_the_organism_example_starts_and_its_member_gets_the_key) & test(=gh1061_the_organism_example_starts_and_its_member_gets_the_key)'
+slow-timeout = { period = "60s", terminate-after = 17 }
+
 [[profile.ci.overrides]]
 filter = 'binary_id(=meclaw-cells::gh867_a_display_runs_under_a_strict_csp_browser)'
 success-output = "immediate-final"

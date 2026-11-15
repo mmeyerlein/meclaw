@@ -11,6 +11,8 @@ and runs the precheck itself (`precheck.run`) or the module over it. The
 fixtures are Python strings.
 """
 
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -373,7 +375,110 @@ class Rules(unittest.TestCase):
                 self.assertTrue(r["id"])
                 self.assertGreater(len(r["reason"].split()), 5)
                 self.assertTrue(r["names"].startswith("^") and r["names"].endswith("$"))
-                self.assertTrue(r.get("values"), "a rule without values would justify every value of its names")
+                # GH #1544: a catalog rule allows the row's value, never a list
+                self.assertTrue(bool(r.get("values")) != bool(r.get("catalog")),
+                                "a rule names its values or its catalog field, exactly one")
+
+
+CATALOG = fixed_caps.CATALOG_FILE
+
+
+def catalog(rows):
+    """A `models.jsonl`: the schema line, then one row a line."""
+    return "\n".join([json.dumps({"schema": {"model_id": "text", "input_soft": "int"}})]
+                     + [json.dumps(r) for r in rows]) + "\n"
+
+
+ROWS = [{"model_id": "vendor/model-1.5", "input_soft": 25000, "package": {"chars_per_token": 4}},
+        {"model_id": "other/big", "input_soft": 200000}]
+RENDERED = {"input_soft_fallback": {"vendor/model-1.5": 25000, "other/big": 200000}}
+
+
+class RenderedFromTheCatalog(unittest.TestCase):
+    """GH #1544: a map a render script writes from the catalog
+    (`input_soft_fallback` {model_id: input_soft}) is justified exactly while
+    each value is the catalog row's -- a current render is green, a stale one
+    or a model without a row is red."""
+
+    def setUp(self):
+        # the environment never answers a tree that carries its own catalog;
+        # these pins run without it unless they set it
+        old = os.environ.pop(fixed_caps.CATALOG_ENV, None)
+        if old is not None:
+            self.addCleanup(os.environ.__setitem__, fixed_caps.CATALOG_ENV, old)
+
+    def test_a_current_render_is_green(self):
+        tree = Tree(self, {CATALOG: catalog(ROWS), CFG: config("print(1)\n", RENDERED)})
+        self.assertEqual([], tree.red([CFG]))
+
+    def test_a_stale_render_is_red_with_its_model(self):
+        moved = [dict(ROWS[0], input_soft=30000), ROWS[1]]
+        tree = Tree(self, {CATALOG: catalog(moved), CFG: config("print(1)\n", RENDERED)})
+        red = [f.message for f in tree.red([CFG])]
+        self.assertEqual(1, len(red), red)
+        self.assertIn("input_soft_fallback.vendor/model-1.5 = 25000", red[0])
+
+    def test_a_model_without_a_row_is_red(self):
+        tree = Tree(self, {CATALOG: catalog(ROWS[1:]), CFG: config("print(1)\n", RENDERED)})
+        red = [f.message for f in tree.red([CFG])]
+        self.assertEqual(1, len(red), red)
+        self.assertIn("vendor/model-1.5", red[0])
+
+    def test_without_a_catalog_the_render_is_red(self):
+        tree = Tree(self, {CFG: config("print(1)\n", RENDERED)})
+        self.assertEqual(2, len(tree.red([CFG])))
+
+    def test_a_catalog_given_by_option_or_env_is_read(self):
+        """A repository whose catalog comes from a release asset names it:
+        `--catalog <file>` on the command line (also for `--list` and
+        `--write-baseline`), `FIXED_CAPS_CATALOG` for the precheck."""
+        tree = Tree(self, {CFG: config("print(1)\n", RENDERED)})
+        elsewhere = os.path.join(tree.root, "asset", "models.jsonl")
+        tree.write("asset/models.jsonl", catalog(ROWS))
+        self.assertEqual(1, fixed_caps.main(["--repo", tree.root]))
+        self.assertEqual(0, fixed_caps.main(["--repo", tree.root, "--catalog", elsewhere]))
+        listed = io.StringIO()
+        with contextlib.redirect_stdout(listed):
+            fixed_caps.main(["--repo", tree.root, "--list", "--catalog", elsewhere])
+        self.assertEqual(2, listed.getvalue().count("rule:input-soft-fallback-rendered"), listed.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()):
+            fixed_caps.main(["--repo", tree.root, "--write-baseline", "--catalog", elsewhere])
+        self.assertEqual({}, fixed_caps.load_baseline(tree.root))
+        os.environ[fixed_caps.CATALOG_ENV] = elsewhere
+        self.addCleanup(os.environ.pop, fixed_caps.CATALOG_ENV, None)
+        self.assertEqual([], tree.red([CFG]))
+
+    def test_the_trees_own_catalog_wins_over_the_env(self):
+        """The environment answers only a tree without a catalog: a stale render
+        of the core is red whatever `FIXED_CAPS_CATALOG` names."""
+        moved = [dict(ROWS[0], input_soft=30000), ROWS[1]]
+        tree = Tree(self, {CATALOG: catalog(moved), CFG: config("print(1)\n", RENDERED)})
+        tree.write("asset/models.jsonl", catalog(ROWS))
+        os.environ[fixed_caps.CATALOG_ENV] = os.path.join(tree.root, "asset", "models.jsonl")
+        self.addCleanup(os.environ.pop, fixed_caps.CATALOG_ENV, None)
+        self.assertEqual(1, len(tree.red([CFG])))
+
+    def test_a_diff_at_the_catalog_alone_grades_the_renders(self):
+        """A new row value can stale a render: the catalog is one of the check's
+        own files, its diff grades the whole scope."""
+        tree = Tree(self, {CATALOG: catalog(ROWS), CFG: config("print(1)\n", RENDERED)})
+        self.assertEqual([], tree.red([CATALOG]))
+        tree.write(CATALOG, catalog([dict(ROWS[0], input_soft=30000), ROWS[1]]))
+        red = [f.message for f in tree.red([CATALOG])]
+        self.assertEqual(1, len(red), red)
+        self.assertIn("vendor/model-1.5", red[0])
+
+    def test_a_catalog_rule_holds_only_its_field(self):
+        rules = {"about": "pin", "rules": [
+            {"id": "hard-by-model", "names": "^input_soft_fallback\\..+$", "catalog": "input_hard",
+             "reason": "a pin rule naming another field of the row than the map holds"}]}
+        rows = [dict(r, input_hard=r["input_soft"] * 2) for r in ROWS]
+        tree = Tree(self, {fixed_caps.RULES_FILE: json.dumps(rules), CATALOG: catalog(rows),
+                           CFG: config("print(1)\n", RENDERED)}, rules=False)
+        self.assertEqual(2, len(tree.red([CFG])))
+        tree.write(CFG, config("print(1)\n", {"input_soft_fallback": {"vendor/model-1.5": 50000,
+                                                                       "other/big": 400000}}))
+        self.assertEqual([], tree.red([CFG]))
 
 
 class WholeScope(unittest.TestCase):

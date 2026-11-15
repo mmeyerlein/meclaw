@@ -73,10 +73,20 @@ except (ImportError, ValueError):  # `pipeline` (the lane starter): a top-level 
 # of version 6 left `wait.mjs` and `lib/*.mjs` out and answer nothing.
 KEY_VERSION = 7
 
+# The gate-receipt stations: the export audit proves its rules R11 (`corpus`),
+# R12 (`scenarios:builder`), R14 (`recall-harness`) and R17 (`roadmap-anchors`)
+# only with a GREEN station of the gate it reads; a CACHED one is no proof, so a
+# second release gate on the same lane within RELEASE_AGE turned the export red
+# (GH #1543). The same set as the values of `GATE_RECEIPT_STATIONS` in
+# `plans/export-fixtures/make_export.py` (pinned in the private tree).
+GATE_RECEIPT_STATIONS = frozenset({"corpus", "scenarios:builder", "recall-harness",
+                                   "roadmap-anchors"})
+
 # Never cached (W3 plan item 5): `export-audit` reads the receipt, `build`
-# produces the artefacts the cached parts are derived from.
+# produces the artefacts the cached parts are derived from; the gate-receipt
+# stations always run fresh.
 NEVER = {"precheck", "corpus-committed", "export-audit", "persona-receipt", "build",
-         "build:browser"}
+         "build:browser"} | GATE_RECEIPT_STATIONS
 
 CACHEABLE_VERDICTS = ("GREEN",)   # never a FLAKY: a finding is no cache entry (OR-TV-2)
 MAX_AGE = datetime.timedelta(days=7)
