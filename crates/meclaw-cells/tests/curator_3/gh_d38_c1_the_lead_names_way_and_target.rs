@@ -1,7 +1,7 @@
 //! GH #1447 (D38 C1, R-38-4 Nr. 4) -- the lead names the way and the target.
 //!
 //! WHY this file exists: the switch of the curator -- which way a call leaves
-//! on (`path_routes`, `way_of`), the memory rule (`memory_to_brain`), the
+//! on (`path_routes`, `way_of`), the memory rule (`recall_to_fallback`), the
 //! speculation's verdict, the escalation of the quick voice, the clarify
 //! turn, the bridge and the live feed -- lived spread over ~1 830 lines of
 //! `curator/policy`, interleaved with the window it shapes (`win` 7005 ->
@@ -52,7 +52,7 @@ const FIELDS: [&str; 6] = ["target", "fallback", "departs", "side", "reason", "s
 
 fn head(extra: Value) -> Value {
     let mut h = json!({"channel": "text", "live": "", "session": "s1",
-                       "turn": "t1", "iter": 0, "consult_id": "", "consult_class": "",
+                       "turn": "t1", "iter": 0, "ask_id": "", "ask_class": "",
                        "spec": "", "escalate": ""});
     for (k, v) in extra.as_object().cloned().unwrap_or_default() {
         h[k] = v;
@@ -65,7 +65,7 @@ fn stamp(path: &str, needs: Value, families: Value) -> Value {
 }
 
 fn no_state() -> Value {
-    json!({"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}})
+    json!({"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}})
 }
 
 fn state(extra: Value) -> Value {
@@ -165,7 +165,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
         return;
     }
     let none = json!([]);
-    let spec_on = json!({"quick_speculative": "1"});
+    let spec_on = json!({"spec_ahead": "1"});
     let fired = json!({"spec": {"call": "c-other", "state": "fired"}});
     // (case, params, stamp, head, state, verdict)
     let table: Vec<(&str, Value, Value, Value, Value, Value)> = vec![
@@ -238,7 +238,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             "the answer of a consult is spoken, never consulted again",
             json!({}),
             stamp("complex", none.clone(), none.clone()),
-            head(json!({"consult_id": "k-c0"})),
+            head(json!({"ask_id": "k-c0"})),
             no_state(),
             verdict("brain", "brain", "answer", "", ""),
         ),
@@ -251,8 +251,8 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             verdict("brain", "brain", "no_route", "", ""),
         ),
         (
-            "memory_to_brain sends a simple memory turn to the brain",
-            json!({"memory_to_brain": "1"}),
+            "recall_to_fallback sends a simple memory turn to the brain",
+            json!({"recall_to_fallback": "1"}),
             stamp("simple", json!(["memory"]), none.clone()),
             head(json!({})),
             no_state(),
@@ -291,7 +291,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             verdict("brain", "brain", "escalated", "", ""),
         ),
         (
-            "past quick_max_iter the brain speaks",
+            "past fast_max_iter the brain speaks",
             json!({}),
             stamp("simple", json!(["tool"]), none.clone()),
             head(json!({"iter": 3})),
@@ -324,7 +324,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
         ),
         (
             "a memory turn drops the speculation",
-            json!({"quick_speculative": "1", "memory_to_brain": "1"}),
+            json!({"spec_ahead": "1", "recall_to_fallback": "1"}),
             stamp("simple", json!(["memory"]), none.clone()),
             head(json!({})),
             state(fired.clone()),

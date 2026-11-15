@@ -25,7 +25,7 @@
       "model": {
         "type": "string",
         "secret": false,
-        "default": "openai/gpt-4o-mini",
+        "default": "openai/gpt-6-luna",
         "description": "Provider model id; the template carries ctx.model (strict, resolved at instantiation). Convention (K-H2): pass a RESOLVED literal; the MODEL_* literal lane resolves only at the next boot (documented behavior)."
       },
       "api_key": {
@@ -152,6 +152,14 @@
         },
         "price_tiers": {
           "type": "array",
+          "required": false
+        },
+        "chars_per_token": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_per_image": {
+          "type": "number",
           "required": false
         },
         "dropped": {

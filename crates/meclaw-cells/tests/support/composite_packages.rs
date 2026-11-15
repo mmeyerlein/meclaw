@@ -34,7 +34,9 @@ fn catalog_keys(ledger: &std::path::Path) -> Vec<String> {
     else {
         return Vec::new();
     };
-    let Ok(mut st) = conn.prepare("SELECT key FROM state WHERE key LIKE 'catalog:%'") else {
+    let Ok(mut st) =
+        conn.prepare("SELECT key FROM state WHERE key LIKE 'catalog:%' OR key LIKE 'limits:%'")
+    else {
         return Vec::new();
     };
     st.query_map([], |r| r.get::<_, String>(0))
@@ -90,8 +92,43 @@ pub async fn report_packages(h: &ColonyHandle, main: &std::path::Path, mount: &s
     let ledger = main
         .join(mount.trim_start_matches('/'))
         .join("curator/ledger/cell.db");
-    for cell in &cells {
-        let key = format!("catalog:{cell}");
+    // D58-3 limits (GH #1526, OR-583.grenzen.11): a cell whose package line
+    // the composite hands the curator on `in_limits_row` (a target with a
+    // view only, no wall) is held as `limits:<cell>`, never as a `catalog:`
+    // row (the same rule as `composite_colony::report_packages_at_boot`). The
+    // lane is read off the composite's edges as the colony holds them.
+    let edges = read_config(&main.join(mount.trim_start_matches('/')).join("config.json"))
+        ["params"]["graph"]["edges"]
+        .clone();
+    let limits_row = |cell: &str| {
+        edges.as_array().into_iter().flatten().any(|e| {
+            e["from"] == json!(format!("./{cell}"))
+                && e["to"] == "./curator"
+                && e["modifier"]["set_hop"]["route"] == "'in_limits_row'"
+        })
+    };
+    // d58-3 stapel (OR-583-61, OR-583.stapelimp.1): a cell whose config names
+    // no model reports a line without one, and `./policy` keeps no row of it
+    // -- `in_catalog` and `in_limits_row` alike park "without a cell or a
+    // model". A tree booted from disk leaves such a cell (talky's `./decide`
+    // ships `model` "" until the registry's overlay names one) out of the
+    // wait; it is still pushed above, as the registry pushes every cell.
+    let named = |cell: &str| {
+        read_config(
+            &main
+                .join(mount.trim_start_matches('/'))
+                .join(cell)
+                .join("config.json"),
+        )["params"]["model"]
+            .as_str()
+            .is_some_and(|m| !m.trim().is_empty())
+    };
+    for cell in cells.iter().filter(|c| named(c)) {
+        let key = if limits_row(cell) {
+            format!("limits:{cell}")
+        } else {
+            format!("catalog:{cell}")
+        };
         wait::until_with(
             &format!("the curator of {mount} holds the package of {cell}"),
             || {

@@ -2183,6 +2183,7 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_precheck",
             "scripts.tests.test_precheck_testing_bans",
             "scripts.tests.test_precheck_wall_clock",
+            "scripts.tests.test_precheck_fixed_caps",
             "scripts.tests.test_pipeline_locks",
             "scripts.tests.test_harness_fold",
             "scripts.tests.test_pipeline_pre",

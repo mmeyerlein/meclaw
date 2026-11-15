@@ -48,6 +48,8 @@ pub const HOP_KEYS: &[(&str, &str)] = &[
     ("context_window", "number"),
     ("input_soft", "number"),
     ("input_hard", "number"),
+    ("chars_per_token", "number"),
+    ("tokens_per_image", "number"),
     ("cost_in", "number"),
     ("cost_cached_in", "number"),
     ("cost_cache_write", "number"),
@@ -138,6 +140,14 @@ pub(crate) struct HopCache {
     /// what the curator (KF2, #1038) reads as `hop.input_soft` / `hop.input_hard`.
     pub(crate) input_soft: Option<u64>,
     pub(crate) input_hard: Option<u64>,
+    /// GH #1532: the rate and the image cost of the same catalogue row,
+    /// `Some` only when stated (above 0) -- `hop.chars_per_token`,
+    /// `hop.tokens_per_image`. The curator keeps them beside the window it
+    /// reads off the same stamp and hands all three to whoever sizes by that
+    /// window (the memory ask, a tool call); without the stamp a rate and an
+    /// image cost reached no reader live (review raten I1).
+    pub(crate) chars_per_token: Option<f64>,
+    pub(crate) tokens_per_image: Option<u64>,
     /// R-HK-16: the prompt prices of the package in cents per million tokens,
     /// `Some` only above 0 (`hop.cost_in`, `hop.cost_cached_in`). The cached
     /// tokens themselves travel as `tokens_cached` when the provider reports
@@ -208,6 +218,9 @@ impl HopCache {
             context_window: (params.context_window > 0).then_some(params.context_window),
             input_soft: (params.input_soft > 0).then_some(params.input_soft),
             input_hard: (params.input_hard > 0).then_some(params.input_hard),
+            chars_per_token: (params.chars_per_token > 0.0 && params.chars_per_token.is_finite())
+                .then_some(params.chars_per_token),
+            tokens_per_image: (params.tokens_per_image > 0).then_some(params.tokens_per_image),
             cost_in: (params.cost_in > 0.0 && params.cost_in.is_finite()).then_some(params.cost_in),
             cost_cached_in: (params.cost_cached_in > 0.0 && params.cost_cached_in.is_finite())
                 .then_some(params.cost_cached_in),
@@ -292,6 +305,12 @@ impl HopCache {
         }
         if let Some(n) = self.input_hard {
             header.insert("input_hard".into(), Value::from(n));
+        }
+        if let Some(r) = self.chars_per_token {
+            header.insert("chars_per_token".into(), Value::from(r));
+        }
+        if let Some(n) = self.tokens_per_image {
+            header.insert("tokens_per_image".into(), Value::from(n));
         }
         if let Some(c) = self.cost_in {
             header.insert("cost_in".into(), Value::from(c));
@@ -935,6 +954,29 @@ mod tests {
         assert_eq!(h["tokens_cache_write"], 176, "{h}");
     }
 
+    /// GH #1532 (review raten I1): the stamp carries the row's rate and image
+    /// cost beside its window, each only when the row states it -- 0 (not
+    /// stated) writes no key, so a cell without them stamps what it did.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_stamp_carries_the_rows_rate_and_image_cost() {
+        let parse = |rate: f64, image: u64| {
+            LlmParams::parse(&json!({"provider": "openai", "model": "m", "api_key": "k",
+                                     "input_soft": 250_000, "chars_per_token": rate,
+                                     "tokens_per_image": image}))
+            .unwrap()
+        };
+        let params = parse(4.0, 1600);
+        let h = header_of(HopUsage::default(), HopCache::of(&params), 1, 1).await;
+        assert_eq!(h["input_soft"], json!(250_000), "{h}");
+        assert_eq!(h["chars_per_token"], json!(4.0), "{h}");
+        assert_eq!(h["tokens_per_image"], json!(1600), "{h}");
+        let params = parse(0.0, 0);
+        let h = header_of(HopUsage::default(), HopCache::of(&params), 1, 1).await;
+        assert!(h.get("chars_per_token").is_none(), "{h}");
+        assert!(h.get("tokens_per_image").is_none(), "{h}");
+        assert_eq!(h["input_soft"], json!(250_000), "{h}");
+    }
+
     /// `HOP_KEYS` is what the two emitters write, no more and no less: every
     /// key of a fully reported success and of an error is in it, and every
     /// entry of it is written by one of them. The template sweep reads the
@@ -953,6 +995,8 @@ mod tests {
             unverified: vec!["top_p".into()],
             input_soft: Some(1),
             input_hard: Some(2),
+            chars_per_token: Some(4.0),
+            tokens_per_image: Some(1600),
             cost_in: Some(1.0),
             cost_cached_in: Some(0.1),
             cost_cache_write: Some(0.2),

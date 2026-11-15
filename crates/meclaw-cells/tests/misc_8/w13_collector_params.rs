@@ -99,10 +99,13 @@ const KNOBS: &[(&str, &str)] = &[
     // leg even on a `route_no_recall` path (`"0"` shipped).
     ("needs_wait_recall", "_str"),
     ("needs_no_recall", "_str"),
+    // d58-3 namen (GH #1525, O6): the needs that call for the recall, the
+    // names the two knobs above look for (`[]` shipped, the composition sets them).
+    ("recall_needs", "_list"),
     // #1275 -- the early curate before the route stamp (`"0"` shipped)
     // and how a delegation is answered (`"fact"` shipped = the advise text of
     // before; `"context"` = the delegation's own context).
-    ("quick_speculative", "_str"),
+    ("spec_ahead", "_str"),
     ("delegation_answer_mode", "_str"),
     ("delegation_inherits_stamp", "_str"),
     ("delegation_rule", "_str"),

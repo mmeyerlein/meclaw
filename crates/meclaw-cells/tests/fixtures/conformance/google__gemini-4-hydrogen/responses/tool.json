@@ -1,0 +1,66 @@
+{
+  "id": "gen-1794655226-lUOqxi7dFmaEejHhYvzU",
+  "object": "chat.completion",
+  "created": 1794655226,
+  "model": "google/gemini-4-hydrogen",
+  "provider": "Google",
+  "system_fingerprint": null,
+  "service_tier": "default",
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "tool_calls",
+      "native_finish_reason": "STOP",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "reasoning": null,
+        "tool_calls": [
+          {
+            "type": "function",
+            "index": 0,
+            "id": "call_11612095211592049195",
+            "function": {
+              "name": "echo",
+              "arguments": "{\"text\":\"ping\"}"
+            }
+          }
+        ],
+        "reasoning_details": [
+          {
+            "type": "reasoning.encrypted",
+            "data": "AY89a19LZ8fSsND0M4XqNMsD4sK5BUmBLAykJRJos7KuEUROl63KWqct87sAkHWa3/4Q9CF0X+01gNWZyRbCraB9JYuaMDBsLQhnhMvWWvQpI00VM/QiW4zX/aJHzbc7PEU3aG9C4wmexq3Z8Sd5+2UAVYmy8KlaGCP0BXIhYPeo2tGuDFMhiamoYNjF1ggUuCKMwOfZgqjMZOXIbBLlRsDthWwzuqvajtntMzx9NiG7KulKiazNEI1+gNY5t7GgpVXkER2qi5ydhBZEKOoDBuAB.eyJlbmRwb2ludF9zbHVnIjoiZ29vZ2xlL2dlbWluaS00LWh5ZHJvZ2VuLTIwMjYxMTEyfGdvb2dsZS12ZXJ0ZXgvZ2xvYmFsIn0",
+            "format": "google-gemini-v1",
+            "id": "call_11612095211592049195",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 103,
+    "completion_tokens": 44,
+    "total_tokens": 147,
+    "cost": 0.000479655,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 0.0004845,
+      "upstream_inference_prompt_cost": 0.0001545,
+      "upstream_inference_completions_cost": 0.00033
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 24,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

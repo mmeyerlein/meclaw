@@ -34,6 +34,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -438,7 +441,9 @@ fn build_tree(td: &TempDir, base_url: &str) {
     // substitution a tree booted from disk cannot resolve. It names the mock
     // here; a run this short never reaches a rebuild, and the push below names
     // the brain, so it is never called.
-    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("main/talky/curator"), |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!(START);
     });

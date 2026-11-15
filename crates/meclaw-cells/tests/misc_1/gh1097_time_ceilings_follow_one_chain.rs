@@ -11,7 +11,8 @@
 //!   names one, never above the row's `max_output`; else `max_output`) over
 //!   the row's measured `output_tps`, plus `FIRST_TOKEN_MS`, rounded up to
 //!   the second. A row without `output_tps` counts with the slowest row that
-//!   states one.
+//!   states one, never above `UNMEASURED_OUTPUT_TPS` (GH #1525: the slowest
+//!   rate ever measured on a catalogue row, a rule since that row left).
 //! - `cell.message_timeout` >= that x (1 + `length_continuations`) plus the
 //!   backstop margin (`BACKSTOP_MARGIN_FLOOR_MS`, at least a tenth), rounded up
 //!   to the second.
@@ -117,14 +118,21 @@ fn catalogue() -> BTreeMap<String, Row> {
     rows
 }
 
-/// The slowest row that states a measured rate: what an unmeasured row
-/// counts with.
+/// GH #1525: the floor of the chain, 42 tokens a second -- the slowest output
+/// rate measured on a catalogue row (GH #1097, 21 calls, 2026-09-28 to
+/// 2026-09-30); the registry's hand counts with the same rule
+/// (`UNMEASURED_OUTPUT_TPS`).
+const UNMEASURED_OUTPUT_TPS: u64 = 42;
+
+/// The slowest row that states a measured rate, never above the floor: what
+/// an unmeasured row counts with.
 fn slowest_tps(rows: &BTreeMap<String, Row>) -> u64 {
     rows.values()
         .map(|r| r.output_tps)
         .filter(|t| *t > 0)
         .min()
         .expect("at least one catalogue row states a measured output_tps (GH #1097)")
+        .min(UNMEASURED_OUTPUT_TPS)
 }
 
 fn ceil_s(ms: u64) -> u64 {

@@ -28,6 +28,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 // harness_fold: #[path = "support/composite_packages.rs"]
 #[allow(unused_imports)]
 use crate::composite_packages; // harness_fold: mod composite_packages;
@@ -326,7 +329,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
     // substitution a tree booted from disk cannot resolve. It names the mock
     // here; a run this short never reaches a rebuild, so it is never called.
-    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("main/talky/curator"), |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });

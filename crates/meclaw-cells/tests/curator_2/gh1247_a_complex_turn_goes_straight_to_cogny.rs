@@ -92,10 +92,10 @@ fn a_complex_turn_goes_straight_to_cogny() {
         json!("hop.consult_id")
     );
 
-    // A day of `consult_pending_ms`: the mark outlives any test, so no
+    // A day of `ask_pending_ms`: the mark outlives any test, so no
     // duration between two calls decides this test (dev-rules § 11).
-    let mut h = Hive::with(&[("lead", "consult_pending_ms", json!(86_400_000))])
-        .reporting_composite("talky");
+    let mut h =
+        Hive::with(&[("lead", "ask_pending_ms", json!(86_400_000))]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
     curate_with(
@@ -158,7 +158,7 @@ fn a_complex_turn_goes_straight_to_cogny() {
 
 /// Re-check I1: a consult whose answer never comes (cogny's error, a lost
 /// message) lets go of its mark at its `until` -- the time of the consult plus
-/// `consult_pending_ms`, the collector's deadline for the answer -- and the
+/// `ask_pending_ms`, the collector's deadline for the answer -- and the
 /// voice model may consult again. The time is the mark's own stamp, moved
 /// here into the past; the wall clock decides nothing.
 #[test]
@@ -177,7 +177,7 @@ fn a_consult_without_an_answer_lets_go_at_its_until() {
     );
     assert_eq!(h.routed("consult").len(), 1, "{:?} {:?}", h.out, h.stderr);
     // GH #1447: the consult mark is the lead's row (`lead_state`).
-    let key = "SELECT value FROM state WHERE key = 'consult_pending:s1'";
+    let key = "SELECT value FROM state WHERE key = 'ask_pending:s1'";
     let rows = h.lead_rows(key);
     assert_eq!(rows.len(), 1, "the consult leaves its mark: {:?}", h.stderr);
     let mut mark: Value =
@@ -193,7 +193,7 @@ fn a_consult_without_an_answer_lets_go_at_its_until() {
         .as_ref()
         .expect("the tree ships the lead")
         .execute(
-            "UPDATE state SET value = ?1 WHERE key = 'consult_pending:s1'",
+            "UPDATE state SET value = ?1 WHERE key = 'ask_pending:s1'",
             rusqlite::params![mark.to_string()],
         )
         .expect("age the mark");

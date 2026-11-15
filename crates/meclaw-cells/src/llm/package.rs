@@ -52,9 +52,11 @@ pub const PACKAGE_HOP_KEYS: &[(&str, &str)] = &[("route", "string"), ("package_o
 /// GH #1449: the keys of the body slot `package` -- the model id and the
 /// fields the curator cuts a window by (`input_soft`, `input_hard`,
 /// `max_output`, `price_tiers`, `cache_mode`, `cache_ttl_s`, `wire_dialect`,
-/// `supported_params`, `chars_per_token`). Each key is always present; one
-/// the package does not state is `null`, so the reader falls back exactly
-/// where it did before the line existed.
+/// `supported_params`, `chars_per_token`, and since GH #1532
+/// `tokens_per_image`, the row's image cost the curator and its producers
+/// weigh an inline image with). Each key is always present; one the package
+/// does not state is `null`, so the reader falls back exactly where it did
+/// before the line existed.
 pub const PACKAGE_LINE_KEYS: &[&str] = &[
     "model",
     "input_soft",
@@ -66,6 +68,7 @@ pub const PACKAGE_LINE_KEYS: &[&str] = &[
     "wire_dialect",
     "supported_params",
     "chars_per_token",
+    "tokens_per_image",
 ];
 
 /// D58 target (GH #1483): true iff `update` sets or resets a key the line
@@ -133,6 +136,15 @@ pub(crate) fn package_line(own: &str, params: &LlmParams) -> Value {
         "chars_per_token".into(),
         if params.chars_per_token.is_finite() && params.chars_per_token > 0.0 {
             Value::from(params.chars_per_token)
+        } else {
+            Value::Null
+        },
+    );
+    // GH #1532: the row's image cost beside its rate; 0 is "not stated".
+    package.insert(
+        "tokens_per_image".into(),
+        if params.tokens_per_image > 0 {
+            Value::from(params.tokens_per_image)
         } else {
             Value::Null
         },
@@ -534,5 +546,27 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// GH #1532: the image cost of the row travels in the package line like
+    /// `chars_per_token`, so the curator and its producers weigh an image at
+    /// the row of the model whose window they measure; a row without one
+    /// leaves the key `null` (the reader keeps its fallback of 1024).
+    #[test]
+    fn gh_d583_raten_the_package_line_carries_the_rows_image_cost() {
+        let with = LlmParams::parse(&json!({
+            "provider": "openai", "model": "m", "api_key": "k", "tokens_per_image": 1600,
+        }))
+        .unwrap();
+        let line = package_line("/a", &with);
+        assert_eq!(line["package"]["tokens_per_image"], 1600, "{line}");
+        assert!(PACKAGE_LINE_KEYS.contains(&"tokens_per_image"));
+        let without =
+            LlmParams::parse(&json!({"provider": "openai", "model": "m", "api_key": "k"})).unwrap();
+        let line = package_line("/a", &without);
+        let pkg = line["package"].as_object().expect("package is an object");
+        assert!(pkg.contains_key("tokens_per_image"), "{line}");
+        assert!(pkg["tokens_per_image"].is_null(), "{line}");
+        assert!(pkg["chars_per_token"].is_null(), "{line}");
     }
 }

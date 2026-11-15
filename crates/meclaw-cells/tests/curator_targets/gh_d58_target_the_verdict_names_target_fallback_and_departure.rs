@@ -27,12 +27,12 @@ use meclaw_core::serde_json::{Value, json};
 
 fn head() -> Value {
     json!({"channel": "text", "live": "", "session": "s1",
-           "turn": "t1", "iter": 0, "consult_id": "", "consult_class": "",
+           "turn": "t1", "iter": 0, "ask_id": "", "ask_class": "",
            "spec": "", "escalate": ""})
 }
 
 fn no_state() -> Value {
-    json!({"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}})
+    json!({"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}})
 }
 
 fn verdict(knobs: Value, path: &str) -> (Value, String) {

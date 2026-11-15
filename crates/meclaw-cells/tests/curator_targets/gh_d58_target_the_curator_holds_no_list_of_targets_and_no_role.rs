@@ -25,45 +25,16 @@ use curator_profiles::{VALUE_SETS, value_set};
 use curator_target::*;
 use meclaw_core::serde_json::{Value, json};
 
-/// `v` with every word that is a name of the lock (a run of `[a-z0-9_-]`)
-/// swapped for `<name>_probe`, strings inside lists and objects as well.
-fn neutral(v: &Value) -> Value {
-    match v {
-        Value::String(s) => {
-            let mut out = String::new();
-            let mut word = String::new();
-            let flush = |word: &mut String, out: &mut String| {
-                out.push_str(word);
-                if LOCKED_NAMES.contains(&word.as_str()) {
-                    out.push_str("_probe");
-                }
-                word.clear();
-            };
-            for c in s.chars() {
-                if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' {
-                    word.push(c);
-                } else {
-                    flush(&mut word, &mut out);
-                    out.push(c);
-                }
-            }
-            flush(&mut word, &mut out);
-            Value::String(out)
-        }
-        Value::Array(a) => Value::Array(a.iter().map(neutral).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), neutral(x))).collect()),
-        other => other.clone(),
-    }
-}
-
-/// The policy's shipped params, every name of the lock in them swapped
-/// ([`neutral`]); `script_inline` is no knob.
-fn neutral_params() -> Value {
+/// The policy's shipped params as they are; `script_inline` is no knob.
+/// d58-3 namen (GH #1525, contract point 6): no name of the lock is swapped
+/// out any more -- a knob default that names one (`errand_slot` "consult")
+/// is a name of a composition in the curator like a literal of its code.
+fn shipped_params() -> Value {
     let mut params = cell_config("policy")["params"].clone();
     if let Some(o) = params.as_object_mut() {
         o.remove("script_inline");
     }
-    neutral(&params)
+    params
 }
 
 #[test]
@@ -132,13 +103,11 @@ fn gh_d58_target_the_curator_holds_no_list_of_targets_and_no_role() {
     // read whole, keys and values and what they hold: none holds a name of
     // the lock (`support/curator_locked_names.txt`) -- also not one built at
     // load time from a string the lock reads no name in (`"brain quick"
-    // .split()`). The knobs are the instance's: a shipped knob value that
-    // names a name of the lock (`errand_slot` "consult", rulings .44/.45 of
-    // the target strand) reaches the scope through the knob, not through a
-    // table of the code, so the policy loads here with every such name in
-    // its params swapped for a probe word.
+    // .split()`). d58-3 namen (GH #1525): the policy loads with its shipped
+    // params as they are -- a knob default is held to the names like the
+    // code, the swap of the target strand (rulings .44/.45) is gone.
     let (tables, err) = policy_scope(
-        neutral_params(),
+        shipped_params(),
         "(lambda f: sorted(set('%s: %s' % (k, s) for k, v in globals().items() if k not in \
          ('__builtins__', 'ARGS') and isinstance(v, (dict, list, tuple, set, frozenset)) \
          for s in f(f, v) if s in ARGS)))(lambda f, x: [x] if isinstance(x, str) else \

@@ -1,4 +1,4 @@
-//! GH #1275: the speculative curate of a turn (`quick_speculative`).
+//! GH #1275: the speculative curate of a turn (`spec_ahead`).
 //!
 //! Speculation is the SAME curate of the same turn, earlier: while the turn
 //! waits for its route stamp (`route_wait_ms` above 0), the collector sends one
@@ -25,7 +25,7 @@ fn knob(spec: &str) -> Vec<(&'static str, Value)> {
     vec![
         ("memory_tier", json!("1")),
         ("route_wait_ms", json!(150)),
-        ("quick_speculative", json!(spec)),
+        ("spec_ahead", json!(spec)),
     ]
 }
 
@@ -241,26 +241,26 @@ fn spec_off_is_byte_identical() {
 
     // The knob ships off and says so in all three places.
     let cfg = config_of(ASSEMBLE);
-    assert_eq!(cfg["params"]["quick_speculative"], json!("0"));
+    assert_eq!(cfg["params"]["spec_ahead"], json!("0"));
     assert_eq!(
-        cfg["contract"]["settings"]["quick_speculative"]["default"],
+        cfg["contract"]["settings"]["spec_ahead"]["default"],
         json!("0")
     );
     let src = cfg["params"]["script_inline"].as_str().expect("script");
     assert!(
-        src.contains("_str(\"quick_speculative\", \"0\")"),
+        src.contains("_str(\"spec_ahead\", \"0\")"),
         "the script's fallback"
     );
 }
 
-/// live-2 #1370: `quick_speculative` set as JSON `true` (the set's form) is on
+/// live-2 #1370: `spec_ahead` set as JSON `true` (the set's form) is on
 /// here as in the curator's policy, which reads the same switch.
 #[test]
 fn quick_speculative_reads_json_true() {
     let on = vec![
         ("memory_tier", json!("1")),
         ("route_wait_ms", json!(150)),
-        ("quick_speculative", json!(true)),
+        ("spec_ahead", json!(true)),
     ];
     let out = collect(&on, json!([window()]));
     assert!(spec_fire(&out).is_some(), "true is on: {out:?}");

@@ -1,6 +1,10 @@
 //! Test harness `misc_5` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/curator_llm.rs"]
+pub mod curator_llm;
+#[path = "../support/gh1541_browser.rs"]
+pub mod gh1541_browser;
 pub mod gh518_a_german_query_keeps_its_umlauts;
 pub mod gh519_an_episode_gets_a_vector;
 pub mod gh520_from_an_entity_to_a_fact;

@@ -80,7 +80,7 @@ pub fn once_hive(extra: &[(&str, &str, Value)]) -> Hive {
 /// behind it must be able to show the note (contract point 3).
 pub fn once_spec_hive() -> Hive {
     let over = knob_on(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!("")),
     ]);
     let share: Vec<(&str, Value)> = ["quick", "quick_spec", "quick_bridge"]

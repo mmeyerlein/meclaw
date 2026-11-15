@@ -43,6 +43,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -241,7 +244,9 @@ fn build_tree(
     });
     // GH #889: the curator in front of the brain carries an `llm` cell of its
     // own; it is never expected to talk here, and it may only ever reach the mock.
-    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("main/talky/curator"), |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });

@@ -25,6 +25,10 @@
 //! measures for the other shipped pairs (the `in_prune` / `prune` pair this
 //! sentence named left talky with GH #889).
 
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
+
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
@@ -271,7 +275,9 @@ fn build_tree(td: &tempfile::TempDir, affinity: &std::path::Path, talky: &std::p
     });
     // GH #889: the curator in front of the brain carries an `llm` cell of its
     // own, and the same refusal holds for it.
-    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("main/talky/curator"), |v| {
         v["params"]["base_url"] = json!("http://127.0.0.1:1/v1");
         v["params"]["model"] = json!("gpt-4o-mock");
     });

@@ -11,6 +11,18 @@
 //!   following a thread you started" expressible without re-mentioning, and it
 //!   is scoped per channel because a thread timestamp is only unique within its
 //!   conversation.
+//! * `typing_reactions` — GH #1530: every reaction the connector set as the
+//!   sign of a running turn whose removal Slack has not yet confirmed. A row
+//!   is written before the `reactions.add` and goes only once a
+//!   `reactions.remove` of it came back as done (`ok`, or `no_reaction`)
+//!   (OR-d54g.acktyp.2, [`forget_reaction`]). The keeper reports that on the
+//!   cell's report lane; a removal that failed keeps its row. So whatever
+//!   still stands after the keeper gave up -- a restart between the two ends
+//!   of a turn, a removal that failed at the turn's end after its retries,
+//!   one that failed at the start -- is still a row, and the next start tries
+//!   it again ([`remembered_reactions`]). The one reaction no row covers: an
+//!   add that timed out and that Slack carries out only after the confirmed
+//!   removal -- nothing the connector can observe.
 //!
 //! Both are keyed by TEXT because Slack timestamps are addresses, not numbers.
 
@@ -29,6 +41,14 @@ pub fn setup_slack_schema(conn: &Connection) -> rusqlite::Result<()> {
             thread_ts TEXT NOT NULL,
             owned_at  INTEGER NOT NULL,
             PRIMARY KEY (channel, thread_ts)
+        );
+        CREATE TABLE IF NOT EXISTS typing_reactions (
+            channel TEXT NOT NULL,
+            ts      TEXT NOT NULL,
+            name    TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            set_at  INTEGER NOT NULL,
+            PRIMARY KEY (channel, ts, name)
         );",
     )?;
     // GH #1015: the outbound dedupe record (see `proxy::consumed`).
@@ -90,6 +110,72 @@ pub fn owns_thread(conn: &Connection, channel: &str, thread_ts: &str) -> rusqlit
     Ok(n > 0)
 }
 
+/// GH #1530: one reaction the connector set on a person's message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RememberedReaction {
+    /// The channel of the person's message.
+    pub channel: String,
+    /// The person's message (`ts`).
+    pub ts: String,
+    /// The emoji name.
+    pub name: String,
+}
+
+/// GH #1530: remembers a reaction BEFORE its `reactions.add` goes out (state
+/// before effect): an add that fails at its timeout may still go through, so
+/// it has to be remembered either way. `chat_id` is the keeper's key (the
+/// turn's chat), kept for diagnosis. Idempotent.
+pub fn remember_reaction(
+    conn: &Connection,
+    chat_id: &str,
+    reaction: &RememberedReaction,
+    now_secs: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO typing_reactions (channel, ts, name, chat_id, set_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(channel, ts, name) DO UPDATE SET
+            chat_id = excluded.chat_id, set_at = excluded.set_at",
+        rusqlite::params![
+            reaction.channel,
+            reaction.ts,
+            reaction.name,
+            chat_id,
+            now_secs
+        ],
+    )?;
+    Ok(())
+}
+
+/// OR-d54g.acktyp.2: forgets one reaction once Slack confirmed its removal
+/// (the keeper's report, or the start's). Never before: a row whose removal
+/// failed is what the next start takes away. Returns how many rows went.
+pub fn forget_reaction(
+    conn: &Connection,
+    reaction: &RememberedReaction,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM typing_reactions WHERE channel = ?1 AND ts = ?2 AND name = ?3",
+        rusqlite::params![reaction.channel, reaction.ts, reaction.name],
+    )
+}
+
+/// GH #1530: every remembered reaction, oldest first -- the start takes each
+/// of them away. Reading forgets nothing (OR-d54g.acktyp.2): a row goes with
+/// its confirmed removal ([`forget_reaction`]).
+pub fn remembered_reactions(conn: &Connection) -> rusqlite::Result<Vec<RememberedReaction>> {
+    let mut stmt =
+        conn.prepare("SELECT channel, ts, name FROM typing_reactions ORDER BY set_at")?;
+    stmt.query_map([], |r| {
+        Ok(RememberedReaction {
+            channel: r.get(0)?,
+            ts: r.get(1)?,
+            name: r.get(2)?,
+        })
+    })?
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,7 +190,7 @@ mod tests {
     fn schema_is_idempotent() {
         let c = conn();
         setup_slack_schema(&c).expect("second call must be safe");
-        for table in ["seen_envelopes", "thread_owner"] {
+        for table in ["seen_envelopes", "thread_owner", "typing_reactions"] {
             let n: i64 = c
                 .query_row(
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -148,5 +234,44 @@ mod tests {
         // Re-claiming is idempotent, not an error.
         claim_thread(&c, "C1", "100.1", 20).expect("reclaim");
         assert!(owns_thread(&c, "C1", "100.1").expect("still owned"));
+    }
+
+    fn reaction(channel: &str, ts: &str) -> RememberedReaction {
+        RememberedReaction {
+            channel: channel.into(),
+            ts: ts.into(),
+            name: "eyes".into(),
+        }
+    }
+
+    #[test]
+    fn a_remembered_reaction_is_read_until_its_removal_is_confirmed() {
+        let c = conn();
+        remember_reaction(&c, "C1:1.0", &reaction("C1", "1.1"), 10).expect("one");
+        remember_reaction(&c, "C1:1.0", &reaction("C1", "1.2"), 11).expect("two");
+        remember_reaction(&c, "C2", &reaction("C2", "2.1"), 12).expect("three");
+        // Idempotent: the same reaction twice is one row.
+        remember_reaction(&c, "C2", &reaction("C2", "2.1"), 13).expect("again");
+        let all = vec![
+            reaction("C1", "1.1"),
+            reaction("C1", "1.2"),
+            reaction("C2", "2.1"),
+        ];
+        assert_eq!(remembered_reactions(&c).expect("read"), all);
+        // Reading forgets nothing (OR-d54g.acktyp.2).
+        assert_eq!(remembered_reactions(&c).expect("read again"), all);
+        // A confirmed removal forgets exactly its own row.
+        assert_eq!(
+            forget_reaction(&c, &reaction("C1", "1.2")).expect("forget"),
+            1
+        );
+        assert_eq!(
+            forget_reaction(&c, &reaction("C1", "1.2")).expect("twice"),
+            0
+        );
+        assert_eq!(
+            remembered_reactions(&c).expect("left"),
+            vec![reaction("C1", "1.1"), reaction("C2", "2.1")]
+        );
     }
 }

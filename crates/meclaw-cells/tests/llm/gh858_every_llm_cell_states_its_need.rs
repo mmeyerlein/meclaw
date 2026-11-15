@@ -246,8 +246,18 @@ fn llm_cells_of(dir: &Path) -> Vec<(String, PathBuf)> {
                 continue;
             }
             Some("ref") => {
+                // A pin whose frozen folder ships (`curator@1.25.0` under the
+                // frozen `simple-agent@1.1.4`) is read from that folder: the
+                // frozen composite needs a door for the cells of ITS pin, not
+                // for the ones today's curator grew since (GH #1528). A pin
+                // without a frozen folder is the current template.
                 let template = cfg["cell"]["template"].as_str().unwrap_or_default();
-                repo("templates").join(template.split('@').next().unwrap_or_default())
+                let pinned = repo("templates").join(template);
+                if pinned.is_dir() {
+                    pinned
+                } else {
+                    repo("templates").join(template.split('@').next().unwrap_or_default())
+                }
             }
             Some("hive") => path,
             _ => continue,

@@ -9,7 +9,7 @@
         "add_nodes": [
           {
             "name": "agent",
-            "template": "simple-agent@2.3.2",
+            "template": "simple-agent@2.4.0",
             "override_params": {
               "brain": {
                 "credential_grant_id": "grant:openrouter@colony-example/ava/brain",
@@ -74,6 +74,11 @@
                 "tools_enabled": [
                   "weather"
                 ]
+              },
+              "curator/relevance": {
+                "credential_grant_id": "grant:openrouter@colony-example/ava/curator-relevance",
+                "x_title": "meclaw-example simple-agent-colony",
+                "http_referer": "https://meclaw.ai"
               }
             }
           }
@@ -267,6 +272,31 @@
             }
           },
           {
+            "from": "./agent/curator/relevance",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_invoke'"
+              },
+              "set_context": {
+                "requester": "'agent:agent/curator-relevance'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./agent/curator/relevance",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@colony-example/ava/curator-relevance'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
             "from": "./agent/memory-hive/closer",
             "to": "./access",
             "lane": "credential_request",
@@ -438,6 +468,26 @@
                 }
               },
               {
+                "grant_id": "grant:openrouter@colony-example/ava/curator-relevance",
+                "requester": "agent:agent/curator-relevance",
+                "capability": "credential.read",
+                "subject": "colony:example",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate agent's curator/relevance against the provider",
+                "issued_at": "2026-10-24T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
                 "grant_id": "grant:openrouter@colony-example/ava/memory-hive-closer",
                 "requester": "agent:agent/memory-hive-closer",
                 "capability": "credential.read",
@@ -556,6 +606,17 @@
               {
                 "id": "ev-agent-curator-summarizer",
                 "grant_id": "grant:openrouter@colony-example/ava/curator-summarizer",
+                "event": "granted",
+                "at": "2026-10-24T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-agent-curator-relevance",
+                "grant_id": "grant:openrouter@colony-example/ava/curator-relevance",
                 "event": "granted",
                 "at": "2026-10-24T00:00:00.000000Z",
                 "actor": "operator",

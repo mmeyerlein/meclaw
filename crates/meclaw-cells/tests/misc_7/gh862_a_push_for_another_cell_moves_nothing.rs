@@ -36,6 +36,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -763,14 +766,12 @@ fn build_tree(td: &TempDir, base_url: &str) {
         // instantiation-side substitution a tree booted from disk cannot
         // resolve. It names the mock here; a run this short never reaches a
         // rebuild, and the pushes below name a brain, so it is never called.
-        patch(
-            root,
-            &format!("main/{composite}/curator/summarizer/config.json"),
-            |v| {
-                v["params"]["base_url"] = json!(base_url);
-                v["params"]["model"] = json!(START);
-            },
-        );
+        // GH #1528: the helper points every `llm` cell of the curator at the mock --
+        // the summarizer and the ballast judge alike.
+        curator_llm::patch_llm_cells(&root.join(format!("main/{composite}/curator")), |v| {
+            v["params"]["base_url"] = json!(base_url);
+            v["params"]["model"] = json!(START);
+        });
         // GH #1248: the quick voice is an `llm` cell on the same `${ctx.model}`
         // start value as the brain; a tree booted from disk carries a literal.
         patch(root, &format!("main/{composite}/quick/config.json"), |v| {

@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@2.2.0"
+    "template": "curator@3.0.0"
   },
   "override_params": {
     "intake": {
@@ -16,10 +16,13 @@
         },
         "things": {
           "lane": "thing_seen",
-          "cap_share": 0.1
+          "cap_share": 0.1,
+          "mark": "thing"
         }
       },
-      "errand_tool": "consult_cogny"
+      "errand_tool": "consult_cogny",
+      "errand_slot": "consult",
+      "agent_sources": "advice:cogny,delegation:voice"
     },
     "policy": {
       "lead_wired": "1",
@@ -30,7 +33,20 @@
           "pair": "mx.hints.clarify"
         }
       },
-      "feed_in": "1"
+      "feed_in": "1",
+      "errand_slot": "consult",
+      "recall_needs": [
+        "memory"
+      ],
+      "state_needs": [
+        "memory",
+        "orga"
+      ],
+      "pending_note": "A consult is pending (id {id}, since {at}): the backend works on this request and its answer comes on its own. Do not consult again; say it is being looked into if asked.",
+      "pending_state": "a consult"
+    },
+    "push": {
+      "nothing_prefix": "Nothing in this memory answers"
     }
   }
 }

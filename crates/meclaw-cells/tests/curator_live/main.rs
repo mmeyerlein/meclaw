@@ -3,6 +3,8 @@
 
 #[path = "../support/assemble_cell.rs"]
 pub mod assemble_cell;
+#[path = "../support/assistant_followup.rs"]
+pub mod assistant_followup;
 #[path = "../support/curator_feed.rs"]
 pub mod curator_feed;
 #[path = "../support/curator_hive.rs"]
@@ -14,6 +16,7 @@ pub mod gh_d54g_kprofil_window;
 pub mod gh_d54g_kprofil_window_handover_voice;
 pub mod gh_d54g_kprofil_window_history_kind;
 pub mod gh_d54g_kprofil_window_transcript_voice;
+pub mod gh_d54g_listennote_a_heard_turn_writes_its_note;
 pub mod gh_d58_live_a_delegation_parks_under_the_live_handle_or_the_session;
 pub mod gh_d58_live_a_set_override_of_the_new_params_passes_the_door;
 pub mod gh_d58_live_a_turn_with_a_live_handle_gets_start_window_and_feed;

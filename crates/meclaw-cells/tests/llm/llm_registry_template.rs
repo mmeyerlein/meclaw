@@ -4015,19 +4015,17 @@ fn gh1318_a_catalogue_row_carries_its_price_steps_as_data() {
         }
         stepped.insert(id, Value::Array(tiers.clone()));
     }
-    let steps = |rows: &[(u64, u64, u64)]| -> Value {
-        rows.iter()
-            .map(|(a, i, o)| json!({"above_input": a, "cost_in": i, "cost_out": o}))
-            .collect()
-    };
     // The numbers the notes named until GH #1318, nothing new; GH #1431
     // (OR-38-17) gave the Haiku step its cache prices.
     let haiku = json!([{"above_input": 100000, "cost_in": 50, "cost_out": 250,
                         "cost_cached_in": 5, "cost_cache_write": 62.5}]);
     let want: std::collections::BTreeMap<String, Value> = [
+        // GH #1525: the provider's page states the step above 272k prompt
+        // tokens with its cache prices (2x input and cache, 1.5x output).
         (
-            "qwen/qwen3.7-flash",
-            steps(&[(32000, 10, 40), (256000, 20, 80)]),
+            "openai/gpt-6.1-sol",
+            json!([{"above_input": 272000, "cost_in": 400, "cost_out": 1500,
+                    "cost_cached_in": 20, "cost_cache_write": 500}]),
         ),
         ("claude-haiku-5-5", haiku.clone()),
         ("anthropic/claude-haiku-5.5", haiku),

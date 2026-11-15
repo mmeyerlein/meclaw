@@ -33,6 +33,9 @@ use std::process::{Command, Stdio};
 const START: &str = "# >>> token-estimate v1";
 const END: &str = "# <<< token-estimate v1";
 const CB_START: &str = "# >>> content-budget v1";
+/// GH #1526: the block that takes the target's rate defines the same
+/// `CHARS_PER_TOKEN`; either version stands before the estimate.
+const CB_START_V2: &str = "# >>> content-budget v2";
 
 /// The block, from its opening marker line to its closing one.
 const CANONICAL: &str = r#"# >>> token-estimate v1 (GH #1098)
@@ -230,7 +233,10 @@ fn every_copy_of_the_estimate_is_the_canonical_text_beside_the_one_constant() {
         if !blocks.is_empty() {
             // The block counts with CHARS_PER_TOKEN; it is only ever the
             // content-budget block's, defined before the estimate runs.
-            match (s.find(CB_START), s.find(START)) {
+            match (
+                s.find(CB_START).or_else(|| s.find(CB_START_V2)),
+                s.find(START),
+            ) {
                 (Some(cb), Some(te)) if cb < te => {}
                 _ => findings.push(format!(
                     "{cell}: the token-estimate block without the content-budget block before it"

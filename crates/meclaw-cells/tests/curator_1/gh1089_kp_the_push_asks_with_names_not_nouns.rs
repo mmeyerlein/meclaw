@@ -1,14 +1,15 @@
-//! GH #1089 on the curator (GH #1225 B4) -- the push asks with names, not nouns.
+//! GH #1089 on the curator (GH #1225 B4, GH #1523) -- the push asks with
+//! names, not nouns.
 //!
 //! WHY this file exists: `curator/push` took every capital that opens no
 //! sentence for a name -- an English rule. In German every noun carries one:
 //! `mentioned:` filled its eight places with Tochter, Arzt, Termin and the
-//! polite "Ihrer", and the name the memory needed fell off the end. Now the
-//! words of a language that are never a name are data (`entity_stop_lang`, one
-//! list per language, the German one the fixture `entity_stop_de.jsonl`
-//! that the memory hive reads too), a capital behind a determiner is a noun
-//! (`entity_det_lang`), and a spelling the round already knows as a name is taken
-//! wherever it stands. Nothing guesses a name.
+//! polite "Ihrer", and the name the memory needed fell off the end. GH #1225
+//! answered with word lists per language; GH #1523 took them out (the owner's
+//! rule: meaning by the model, code only for structure). Now a name is one the
+//! model named in its section `things` (mark `thing`) and the person said; a
+//! noun nobody named stays out, whatever its form, and so does a topic's name
+//! the model did not name as a thing. Nothing guesses a name.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -25,11 +26,13 @@ fn push_shipped() -> bool {
 }
 
 fn talky() -> Hive {
-    // GH #1473: a talky's curator registers its `memory` section.
+    // GH #1473: a talky's curator registers its `memory` section, and
+    // (GH #1523) its `things` with the mark `thing`.
     Hive::with(&[(
         "intake",
         "sections",
-        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
+        json!({"memory": {"lane": "sidecar", "mark": "topic"},
+               "things": {"lane": "thing_seen", "cap_share": 0.1, "mark": "thing"}}),
     )])
     .reporting_composite("talky")
 }
@@ -64,6 +67,21 @@ fn topic(h: &mut Hive, session: &str, turn: &str, name: &str) {
     );
 }
 
+/// The model's section `things` of a turn: the names it saw (GH #1523).
+fn things(h: &mut Hive, session: &str, turn: &str, names: &[&str]) {
+    let items: Vec<Value> = names
+        .iter()
+        .map(|n| json!({"name": n, "kind": "person"}))
+        .collect();
+    h.lane(
+        "in_section",
+        json!({"session_id": session, "turn_id": turn, "iter": "0", "curator_call": "c-1",
+               "channel": "test", "audience_set": ROUND_E}),
+        json!({"section": "things"}),
+        json!({"messages": [], "section": "things", "payload": {"items": items}}),
+    );
+}
+
 fn mentioned(q: &str) -> Vec<String> {
     q.split("mentioned: ")
         .nth(1)
@@ -95,6 +113,7 @@ fn a_german_round_names_its_people_not_its_nouns() {
         "Gestern war meine Tochter Anna mit mir beim Arzt.",
         "Wie schön, dass Ihre Tochter Sie begleitet hat. Was hat der Doktor gesagt?",
     );
+    things(&mut h, "s1", "t1", &["Anna"]);
     round(
         &mut h,
         "s1",
@@ -102,11 +121,17 @@ fn a_german_round_names_its_people_not_its_nouns() {
         "Der neue Termin ist am 12.03. bei Herrn Becker.",
         "Dann notiere ich mir den Termin bei Herrn Becker.",
     );
+    things(&mut h, "s1", "t2", &["Becker"]);
     let q = query(&mut h, "t3", "Was meinst du dazu?");
     let got = mentioned(&q);
-    for name in ["Anna", "Becker", "12.03."] {
+    for name in ["Anna", "Becker"] {
         assert!(got.iter().any(|g| g == name), "{name} in {got:?}: {q}");
     }
+    // GH #1523: a date is no thing the model named -- it stays out.
+    assert!(
+        !got.iter().any(|g| g == "12.03."),
+        "a date is no name: {got:?}"
+    );
     for noun in [
         "Tochter", "Arzt", "Termin", "Herrn", "Doktor", "Ihre", "Sie",
     ] {
@@ -114,10 +139,9 @@ fn a_german_round_names_its_people_not_its_nouns() {
     }
 }
 
-/// E4 (one round over the levers): a capital is a noun by its form alone --
-/// a word of `entity_stop_lang` with an inflection ending ("Tanten"), or an
-/// `entity_suffix_lang` ending behind four letters or more ("Entlastung",
-/// "Gesellschaft"); a shorter stem keeps the name ("Dennis").
+/// E4 (one round over the levers), since GH #1523 without a list: a noun the
+/// model does not name as a thing is no name, whatever its form ("Tanten",
+/// "Entlastung", "Gesellschaft"); the name it names is one ("Dennis").
 #[test]
 fn a_noun_by_its_form_is_no_name() {
     if !push_shipped() {
@@ -131,6 +155,7 @@ fn a_noun_by_its_form_is_no_name() {
         "Ich brauche Entlastung, und gestern hat Dennis mir Gesellschaft geleistet. Haben Tanten auch Zeit?",
         "Wie schön.",
     );
+    things(&mut h, "s1", "t1", &["Dennis"]);
     let q = query(&mut h, "t2", "Was meinst du dazu?");
     let got = mentioned(&q);
     assert!(got.iter().any(|g| g == "Dennis"), "Dennis in {got:?}: {q}");
@@ -139,6 +164,10 @@ fn a_noun_by_its_form_is_no_name() {
     }
 }
 
+/// GH #1523: a name the model named is a name wherever the person says it,
+/// at the start of a sentence too; a topic's name alone is none -- only what
+/// the model names as a thing enters `mentioned:` (the topic rides as
+/// `topic:`).
 #[test]
 fn a_spelling_the_round_knows_is_a_name_wherever_it_stands() {
     if !push_shipped() {
@@ -147,52 +176,22 @@ fn a_spelling_the_round_knows_is_a_name_wherever_it_stands() {
     let mut h = talky();
     round(&mut h, "s1", "t1", "hallo", "Hallo!");
     topic(&mut h, "s1", "t1", "Lotte");
-    round(&mut h, "s1", "t2", "Lotte kommt morgen vorbei.", "Schön.");
+    round(
+        &mut h,
+        "s1",
+        "t2",
+        "Lotte is coming over tomorrow. And Paul too.",
+        "Nice.",
+    );
+    things(&mut h, "s1", "t2", &["Lotte"]);
+    topic(&mut h, "s1", "t2", "Paul");
     topic(&mut h, "s1", "t2", "der Garten");
     let q = query(&mut h, "t3", "und was noch?");
     assert!(q.contains("topic: der Garten"), "{q}");
-    assert!(mentioned(&q).iter().any(|g| g == "Lotte"), "{q}");
-}
-
-#[test]
-fn the_german_list_of_the_push_is_the_fixture() {
-    if !push_shipped() {
-        return;
-    }
-    let cfg = read_json(&repo("templates/curator/push/config.json"));
-    let raw = std::fs::read_to_string(repo(
-        "crates/meclaw-cells/tests/fixtures/entity_stop_de.jsonl",
-    ))
-    .expect("the fixture");
-    let words: Vec<Value> = raw
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| meclaw_core::serde_json::from_str::<Value>(l).expect("a line")["word"].clone())
-        .collect();
-    assert!(words.len() > 100, "{}", words.len());
-    assert_eq!(cfg["params"]["entity_stop_lang"]["de"], json!(words));
-    assert_eq!(
-        cfg["contract"]["settings"]["entity_stop_lang"]["default"],
-        cfg["params"]["entity_stop_lang"]
+    let got = mentioned(&q);
+    assert!(got.iter().any(|g| g == "Lotte"), "{q}");
+    assert!(
+        !got.iter().any(|g| g == "Paul"),
+        "a topic's name the model named as no thing is no name: {q}"
     );
-    assert_eq!(
-        cfg["contract"]["settings"]["entity_det_lang"]["default"],
-        cfg["params"]["entity_det_lang"]
-    );
-    // OR-KF-50: the word lists are language data, so each key ends in `_lang`
-    // (the export audit cuts only `params.<name>_lang`); the language picker is
-    // a plain string and does not.
-    for (old, new) in [
-        ("entity_stop", "entity_stop_lang"),
-        ("entity_det", "entity_det_lang"),
-        ("entity_suffix", "entity_suffix_lang"),
-        ("entity_date", "entity_date_lang"),
-        ("entity_lang", "entity_language"),
-    ] {
-        for at in [&cfg["params"], &cfg["contract"]["settings"]] {
-            assert!(at.get(old).is_none(), "{old} is still declared");
-            assert!(at.get(new).is_some(), "{new} is not declared");
-        }
-    }
-    assert!(cfg["params"]["entity_language"].is_string());
 }

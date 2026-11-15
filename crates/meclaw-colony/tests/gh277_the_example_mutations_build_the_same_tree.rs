@@ -536,7 +536,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// Moved 107 -> 109 with D54g (GH #1506): every `talky` grew `second_judge`,
 /// the model that sharpens an unsure route stamp (2 x 1). COMPUTED in the
 /// strand from the shipped tree (no run there); the first run measures it.
-const TEMPLATE_BORN_ROWS: usize = 109;
+///
+/// Moved 109 -> 112 with d58-3 (GH #1528, the judge of what was only
+/// asked): every `curator` grew the cell `relevance` (3 x 1). Measured with
+/// `print_the_measurement` on build03 after the rebase onto 0.87.0.
+const TEMPLATE_BORN_ROWS: usize = 112;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -1058,7 +1062,24 @@ const REFERENCED_SUB_UNITS: [&str; 5] = [
 /// and the hold `./route -> ./collector` that tells the collector how long
 /// the stamp may take). Two talkies: 2 x 7. COMPUTED in the strand from
 /// `params.graph.edges` (no run there); the first run measures it.
-const EDGES: usize = 731;
+///
+/// Moved 731 -> 758 with d58-3. grenzen (GH #1526): every `curator` two
+/// edges more (`./policy -> ./history` on `in_limits`, the door `. ->
+/// ./policy` on `in_limits_row`), every `talky` three more (the package line
+/// `./decide -> ./curator`, two catalogue asks `./curator -> ./decide`):
+/// 3 x 2 + 2 x 3 = 12. ballast (GH #1528): every `curator` four more (the
+/// call `./policy -> ./relevance`, the verdict `./relevance -> ./policy`, the
+/// model door `. -> ./relevance`, the exit `./relevance -> .`), every `talky`
+/// and the `cogny` one more (the model door `. -> ./curator` on `in_model`):
+/// 3 x 4 + 2 x 1 + 1 = 15. raten adds no edge. Derivation on the merged stack
+/// (`params.graph.edges` per template, raten 72bd746093 -> stapel): curator
+/// 72 -> 76, talky 152 -> 153, cogny 51 -> 52 on top of raten's 743 (= 731 +
+/// 12): 743 + 15 = 758.
+///
+/// Moved 758 -> 760 with D54g b3err (GH #1536), merged in d58-3 stapel:
+/// every `talky` one edge more (the failed bridge call of a delegated turn
+/// `./quick_bridge -> ./errors`, talky 153 -> 154). Two talkies: 2 x 1.
+const EDGES: usize = 760;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

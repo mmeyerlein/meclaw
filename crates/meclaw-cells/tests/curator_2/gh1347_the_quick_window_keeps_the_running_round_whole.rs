@@ -181,10 +181,10 @@ fn items_of(els: &[(i64, Value)]) -> Value {
     )
 }
 
-fn quick_items(items: Value, wall: Value, keep: i64) -> Vec<Value> {
+fn fast_items(items: Value, wall: Value, keep: i64) -> Vec<Value> {
     let (got, err) = policy_scope(
         json!({}),
-        "[x[1] for x in quick_items(ARGS['items'], ARGS['wall'], ARGS['keep'])]",
+        "[x[1] for x in fast_items(ARGS['items'], ARGS['wall'], ARGS['keep'])]",
         json!({"items": items, "wall": wall, "keep": keep}),
     );
     got.as_array()
@@ -217,7 +217,7 @@ fn an_older_pair_at_the_boundary_stays_whole_or_goes_whole() {
         (7, "t2"),
     ]);
     for keep in 1..=6 {
-        let got = quick_items(items_of(&els), wall.clone(), keep);
+        let got = fast_items(items_of(&els), wall.clone(), keep);
         pairs_whole(&got).unwrap_or_else(|e| panic!("keep {keep}: {e}: {got:?}"));
         assert!(
             got.last()
@@ -231,7 +231,7 @@ fn an_older_pair_at_the_boundary_stays_whole_or_goes_whole() {
         );
     }
     // The cut lands between the two calls: both pairs stay, whole.
-    let got = quick_items(items_of(&els), wall.clone(), 4);
+    let got = fast_items(items_of(&els), wall.clone(), 4);
     let ids: Vec<&str> = got.iter().map(id).filter(|i| !i.is_empty()).collect();
     assert_eq!(
         ids,
@@ -239,7 +239,7 @@ fn an_older_pair_at_the_boundary_stays_whole_or_goes_whole() {
         "both pairs whole: {got:?}"
     );
     // A large `keep_recent` keeps everything as it stood.
-    let got = quick_items(items_of(&els), wall, 40);
+    let got = fast_items(items_of(&els), wall, 40);
     assert_eq!(got.len(), els.len(), "nothing cut: {got:?}");
 }
 

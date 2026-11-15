@@ -49,16 +49,43 @@ fn push_shipped() -> bool {
 }
 
 /// The curator of a talky: the shipped hive under the role its instance runs
-/// and with the `memory` section its marker registers (GH #1473), with
-/// `(cell, param, value)` overrides on top.
+/// and with the `memory` section its marker registers (GH #1473) and its
+/// `things` with the mark `thing` (GH #1523), with `(cell, param, value)`
+/// overrides on top.
 fn talky(over: &[(&str, &str, Value)]) -> Hive {
-    let mut all = vec![(
-        "intake",
-        "sections",
-        json!({"memory": {"lane": "sidecar", "mark": "topic"}}),
-    )];
+    let mut all = vec![("intake", "sections", sections())];
     all.extend(over.iter().cloned());
     Hive::with(&all).reporting_composite("talky")
+}
+
+/// The sections a talky's curator registers: `memory` (GH #1473) and
+/// `things` with the mark `thing`, whose names the push asks with (GH #1523).
+fn sections() -> Value {
+    json!({"memory": {"lane": "sidecar", "mark": "topic"},
+           "things": {"lane": "thing_seen", "cap_share": 0.1, "mark": "thing"}})
+}
+
+/// The section `things` of the answer of `turn` (GH #1523): the names the
+/// model saw. Since GH #1523 `mentioned:` holds only these names, where the
+/// person said them -- no capital, date or quote is taken for one.
+fn things(h: &mut Hive, session: &str, turn: &str, names: &[&str]) {
+    things_as(h, &test_round(), session, turn, names);
+}
+
+/// The same section of an answer spoken in `round`.
+fn things_as(h: &mut Hive, round: &Value, session: &str, turn: &str, names: &[&str]) {
+    let items: Vec<Value> = names
+        .iter()
+        .map(|n| json!({"name": n, "kind": "thing"}))
+        .collect();
+    h.lane(
+        "in_section",
+        json!({"session_id": session, "turn_id": turn, "iter": "0",
+               "curator_call": "c-1", "channel": "test",
+               "audience_set": round}),
+        json!({"section": "things"}),
+        json!({"messages": [], "section": "things", "payload": {"items": items}}),
+    );
 }
 
 /// The hop of the collector's ask (collector `head` + `recall_ask`).
@@ -430,6 +457,9 @@ fn the_query_carries_topic_entities_and_refs() {
         "yes, she loves \"Casa Azul\"",
         "Good to hear that Hannah is happy.",
     );
+    // GH #1523: the names the model saw in each answer.
+    things(&mut h, "s1", "t1", &["Hannah", "Porto", "Casa Verde"]);
+    things(&mut h, "s1", "t2", &["Casa Azul", "Hannah"]);
     // The topic the memory section of the first answer named, filed by
     // `./intake` the way every section's marks are.
     memory_section(
@@ -465,10 +495,11 @@ fn the_query_carries_topic_entities_and_refs() {
         .unwrap_or_else(|| panic!("no entities: {q}"))
         .split(", ")
         .collect();
-    // The person's words only (GH #1342): the quote the person said is a
-    // name, newest round first; the model's quote "Casa Verde" names
-    // nothing; `My` opens a sentence and names nothing.
-    assert_eq!(named, ["Casa Azul", "Hannah", "Porto", "2026-03-14"], "{q}");
+    // The person's words only (GH #1342): a name the model named and the
+    // person said, newest round first; "Casa Verde" the model alone said
+    // names nothing. GH #1523: a date is no name the model named -- the date
+    // the word heuristic took ("2026-03-14") stays out.
+    assert_eq!(named, ["Casa Azul", "Hannah", "Porto"], "{q}");
     assert!(
         !q.contains("Casa Verde"),
         "a quote in the model's answer is no anchor: {q}"
@@ -568,6 +599,12 @@ fn the_query_respects_recall_budget() {
         "My sister Hannah lives in Porto with Ana, Bea, Carla and Dora.",
         "ok",
     );
+    things(
+        &mut h,
+        "s1",
+        "t1",
+        &["Hannah", "Porto", "Ana", "Bea", "Carla", "Dora"],
+    );
     let q = query_of(&ask(&mut h, "s1", "t2", "where does she live?")[0]);
     assert!(q.len() <= 60, "{} > 60: {q}", q.len());
     assert!(q.ends_with("where does she live?"), "{q}");
@@ -609,7 +646,7 @@ fn the_push_follows_the_role() {
         return;
     }
     for (role, pushes) in [("talky", true), ("consult", false), ("", false)] {
-        let mut h = Hive::with(&[]);
+        let mut h = Hive::with(&[("intake", "sections", sections())]);
         if !role.is_empty() {
             h.report_profile(curator_profiles::profile(role));
         }
@@ -620,6 +657,7 @@ fn the_push_follows_the_role() {
             "My sister Hannah moved to Porto.",
             "Porto, how lovely.",
         );
+        things(&mut h, "s1", "t1", &["Hannah", "Porto"]);
         let q = query_of(&ask(&mut h, "s1", "t2", "where again?")[0]);
         if pushes {
             assert_eq!(q, "[mentioned: Hannah, Porto] where again?", "{role:?}");
@@ -673,6 +711,17 @@ fn the_talky_budget_keeps_the_query_whole_at_the_memory() {
         "t1",
         "Can you recommend a book about sailing, something like Moby Dick or Treasure Island?",
         "Try The Cruel Sea by Nicholas Monsarrat.",
+    );
+    things(
+        &mut h,
+        "s1",
+        "t1",
+        &[
+            "Moby Dick",
+            "Treasure Island",
+            "The Cruel Sea",
+            "Nicholas Monsarrat",
+        ],
     );
     let long = "Sorry, my memory is a sieve these days and I keep mixing up the family \
                 news I told you about, so where does my sister live now?";
@@ -1124,6 +1173,7 @@ fn the_question_names_only_what_the_round_was_present_for() {
         "My sister Hannah moved to Porto.",
         "Porto, how lovely.",
     );
+    things_as(&mut h, &declared(EAB), "s1", "t1", &["Hannah", "Porto"]);
     round_as(
         &mut h,
         &declared(EB),
@@ -1131,6 +1181,13 @@ fn the_question_names_only_what_the_round_was_present_for() {
         "t2",
         "I met Bea and Carlos in Lisbon.",
         "Lisbon in spring, lovely.",
+    );
+    things_as(
+        &mut h,
+        &declared(EB),
+        "s1",
+        "t2",
+        &["Bea", "Carlos", "Lisbon"],
     );
     let q = query_of(&ask_as(&mut h, &declared(EA), "s1", "t3", "where again?")[0]);
     assert_eq!(
@@ -1215,6 +1272,7 @@ fn a_round_nobody_declared_is_asked_with_its_own_session_only() {
         "We sailed to Madeira with Tomas.",
         "Madeira, wonderful.",
     );
+    things_as(&mut h, &declared(EA), "s2", "t1", &["Madeira", "Tomas"]);
     let asks = ask_as(&mut h, &Value::Null, "s2", "t2", "and then?");
     assert_eq!(asks.len(), 1, "the ask always leaves: {:?}", h.out);
     assert_eq!(
@@ -1230,6 +1288,7 @@ fn a_round_nobody_declared_is_asked_with_its_own_session_only() {
         "We flew to Faro with Ines.",
         "Faro, wonderful.",
     );
+    things_as(&mut h, &Value::Null, "s2", "t3", &["Faro", "Ines"]);
     let asks = ask_as(&mut h, &Value::Null, "s2", "t4", "and then?");
     assert_eq!(asks.len(), 1, "the ask always leaves: {:?}", h.out);
     assert_eq!(

@@ -27,6 +27,8 @@ fn knobs(wait_recall: &str) -> Vec<(&'static str, Value)> {
         ("memory_tier", json!("1")),
         ("route_wait_ms", json!(150)),
         ("needs_wait_recall", json!(wait_recall)),
+        // d58-3 namen (GH #1525, O6): the need names the compositions set.
+        ("recall_needs", json!(["memory"])),
     ]
 }
 
@@ -170,4 +172,21 @@ fn a_needs_string_is_read_with_blanks_trimmed() {
         seam(&out).is_none(),
         "\"tool, memory\" waits for the recall leg: {out:?}"
     );
+}
+
+/// Fix round (review M4): `recall_needs` as the JSON text of a list (the
+/// form the curator's policy and the lead read as well) names its needs
+/// here too -- a `simple` turn that needs one waits for the recall leg.
+#[test]
+fn the_json_text_of_the_recall_needs_names_the_need() {
+    for needs in [json!("[\"memory\"]"), json!("memory"), json!(["memory"])] {
+        let mut over = knobs("1");
+        over.retain(|(k, _)| *k != "recall_needs");
+        over.push(("recall_needs", needs.clone()));
+        let out = collect(&over, json!([window(), stamp("simple", &["memory"])]));
+        assert!(
+            seam(&out).is_none(),
+            "recall_needs {needs}: simple + memory waits for the recall leg: {out:?}"
+        );
+    }
 }

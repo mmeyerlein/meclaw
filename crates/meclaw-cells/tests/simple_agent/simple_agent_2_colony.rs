@@ -1123,7 +1123,7 @@ fn sa2_builder_block_renders_one_agent_the_door_accepts() {
     let diff = &decl["diff"];
     let nodes = diff["add_nodes"].as_array().expect("add_nodes");
     assert_eq!(nodes.len(), 1, "one agent");
-    assert_eq!(nodes[0]["template"], "simple-agent@2.3.2");
+    assert_eq!(nodes[0]["template"], "simple-agent@2.4.0");
     assert_eq!(
         decl["ctx"]["model"], "example-provider/brain-model",
         "ctx.model"
@@ -1314,10 +1314,11 @@ fn nest_wish(extra: Value) -> Value {
 
 /// The llm cells of `@2`. Its embedder (`memory-hive/embed`) names the app
 /// too since GH #1315; `tools/web_search` calls no model and takes no app id.
-const LLM_CELLS: [&str; 7] = [
+const LLM_CELLS: [&str; 8] = [
     "brain",
     "strong",
     "curator/summarizer",
+    "curator/relevance",
     "memory-hive/closer",
     "memory-hive/dialectic",
     "memory-hive/dreamer",
@@ -1731,7 +1732,7 @@ async fn wait_sealed(h: &meclaw_testing::ColonyHandle) -> usize {
 fn embedding_app_wish() -> Value {
     let example = read_json(&repo("examples/simple-agent-colony/wish.json"))["params"].clone();
     let figure = read_json(&repo("templates/figure/config.json"));
-    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.1.2",
+    json!({"scope": "/os/orgs/o/members/m", "app": "fig", "template": "figure@2.1.3",
            "screen": "display", "ctx": {"model": "example-provider/brain-model"},
            "declaration": {}, "credential": example["credential"],
            "override_params": {"world": {"figure_id": "fig", "world_id": "w", "role": "npc"}},

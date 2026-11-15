@@ -3,7 +3,7 @@
 //!
 //! WHY this file exists: a knob a script reads is not yet a knob a set can
 //! turn. The door (`check_override_params`) lets an override through only
-//! for a param the cell declares. The waiting-time knobs (`horizon_advise`,
+//! for a param the cell declares. The waiting-time knobs (`horizon_feed`,
 //! `horizon_defaults_ms`, `horizon_quantile`) move from `curator/policy` to
 //! `lead/lead`, and so do the fixed instruction texts of the side calls,
 //! shipped with today's texts as their defaults, and the wording of a side
@@ -60,7 +60,7 @@ fn door(template: &str, cell: &str, over: &Value) -> Result<(), String> {
 /// A value a set renders for a moved knob (soul2me's phone surface).
 fn set_value(knob: &str) -> Value {
     match knob {
-        "horizon_advise" => json!("1"),
+        "horizon_feed" => json!("1"),
         "horizon_defaults_ms" => json!(json!({"weather": 2000, "web": 5000}).to_string()),
         "bridge_wording" => json!("consult:soon,research:later"),
         _ => json!("75"),
@@ -104,7 +104,7 @@ fn gh_d58_moveout_a_set_override_of_the_moved_params_passes_the_door() {
         panic!("all moved knobs at once on lead/lead: {why}");
     }
     assert_eq!(
-        lead["params"]["horizon_advise"],
+        lead["params"]["horizon_feed"],
         json!("0"),
         "shipped off, as before"
     );

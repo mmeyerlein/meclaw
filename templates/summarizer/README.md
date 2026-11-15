@@ -1,4 +1,4 @@
-# `summarizer@2.3.7`
+# `summarizer@2.4.0`
 
 The session handover step as a hive of existing cell types -- no new cell type, no Rust.
 Two cells: `prep` (a `code` cell, the glue) and `writer` (an `llm` cell, the prose).
@@ -25,8 +25,8 @@ generation opens lazily on the first morning turn and already carries the handov
   before any model sees it: the newest `recent_turns` turns travel verbatim and last,
   everything older comes first and is counted, tool rounds enter as context. Nothing
   has a length of its own (GH #1085): the prompt takes up to half of the window of the
-  model that reads it, `./writer` -- `input_soft_fallback`, the window of the catalog row
-  the writer is born on (`input_soft_fallback_row`); a context `input_soft` or
+  model that reads it, `./writer` -- `input_soft_fallback`, the one fallback window without
+  a catalog row (17500 tokens, said on stderr as `no catalog row for <model>`); a context `input_soft` or
   `recall_input_soft` names the window of the asker, not of the writer, and is not
   read -- and beyond it the older turns and tool texts are cut fairly,
   each with the mark `...[cut: <shown> of <total> chars shown; budget of the window]`.
@@ -178,8 +178,7 @@ a cell carries under `params` may be named
 |---|---|---|
 | `recent_turns` | `12` | how many of the newest turns travel verbatim into the prompt |
 | `round_lines` | `40` | how many tool-activity lines enter at most (newest kept; the dropped ones are named in the prompt) |
-| `input_soft_fallback` | `250000` | the writer's window in tokens (a request's `input_soft` is the asker's and is not read): `input_soft` of the catalog row the writer is born on (OR-IG-9). Its model is a birth token (`ctx.model`), and the llm-registry's tier for a small, inexpensive writer is `light`, `openai/gpt-6-luna`. The prompt takes half of it; `0` sends the day whole |
-| `input_soft_fallback_row` | `openai/gpt-6-luna` | the catalog row `input_soft_fallback` is; the script does not read it, the drift lock `gh1085_fallback_windows_match_the_catalog` holds the two together. A writer born on another model sets both |
+| `input_soft_fallback` | `17500` | the writer's window in tokens (a request's `input_soft` is the asker's and is not read): one documented window, 17500 tokens, the same in every core cell (GH #1532, OR-IG-9): without a catalog row an overflow at the system gate is worse than a window too small; each use writes `no catalog row for <model>` on stderr. The prompt takes half of it; `0` sends the day whole |
 
 `phaseout_chars` and `tool_chars` (both `200`) are gone since 2.2.8 (GH #1085): a
 fixed length per turn is no budget. The writer's window is.

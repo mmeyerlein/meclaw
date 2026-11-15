@@ -136,6 +136,11 @@ pub enum SlackEvent {
         /// Its wait in ms (doubling, capped at `credential_backoff_max_ms`).
         wait_ms: u64,
     },
+    /// GH #1530 (OR-d54g.acktyp.2): Slack confirmed the removal of a reaction
+    /// the connector set. Never a Slack event: the keeper (or the start's
+    /// removal) reports it on the cell's report lane, the I/O half hands it
+    /// on, and the handler -- the owner of the `cell.db` -- forgets the row.
+    ReactionRemoved(super::db::RememberedReaction),
 }
 
 impl From<SlackInbound> for SlackEvent {

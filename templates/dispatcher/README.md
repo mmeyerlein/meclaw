@@ -1,4 +1,4 @@
-# `dispatcher@1.6.4`
+# `dispatcher@1.6.5`
 
 The fan-**out** half of a tool loop, as one `code` cell -- no new cell type, no Rust.
 Its counterpart is the fan-**in**: [`collector`](../collector/), which assembles the

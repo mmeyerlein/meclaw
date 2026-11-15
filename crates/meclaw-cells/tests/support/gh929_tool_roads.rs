@@ -165,10 +165,11 @@ pub async fn s3_history_call() -> (Segment, Run, Delivery) {
         )
     });
     // The search found the turn (review T, M-4): a hit is what sends the
-    // history cell past its first page into the neighbours (`search-rows`,
-    // `search-page`, `search-near`, ...), one ledger round trip each. A search
-    // without a hit answers after one or two and would measure a shorter road
-    // without a word.
+    // history cell past its check into the neighbours (`search-cands`,
+    // `search-rows`, `search-check`, then `search-near`, `search-near-2`; GH
+    // #1531), one ledger round trip each. A search without a hit answers
+    // after one to three (no candidate, no visible row, no hit in the check)
+    // and would measure a shorter road without a word.
     let by_id: std::collections::HashMap<&str, &Delivery> =
         run.log.iter().map(|d| (d.id.as_str(), d)).collect();
     let (mut at, mut legs) = (Some(&closing), 0usize);

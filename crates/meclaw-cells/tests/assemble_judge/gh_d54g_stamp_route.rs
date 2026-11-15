@@ -477,7 +477,7 @@ fn gh_d54g_stamp_the_second_judge_gets_the_same_view() {
     let want = on(&opened, "view_ask")["view_ask"].clone();
     assert_eq!(
         want,
-        json!({"turns": 2, "budget_tokens": 1500, "target": "decide"}),
+        json!({"turns": 2, "target": "decide"}),
         "check of the setup: the first verdict's request is today's"
     );
 

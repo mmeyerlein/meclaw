@@ -13,7 +13,7 @@
 //! and broke the cached prefix; now the composite's dispatcher answers such a
 //! call without sending it), the pending note stays beside it as
 //! information, and the mark ends with the consult's advice -- or, as a
-//! backstop, at `consult_pending_ms`, now 120 s: the measured consults ran
+//! backstop, at `ask_pending_ms`, now 120 s: the measured consults ran
 //! 38-42 s, and the old 30 s let the mark lapse while the first still ran.
 //! The backstop is checked off the mark's own `until`; no wall clock decides.
 
@@ -68,7 +68,7 @@ fn curate_with(h: &mut Hive, turn_id: &str, path: &str, extra_ctx: Value, ask: &
 
 /// The consult mark of `s1` -- the lead's row since GH #1447 (`lead_state`).
 fn pending(h: &Hive) -> Value {
-    meclaw_core::serde_json::from_str(&h.lead_state("consult_pending:s1")).unwrap_or(Value::Null)
+    meclaw_core::serde_json::from_str(&h.lead_state("ask_pending:s1")).unwrap_or(Value::Null)
 }
 
 /// `until - at` of the pending mark, in milliseconds.
@@ -152,11 +152,11 @@ fn a_pending_consult_takes_the_consult_tool_away() {
         .unwrap_or_default()
         .to_string();
     let mark = pending(&h);
-    assert_eq!(mark["consult_id"], json!(cid), "{mark}");
+    assert_eq!(mark["ask_id"], json!(cid), "{mark}");
     assert_eq!(
         span_ms(&mark),
         120_000,
-        "the backstop stands at consult_pending_ms, above the measured 38-42 s: {mark}"
+        "the backstop stands at ask_pending_ms, above the measured 38-42 s: {mark}"
     );
 
     // The person's next turn is a talk turn: the brain answers it, without
@@ -218,7 +218,7 @@ fn a_pending_consult_takes_the_consult_tool_away() {
         .as_ref()
         .expect("the tree ships the lead")
         .execute(
-            "UPDATE state SET value = ?1 WHERE key = 'consult_pending:s1'",
+            "UPDATE state SET value = ?1 WHERE key = 'ask_pending:s1'",
             [canonical(&lost)],
         )
         .unwrap();
@@ -309,7 +309,7 @@ fn a_consult_the_brain_starts_itself_takes_the_tool_away_too() {
         json!([consult_call("c1", false)]),
     );
     let mark = pending(&h);
-    assert_eq!(mark["consult_id"], json!("c1"), "{mark} {:?}", h.stderr);
+    assert_eq!(mark["ask_id"], json!("c1"), "{mark} {:?}", h.stderr);
     assert_eq!(span_ms(&mark), 120_000, "{mark}");
 
     // Turn N+1: no speaking model has the consult tool on its menu.
@@ -376,7 +376,7 @@ fn the_brain_s_consult_never_overwrites_a_standing_mark() {
         json!([consult_call("c2", false)]),
     );
     assert_eq!(pending(&h), before, "the first mark stands: {:?}", h.stderr);
-    assert_eq!(pending(&h)["consult_id"], json!(cid));
+    assert_eq!(pending(&h)["ask_id"], json!(cid));
 }
 
 #[test]
@@ -397,7 +397,7 @@ fn a_folded_consult_family_is_taken_away_and_marks_too() {
         json!({}),
         json!([consult_call("c1", true)]),
     );
-    assert_eq!(pending(&h)["consult_id"], json!("c1"), "{:?}", h.stderr);
+    assert_eq!(pending(&h)["ask_id"], json!("c1"), "{:?}", h.stderr);
 
     // With `consult` folded the menu entry is `consult`: it goes too
     // (review M1: a deny on `consult_cogny` alone would match nothing).
@@ -487,11 +487,7 @@ fn an_ask_back_of_the_backend_keeps_the_mark() {
         "the core asks: which week?",
     );
     let ask = brain_call(&h);
-    assert_eq!(
-        pending(&h)["consult_id"],
-        json!(cid),
-        "the ask keeps the mark"
-    );
+    assert_eq!(pending(&h)["ask_id"], json!(cid), "the ask keeps the mark");
     assert!(
         denied(&ask).contains(&"consult_cogny".to_string()),
         "{:?}",
@@ -526,5 +522,5 @@ fn a_follow_up_consult_is_marked_under_the_id_it_continues() {
                        "arguments": json!({"question": "cost?", "consult_id": "c1"}).to_string()})
             .to_string()});
     h.tap(&call, "tool_calls", json!({}), json!([follow]));
-    assert_eq!(pending(&h)["consult_id"], json!("c1"), "{:?}", h.stderr);
+    assert_eq!(pending(&h)["ask_id"], json!("c1"), "{:?}", h.stderr);
 }

@@ -103,6 +103,14 @@ const MODEL_CELLS: [(&str, &[&str]); 3] = [
     ("simple-agent", &["brain", "strong"]),
 ];
 
+/// The model cells of each composite that the curator does not cut a window
+/// for but that hold a package line all the same (GH #1526 d58-3 grenzen,
+/// OR-583.grenzen.11/.15): talky's judge `./decide`. Its line answers the
+/// same two asks -- named and without a handle -- and goes to the curator on
+/// `in_limits_row` (the judge's window for its view), never on `in_catalog`;
+/// it reports no window profile (no window of it is cut).
+const LIMITS_CELLS: [(&str, &[&str]); 1] = [("talky", &["decide"])];
+
 #[test]
 fn d58_target_talky_delivers_each_call_by_its_target() {
     if !shipped() {
@@ -288,8 +296,41 @@ fn d58_target_every_model_cell_reports_its_profile_and_answers_both_asks() {
                 failures.push(format!("{composite}/{cell}: named ask {:?}", cells(&named)));
             }
         }
+        let judges: &[&str] = LIMITS_CELLS
+            .iter()
+            .find(|(c, _)| *c == composite)
+            .map(|(_, n)| *n)
+            .unwrap_or(&[]);
+        for cell in judges.iter().copied() {
+            let cfg = read_json(&repo(&format!("templates/{composite}/{cell}/config.json")));
+            if cfg["params"]["package_line"] != json!(true) {
+                failures.push(format!("{composite}/{cell}: no package line"));
+            }
+            let line = reach(
+                &t,
+                cell,
+                json!({}),
+                json!({"route": "package", "package_of": format!("/t/{cell}")}),
+            );
+            if cells(&line) != vec![at("curator")]
+                || line[0].1.hop.get("route") != Some(&json!("in_limits_row"))
+            {
+                failures.push(format!("{composite}/{cell}: package line {line:?}"));
+            }
+            let named = reach(
+                &t,
+                "curator",
+                json!({}),
+                json!({"route": "catalog_ask", "catalog_for": cell}),
+            );
+            if cells(&named) != vec![at(cell)] {
+                failures.push(format!("{composite}/{cell}: named ask {:?}", cells(&named)));
+            }
+        }
         let all = reach(&t, "curator", json!({}), json!({"route": "catalog_ask"}));
-        let mut want: Vec<String> = names.iter().map(|c| at(c)).collect();
+        // Every model cell with a package line answers the ask without a
+        // handle alike, the judge's too (the curator is omni).
+        let mut want: Vec<String> = names.iter().chain(judges.iter()).map(|c| at(c)).collect();
         want.sort();
         if cells(&all) != want {
             failures.push(format!(
@@ -302,22 +343,25 @@ fn d58_target_every_model_cell_reports_its_profile_and_answers_both_asks() {
 }
 
 /// The value sets of the former roles talky and consult (curator policy
-/// `ROLES`), as they stood.
+/// `ROLES`), as they stood -- since GH #1526 (OR-583.grenzen.12) the two
+/// token numbers as the shares of luna's window (250000) that give them:
+/// `keep_recent_tokens` 80000 = `keep_recent_share` 0.32, `window_target`
+/// 100000 = `window_target_share` 0.4, 0 = 0.
 fn value_set(role: &str) -> Value {
     match role {
         "talky" => json!({"compress_at": 0.5, "rebuild_to": 0.45,
-              "keep_recent": 40, "keep_recent_tokens": 80000,
+              "keep_recent": 40, "keep_recent_share": 0.32,
               "horizon": "day", "tiers": "raw,summary,none",
               "keep_rounds": 1, "gc": "1", "gc_scaffold": "1", "stub_tools_after": 20,
               "broadcast_mode": "tail", "recall_push": "1", "recall_budget": 200,
-              "short_ids": "1", "identity_budget": "full", "window_target": 100000,
+              "short_ids": "1", "identity_budget": "full", "window_target_share": 0.4,
               "notes_share": 0.02, "state_lines": 8}),
         "consult" => json!({"compress_at": 0.5, "rebuild_to": 0.35,
                 "keep_recent": 10,
                 "horizon": "task", "tiers": "raw,summary",
                 "keep_rounds": 2, "gc": "0", "gc_scaffold": "1", "stub_tools_after": 10,
                 "broadcast_mode": "tail", "recall_push": "", "recall_budget": 0,
-                "short_ids": "1", "identity_budget": "full", "window_target": 0,
+                "short_ids": "1", "identity_budget": "full", "window_target_share": 0,
                 "notes_share": 0, "state_lines": 0}),
         other => panic!("no value set {other}"),
     }
@@ -365,7 +409,7 @@ fn d58_target_the_value_sets_moved_into_the_profiles_alone() {
             "notes_share",
             "short_ids",
             "state_lines",
-            "window_target",
+            "window_target_share",
         ];
         if values != call.iter().collect::<Vec<_>>()
             || call[..]

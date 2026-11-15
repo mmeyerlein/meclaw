@@ -36,6 +36,8 @@
 //! talks to the mock OpenAI wire, everything else is a `code`/`store`/`timer`
 //! cell. The file spends nothing.
 
+#[path = "support/curator_llm.rs"]
+mod curator_llm;
 #[path = "mock_openai.rs"]
 mod mock_openai;
 
@@ -153,7 +155,10 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 5] = [
 /// sharpens an unsure route stamp -- forty-six. COMPUTED in the strand from
 /// the shipped tree (one `llm` cell more under `templates/talky/`, one
 /// `talky` in this example: 45 + 1); no run there, the first run measures it.
-const CELLS_AFTER_GROW: usize = 46;
+/// d58-3 ballast (GH #1528): the curator's ballast judge (`curator/relevance`),
+/// a model cell beside the summarizer -- forty-seven. MEASURED (47 against 46
+/// in the strand's run).
+const CELLS_AFTER_GROW: usize = 47;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -198,7 +203,11 @@ const CELLS_AFTER_GROW: usize = 46;
 /// D54g (GH #1506): talky's second judge is in [`CELLS_AFTER_GROW`] and so in
 /// this total too; `cogny` grows none -- sixty-five. COMPUTED in the strand
 /// (64 + 1); no run there, the first run measures it.
-const CELLS_AFTER_COGNY: usize = 65;
+/// d58-3 ballast (GH #1528): the ballast judge (`curator/relevance`) grows in
+/// every curator -- talky's in [`CELLS_AFTER_GROW`], cogny's (a reference to
+/// the same `curator` template) one more -- sixty-seven. COMPUTED in the
+/// strand (65 + 2); the run behind the first assertion measures it.
+const CELLS_AFTER_COGNY: usize = 67;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
@@ -491,12 +500,16 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     for rel in [
         "templates/talky/brain/config.json",
         "templates/cogny/brain/config.json",
-        "templates/curator/summarizer/config.json",
     ] {
         patch(&root.join(rel), |v| {
             v["params"]["base_url"] = json!(base_url)
         });
     }
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("templates/curator"), |v| {
+        v["params"]["base_url"] = json!(base_url)
+    });
     // GH #1061: the key file the vault opens itself from (0600, as the vault
     // refuses a loose one), named in `.env` by its non-secret token, and the
     // test key deposited COLD -- the vault was never woken, so `add` lays its

@@ -1,18 +1,27 @@
 {
   "cell": {
     "type": "ref",
-    "template": "lead@1.1.0"
+    "template": "lead@2.0.0"
   },
   "override_params": {
     "lead": {
       "path_routes": "talk:brain,simple:quick,complex:consult,research:research,*:brain",
       "departures": "consult:10000,research:120000:240000",
+      "ask_pending_ms": 120000,
       "fallback": "quick:brain",
       "spec_target": "quick_spec",
       "bridge_target": "*:quick,spec:quick_bridge",
       "bridge_wording": "consult:soon,research:later",
       "errand_tool": "consult_cogny",
-      "errand_family": "consult"
+      "errand_family": "consult",
+      "recall_needs": [
+        "memory"
+      ],
+      "recall_to_fallback": "0",
+      "side_slot": "bridge",
+      "bridge_places": "{\"places\": {\"weather\": \"at the weather service\", \"web\": \"on the web\"}, \"rest\": \"in other places\", \"before\": \", \", \"join\": \" and \"}",
+      "bridge_texts": "{\"tool\": \"You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. Your lookup is already running right now{fill}; it was started for you, and its result follows in this turn. Say one short sentence that bridges the wait, in your own words: only that you are looking it up, one moment. Never speak of missing access, missing abilities or limits of any kind. Ask the person nothing: the answer is on its way. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Speak plainly: write no tool call, no JSON, no code and no command.\", \"soon\": \"You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. The answer follows in this turn, within about {seconds} seconds. Say one short sentence that bridges the wait, in your own words: only that you are on it and the answer is still coming. Never speak of missing access, missing abilities or limits of any kind. Ask nothing about this request itself: its answer is on its way. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Call no tool.\", \"later\": \"You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. It is researched in the background; that takes about {minutes} minutes, and the result comes in a later turn. Tell the person so in your own words and name the waiting time. Then keep the conversation going on another subject -- how they are, or what else is on their mind -- never on this request: ask nothing about it, not its details, not their wishes or experiences with it, not what matters to them in it; the research has what it needs. Never speak of missing access, missing abilities or limits of any kind. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Call no tool.\"}",
+      "interrupt_section": "interrupt"
     }
   }
 }

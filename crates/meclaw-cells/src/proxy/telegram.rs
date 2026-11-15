@@ -321,6 +321,44 @@ impl TelegramClient {
     }
 }
 
+/// GH #1530: Telegram's hook into the shared typing keeper
+/// (`proxy::typing`): `sendChatAction` with `typing`, which decays after
+/// roughly five seconds, so the keeper shows it again every interval and ends
+/// it by aborting -- nothing has to be taken away.
+pub(crate) struct TelegramTyping {
+    /// The bot's client.
+    pub(crate) client: TelegramClient,
+    /// The chat the turn runs in.
+    pub(crate) chat_id: i64,
+    /// Operation timeout of one `sendChatAction` (`send_timeout_ms`).
+    pub(crate) timeout: Duration,
+}
+
+impl crate::proxy::typing::TypingSign for TelegramTyping {
+    fn kind(&self) -> &'static str {
+        "typing"
+    }
+
+    fn decays(&self) -> bool {
+        true
+    }
+
+    fn needs_take_away(&self) -> bool {
+        false
+    }
+
+    async fn show(&self) -> Result<(), String> {
+        self.client
+            .send_chat_action(self.chat_id, "typing", self.timeout)
+            .await
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    async fn take_away(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// One update of `getUpdates` as the event the handler sees. GH #907: EVERY
 /// update with an `update_id` yields an event, because the cursor may only
 /// move past what the handler persisted -- before, a photo, a sticker or an

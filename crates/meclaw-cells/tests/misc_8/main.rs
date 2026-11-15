@@ -3,6 +3,8 @@
 
 #[path = "../support/composite_packages.rs"]
 pub mod composite_packages;
+#[path = "../support/curator_llm.rs"]
+pub mod curator_llm;
 pub mod gh975_a_projection_job_fits_the_colony_ttl;
 pub mod gh976_seed_slug_has_the_model_id_form;
 pub mod gh980_a_long_chain_is_not_capped;

@@ -288,6 +288,44 @@ fn usage_and_call_mark_cross_the_freeswitch_rim_to_the_member_port() {
     }
 }
 
+/// GH #1534: the `first_audio` stamp of a phone call (templates/voice,
+/// `emit_first_audio`, d54g callseam) leaves the freeswitch hive. The rim
+/// edge `./voice -> .` let `usage` and `call_mark` through but not
+/// `first_audio`, so on a phone line every stamp died at the media half as a
+/// `no_route` dead letter (three of them in one call on a test colony of
+/// 0.87.0) and a measurement saw no first-audio time at all. Walked with the
+/// colony's own CEL: the stamp crosses the rim on the edge that carries
+/// `delegation`, untouched, with the hive's own keys stripped the same way,
+/// and the hive declares the lane it lets out. The leg beyond the rim is the
+/// set's that orders the stamp.
+#[test]
+fn gh1534_first_audio_crosses_the_freeswitch_rim() {
+    if !shipped() {
+        eprintln!("the templates of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let ctx = obj(json!({"session_id": "call-9", "call_id": "call-9",
+                         "phone_call": "call-9", "phone_origin": "signal"}));
+    let delegation = obj(json!({"route": "delegation", "session_id": "call-9",
+                                "call_id": "call-9", "engine": "duplex",
+                                "delegation_id": "d-1", "offset_ms": 0}));
+    let reference = one("freeswitch", "./voice", ".", &ctx, &delegation);
+    let hop = obj(json!({"route": "first_audio", "session_id": "call-9",
+                         "call_id": "call-9", "platform": "voice", "mode": "auto",
+                         "engine": "duplex", "turn_id": "call-9#1",
+                         "t_first_audio_ms": 8647}));
+    let h = one("freeswitch", "./voice", ".", &ctx, &hop);
+    assert_eq!(h.hop, hop, "first_audio: the hop crosses the rim untouched");
+    assert_eq!(
+        h.context, reference.context,
+        "first_audio: the rim strips the hive's own keys exactly as on `delegation`"
+    );
+    assert!(
+        emits_of("freeswitch").contains(&"first_audio".to_string()),
+        "first_audio: the freeswitch contract declares the lane it lets out"
+    );
+}
+
 /// live-2 fx-call (#1369): the end of a call reaches the curator and its
 /// facts come back out of the generation. Up: the member hands the final
 /// `usage` to the generation as `in_call_end` (the satz's edge) -> the

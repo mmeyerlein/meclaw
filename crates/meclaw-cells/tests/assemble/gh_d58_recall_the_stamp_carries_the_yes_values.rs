@@ -8,8 +8,11 @@
 //! yes-value of the memory question itself. With `stamp_needs_yes` "1" a
 //! JUDGED stamp carries `needs_yes`, `{<need>: yes}` for every asked need the
 //! decider answered with a number. A need it did not answer is absent, never
-//! 0 -- silence is not a "no". A fallback stamp (`error`, `late`, `unsure`)
-//! carries no `needs_yes` at all: no judgement stands behind it. Shipped "0",
+//! 0 -- silence is not a "no". A fallback stamp without a judgement of its
+//! own (`error`, `unsure`) carries no `needs_yes` at all: no judgement stands
+//! behind it. A `late` stamp is not among them since d58-3 N1 (GH #1524): its
+//! decider answered, and it carries the yes-values of those answers
+//! (`gh_d583_kern_route_a_late_stamp_carries_its_yes_values`). Shipped "0",
 //! the stamp keeps the keys of before, byte for byte.
 //!
 //! Runs the shipped `talky/route` script (`support/assemble_cell.rs`).
@@ -131,11 +134,10 @@ fn gh_d58_recall_the_stamp_carries_the_yes_values() {
         "a need that was not asked is not carried: {m}"
     );
 
-    // A fallback stamp carries no yes-values: unsure, late, error.
+    // A fallback stamp without a judgement of its own carries no yes-values:
+    // unsure, error (a late one does since d58-3 N1, pinned on its own).
     let unsure = stamp_of(&on, in_time(answers(0.3)));
     assert_eq!(unsure["header"]["fallback"], "unsure", "{unsure}");
-    let late = stamp_of(&on, decision(3_600_000, json!({}), answers(0.91)));
-    assert_eq!(late["header"]["fallback"], "late", "{late}");
     let error = stamp_of(
         &on,
         decision(
@@ -145,7 +147,7 @@ fn gh_d58_recall_the_stamp_carries_the_yes_values() {
         ),
     );
     assert_eq!(error["header"]["fallback"], "error", "{error}");
-    for m in [&unsure, &late, &error] {
+    for m in [&unsure, &error] {
         assert_eq!(
             keys(&m["stamp"]),
             seven,

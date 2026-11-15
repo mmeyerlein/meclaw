@@ -3,7 +3,7 @@
 //! WHY this file exists: the bridge (GH #1248) is a model call of its own --
 //! its own `calls` row, its own cell (`./quick_bridge` for a speculating
 //! talky, GH #1398, else `./quick`). Review o15-R1 I3 found it cut outside
-//! the one stage 2 (`quick_items` straight in `win`), without a snapshot and
+//! the one stage 2 (`fast_items` straight in `win`), without a snapshot and
 //! without its catalogue question, so the fourth talky edge
 //! (`./curator -> ./quick_bridge` on `catalog_ask`) never carried a message.
 //! One place cuts (T3-core § C3b): the bridge's window is the cut's, its
@@ -26,7 +26,7 @@ use meclaw_core::serde_json::{self as sj, Value, json};
 fn hive(spec: bool, ask: bool) -> Hive {
     let mut over = Vec::<(&str, &str, Value)>::new();
     if spec {
-        over.push(("lead", "quick_speculative", json!("1")));
+        over.push(("lead", "spec_ahead", json!("1")));
         over.push(("lead", "spec_tools", json!("web,weather")));
     }
     let h = Hive::with(&over);

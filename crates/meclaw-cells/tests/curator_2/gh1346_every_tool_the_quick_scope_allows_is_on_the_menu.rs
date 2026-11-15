@@ -1,7 +1,7 @@
 //! GH #1346 -- every tool the quick scope allows is on the menu the model gets.
 //!
 //! WHY this file exists: on the quick way the curator states the call's
-//! `tool_scope` itself (`quick_scope`, GH #1260): the class's tools plus the
+//! `tool_scope` itself (`fast_scope`, GH #1260): the class's tools plus the
 //! router stamp's families, and the stamp names ops (`set_timer`). With the
 //! fold on, the collector folds the menu into families (`set` holds
 //! `set_pin` and `set_timer`), and the `llm` cell matches scope names
@@ -53,10 +53,14 @@ fn quick_scope_in(
     tools: Value,
 ) -> Value {
     h.out.clear();
-    let hop = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0", "phase": "",
+    // GH #1529 (O3): the menu of a session is the union of its turns' choices
+    // (`menu_superset`); each turn here runs in a session of its own, so the
+    // scope is the one this turn's choice makes.
+    let session = format!("s-{turn_id}");
+    let hop = json!({"session_id": session, "turn_id": turn_id, "iter": "0", "phase": "",
                      "path": "simple", "families": families,
                      "tools_folded": folded});
-    let ctx = json!({"session_id": "s1", "turn_id": turn_id, "iter": "0",
+    let ctx = json!({"session_id": session, "turn_id": turn_id, "iter": "0",
                      "channel": "test", "audience_set": ROUND_E, "path": "simple"});
     let mut body = json!({"messages": [user("set a timer for the tea, five minutes")],
                           "system": mode("Be brief.")});

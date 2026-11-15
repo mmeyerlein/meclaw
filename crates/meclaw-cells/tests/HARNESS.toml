@@ -41,6 +41,11 @@ harness = "curator_walls"
 match = "^gh_d58_errand_"
 harness = "curator_errands"
 
+# d54g b3err: the pins of a failed backend call (quick_bridge) that must reach ./errors sit beside the errand pins; in `curator` they would shift every later file one part further.
+[[rule]]
+match = "^gh_d54g_b3err_"
+harness = "curator_errands"
+
 # D58 target (GH #1483): the four pins of the llm cell's profile go to `llm`,
 # the other pins of the strand to a binary of their own -- nineteen more files
 # in `curator` would shift every later file one part further.
@@ -165,6 +170,16 @@ harness = "curator_live"
 match = "^gh_d54g_stamp_route"
 harness = "assemble_judge"
 
+# d54g listennote: the pin of the collector seam sits beside the stamp-route pins; in `assemble` it would shift every later file one part further.
+[[rule]]
+match = "^gh_d54g_listennote_seam"
+harness = "assemble_judge"
+
+# d54g listennote: the pins of the silent section turn sit beside the ack-listen pins in `curator_live`; in `curator` they would shift every later file one part further.
+[[rule]]
+match = "^gh_d54g_listennote"
+harness = "curator_live"
+
 [[rule]]
 match = "^gh_d54g_stamp_notes"
 harness = "curator_frame"
@@ -188,9 +203,74 @@ harness = "curator_sections"
 match = "^gh_d583_(tag|ballast)_"
 harness = "curator_walls"
 
+# d58-3 suche (GH #1531): the history search finds every row of the wall
+# through the ledger's full-text index, not a capped scan.
+[[rule]]
+match = "^gh_d583_suche_"
+harness = "curator_walls"
+
+# d58-3 nachlese oc9 (GH #1539): the pin of a brief cut off inside a line; in
+# `curator` the file would open a sixth part and shift every later file.
+[[rule]]
+match = "^gh_d583_oc9_"
+harness = "curator_walls"
+
 [[rule]]
 match = "^gh_d583_schnell_"
 harness = "curator_lead"
+
+# d58-3 treue (Paket Kurator-Treue, OR-583-79): the recall pin beside the
+# memory pins, the rest beside the curator's targets.
+[[rule]]
+match = "^gh_d583_treue_recall_"
+harness = "memory"
+
+# d58-3 treue (T1): the pins of the frame of an own answer of another
+# session beside the wave's other window pins.
+[[rule]]
+match = "^gh_d583_treue_"
+harness = "curator_targets"
+
+# GH #1532 (strand raten): the memory hive's pins of the row's rate and image
+# cost beside the memory hive's own pins.
+[[rule]]
+match = "^gh_d583_raten_mem_"
+harness = "memory"
+
+# GH #1532 (strand raten): the curator's pins of the row's image cost and the
+# start window's share beside the sections pins, and the route's beside the
+# route's judge pins.
+[[rule]]
+match = "^gh_d583_raten_cur_"
+harness = "curator_sections"
+
+[[rule]]
+match = "^gh_d583_raten_route_"
+harness = "assemble_judge"
+
+# GH #1532 (strand raten, point 4): the push's pin of the row's image cost on
+# the memory ask beside grenzen's pin of its rate (curator_sections).
+[[rule]]
+match = "^gh_d583_raten_push_"
+harness = "curator_sections"
+
+# GH #1532 (strand raten, fix round Important): the live pin -- a real llm
+# answer, its row's rate and image cost across the shipped edges -- beside
+# the push's pin.
+[[rule]]
+match = "^gh_d583_raten_live_"
+harness = "curator_sections"
+
+# GH #1532 (strand raten): the rate pins of the five producers beside their
+# gh1085 budget pins (file space), and the one rule of the fallback windows
+# beside gh1085_fallback_windows_match_the_catalog.
+[[rule]]
+match = "^gh_d583_raten_cells_"
+harness = "file_space"
+
+[[rule]]
+match = "^gh_d583_raten_fallback_"
+harness = "misc_1"
 
 [[rule]]
 match = "^gh_d54g_kprofil_window"
@@ -198,6 +278,12 @@ harness = "curator_live"
 
 [[rule]]
 match = "^gh_d54g_kprofil_feed"
+harness = "curator_feed"
+
+# GH #1540 (d54g horizon): the pins of the feeds of a delegation round sit
+# beside the feed's pins, so no curator part moves.
+[[rule]]
+match = "^gh1540_"
 harness = "curator_feed"
 
 # GH #1436 (d54g d58rest, OR-54g-62): the pins of the carried note sit beside
@@ -232,6 +318,13 @@ harness = "assemble"
 
 [[rule]]
 uses = "^support/web_fixture\\.rs$"
+harness = "web"
+
+# GH #1541: the pin that a page above the cut arrives whole through GET and
+# join is a web-cell lock; in `misc` the one new file would open a ninth part
+# and move 333 files of other strands.
+[[rule]]
+match = "^gh1541_"
 harness = "web"
 
 [[rule]]

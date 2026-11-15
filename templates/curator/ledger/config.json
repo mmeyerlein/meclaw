@@ -267,6 +267,18 @@
         "unique": false
       }
     },
+    "fts": {
+      "blocks": {
+        "columns": [
+          {
+            "col": "text",
+            "from": "body",
+            "path": "$.text"
+          }
+        ],
+        "tokenize": "trigram"
+      }
+    },
     "write_surface": "internal",
     "query_timeout_ms": 5000
   },

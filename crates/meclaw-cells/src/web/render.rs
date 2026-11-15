@@ -347,10 +347,12 @@ impl Materialized {
     /// GH #1002: whether this page is large enough to be cut at all — more
     /// than [`CUT_ABOVE_BYTES`] of slot HTML.
     ///
-    /// The page's GET body and its join are cut only then. A display page is
-    /// below, so not one byte of what a display serves moves: the inline
-    /// budget alone cut a display's screen out of the GET (GH #553 twice: the
-    /// topology picture never arrived in the page).
+    /// The page's GET body and its join are cut only then, and then for every
+    /// page alike: a display whose picture grows past the threshold (the colony
+    /// view of a colony with a full talky, GH #1541) is cut like the city, and
+    /// its join completes it. Below the threshold the inline budget does not
+    /// apply, because it alone would cut a display's screen out of the GET
+    /// (GH #553 twice).
     pub fn is_large(&self) -> bool {
         self.slot_bytes() > CUT_ABOVE_BYTES
     }
@@ -425,7 +427,7 @@ impl Materialized {
     ///
     /// A tree that fits comes back as [`Self::packed_tree`] with no pieces.
     /// The page handlers reach this only for a large page
-    /// ([`Self::join_frames`]): a display's join never does.
+    /// ([`Self::join_frames`]), whatever cell serves it (GH #1541).
     ///
     /// Measured on a large page: a 0.69 MB join reply in ONE frame does
     /// not arrive within the client's 10 s join timeout below ~70 KB/s; in
@@ -552,7 +554,10 @@ impl Frame {
 /// neither its GET body nor its join.
 ///
 /// The cut exists for the measured city (about 600 KB of slot HTML, a 645 KB
-/// join on one route) and must not touch a display. Measured on the largest
+/// join on one route), and it keeps a typical display whole. It is no promise
+/// that a display stays below: a picture that grows past it (the colony view
+/// of a colony with a full talky and a tools hive, GH #1541) is cut like any
+/// page, and the join delivers the rest. Measured on the largest
 /// shipped display page (`examples/display-colony-view`, lock
 /// `gh1002_the_display_example_is_served_whole`): 130 968 bytes of slot HTML
 /// in 4 slots, a 238 KB page and a 245 KB join reply. Factor 2 of headroom
@@ -2373,7 +2378,7 @@ mod tests {
 
     /// The inline budget and the join limit apply only above the cut
     /// threshold. One byte below it a page is served and joined whole -- a
-    /// display's screen alone is larger than the 48 KB budget.
+    /// typical display's screen alone is larger than the 48 KB budget.
     #[test]
     fn gh1002_only_a_page_above_the_threshold_is_cut() {
         let page = |bytes: usize| Materialized {

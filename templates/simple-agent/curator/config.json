@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "curator@2.2.0"
+    "template": "curator@3.0.0"
   },
   "override_params": {
     "intake": {
@@ -13,7 +13,8 @@
         },
         "things": {
           "lane": "thing_seen",
-          "cap_share": 0.1
+          "cap_share": 0.1,
+          "mark": "thing"
         }
       }
     },

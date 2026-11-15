@@ -148,7 +148,7 @@ fn clarify_stamp_drops_quick_and_opens_no_window() {
     }
     let mut h = Hive::with(&[
         ("policy", "class_notes", talky_class_notes()),
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!("web")),
     ])
     .reporting_composite("talky");

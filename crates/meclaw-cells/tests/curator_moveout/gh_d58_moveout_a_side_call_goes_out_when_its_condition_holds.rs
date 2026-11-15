@@ -55,7 +55,7 @@ fn gh_d58_moveout_a_side_call_goes_out_when_its_condition_holds() {
     assert!(sides_of(&v, EXTERNAL).is_empty(), "{v}");
     // Under speculation the side call has a cell of its own (`bridge_target`).
     let v = verdict(
-        lead_knobs(json!({"quick_speculative": "1"})),
+        lead_knobs(json!({"spec_ahead": "1"})),
         "simple",
         &["tool"],
         &["weather"],

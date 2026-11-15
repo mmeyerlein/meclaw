@@ -94,6 +94,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -285,7 +288,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, knobs: Knobs) {
         &double(STAMPER, "Test tap: stamps the cache expiry."),
     );
     copy_cells(&repo("templates/curator"), &root.join("main/curator"));
-    patch(root, "main/curator/summarizer/config.json", |v| {
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("main/curator"), |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
         v["params"]["api_key"] = json!("sk-test");
@@ -1838,12 +1843,14 @@ fn a_row_that_lands_while_the_note_is_written_does_not_widen_it() {
     let at = |m: i64| chrono::Utc::now() - chrono::Duration::minutes(60 - m);
     let words = |c: char, n: usize| c.to_string().repeat(n);
     // A long session: its oldest row was held in {e, a}, the rest in
-    // {e, a, b}; together under the transcript's 60 000 characters.
-    let first = format!("SECRET of a {}", words('x', 20_000));
+    // {e, a, b}; together (22 000 characters) under the transcript's budget,
+    // half of the one fallback window at three characters a token (GH #1532:
+    // 17 500 x 0.5 x 3 = 26 250).
+    let first = format!("SECRET of a {}", words('x', 8_000));
     for (m, aud, text) in [
         (1, AUD_EA, first),
-        (2, AUD_EAB, words('y', 20_000)),
-        (3, AUD_EAB, words('z', 15_000)),
+        (2, AUD_EAB, words('y', 8_000)),
+        (3, AUD_EAB, words('z', 6_000)),
     ] {
         h.row_under(
             Some(aud),

@@ -228,6 +228,20 @@ pub enum Trigger {
     /// the order of the cache, GH #1464). The aim is the one the order
     /// inherited; with `gc_on_cold` "1" the rebuild under it only collects.
     Cache,
+    /// The day changes (`curate_mark` "day", GH #1272, d58-3 tag R-58-20):
+    /// a turn on the day of the wall crosses no line, the lab clock moves on
+    /// to the morning after (`morning_after`), and the first turn there
+    /// orders the rebuild. The wall is the day before, the two turns of the
+    /// run are the running day. No line is crossed (`MEASURED_WARM`).
+    Day,
+}
+
+/// The morning after `at`: 08:00 UTC of the next UTC calendar day (the day
+/// the policy counts by, `day_of`). Relative to the lab clock of a wall,
+/// never to the machine's.
+pub fn morning_after(at: DateTime<Utc>) -> DateTime<Utc> {
+    let next = (at.timestamp().div_euclid(86_400) + 1) * 86_400;
+    Utc.timestamp_opt(next + 8 * 3600, 0).unwrap()
 }
 
 /// One run of a wall: the example value set of its target, the knobs set
@@ -240,6 +254,9 @@ pub struct Run {
     /// `(param of ./policy, value)`.
     pub knobs: Vec<(&'static str, Value)>,
     pub trigger: Trigger,
+    /// `(cell, script)`: the curator cells born with a patched program
+    /// (`Off::Patched`, `Run::patched`); never a knob of the judgement.
+    pub patches: Vec<(&'static str, String)>,
 }
 
 impl Run {
@@ -248,6 +265,7 @@ impl Run {
             role,
             knobs: Vec::new(),
             trigger: Trigger::Target,
+            patches: Vec::new(),
         }
     }
 
@@ -275,6 +293,7 @@ impl Run {
         let way = match self.trigger {
             Trigger::Target => "",
             Trigger::Cache => " through the cache",
+            Trigger::Day => " at the day change",
         };
         if knobs.is_empty() {
             format!("{}{way}", self.role)
@@ -312,6 +331,24 @@ pub struct Wall {
     /// as more than one): the bank runs every wall as each role it fits, and
     /// a wall that fits one alone says so here (`Wall::one_role`).
     pub one_role: &'static str,
+    /// GH #1528: the rounds the judge of the ballast says were only asked
+    /// (`WallBuilder::asked_round`): the keyword of the words, the line.
+    pub asked: Vec<(String, String)>,
+    /// GH #1528: what the stub of the judge answers a request with
+    /// (`verdict_of_the_wall` unless a wall says otherwise, `Wall::judged_by`).
+    pub judge: fn(&Wall, &Msg) -> Judged,
+    /// GH #1528 (re-check I-neu-1): the keywords of rows whose block is not
+    /// read when the policy reads the words of their round for the judge
+    /// (phase `ballast-words`): the store answers that read without the
+    /// block, and the block is back before the next round arrives
+    /// (`WallBuilder::asked_round_unread`).
+    pub unread: Vec<String>,
+    /// GH #1528 (R-39-5): the keywords of the bridges of the wall
+    /// (`WallBuilder::bridge_round`): rows the policy's side call said while
+    /// the round's own call was still at work. They reach the tap as the
+    /// answer of a side call (`hop.call_kind` "side"), the way a live bridge
+    /// does; `Wall::unmarked` sends them as answers of the round's call.
+    pub bridges: Vec<String>,
 }
 
 fn nothing(_: &mut Hive) {}
@@ -346,6 +383,15 @@ pub struct WallBuilder {
     cursor: DateTime<Utc>,
     pieces: Vec<Piece>,
     tools: u64,
+    /// GH #1528: the rounds the judge of the ballast says were only asked,
+    /// `(keyword of the person's words, the line the judge gives)`.
+    asked: Vec<(String, String)>,
+    /// GH #1528 (re-check I-neu-1): the keywords of the rows whose block the
+    /// store does not give when the policy reads the words of their round
+    /// for the judge (`Wall::unread`).
+    unread: Vec<String>,
+    /// GH #1528 (R-39-5): the keywords of the bridges (`Wall::bridges`).
+    bridges: Vec<String>,
 }
 
 impl WallBuilder {
@@ -358,6 +404,9 @@ impl WallBuilder {
             cursor: day(0, 0, 0),
             pieces: Vec::new(),
             tools: 0,
+            asked: Vec::new(),
+            unread: Vec::new(),
+            bridges: Vec::new(),
         }
     }
 
@@ -400,7 +449,10 @@ impl WallBuilder {
             "{}: the row {key} does not carry its keyword",
             self.name
         );
-        if matches!(what, What::Junk(_)) {
+        // GH #1528: a round the judge of the ballast marked keeps the judge's
+        // line in its one-line form, never its own head, so its keyword may
+        // stand anywhere in its text.
+        if matches!(what, What::Junk(c) if c != BALLAST) {
             let head: String = text
                 .lines()
                 .map(str::trim)
@@ -463,6 +515,238 @@ impl WallBuilder {
             p.lane = true;
         }
         key
+    }
+
+    /// GH #1528 (d58-3 ballast): one round of talk -- the person's words and
+    /// the answer -- that reaches the ledger through the lanes of the hive,
+    /// as a live round does: the words on `in_curate`, the answer on the tap.
+    /// The tap of the answer closes the round, and with the judge of the
+    /// ballast on, the policy asks the judge about it there. Returns the
+    /// keyword of the words.
+    pub fn talk_round(&mut self, session: &str, turn: &str, words: &str, answer: &str) -> String {
+        let from = self.pieces.len();
+        let key = self.words(session, turn, words);
+        self.answer(session, turn, answer);
+        for p in &mut self.pieces[from..] {
+            p.lane = true;
+        }
+        key
+    }
+
+    /// GH #1528 (R-39-5): a round of talk through the lanes in which the
+    /// companion bridges the time its look-up takes -- the person's words,
+    /// the bridge (`{k}` its keyword) as the answer of the policy's side
+    /// call, and, when `answer` names one, the result of the look-up as the
+    /// answer of the round's own call. A bridge whose result stands on the
+    /// wall is ballast once its round is outside the newest `keep_recent`
+    /// rounds (`gone`): counted as garbage of the class `ballast`; every
+    /// other bridge is counted as an answer that stays raw. Returns the
+    /// keywords of the words, of the bridge and of the result ("" without
+    /// one).
+    pub fn bridge_round(
+        &mut self,
+        gone: bool,
+        session: &str,
+        turn: &str,
+        words: &str,
+        bridge: &str,
+        answer: Option<&str>,
+    ) -> (String, String, String) {
+        let from = self.pieces.len();
+        let key = self.words(session, turn, words);
+        let what = if gone {
+            What::Junk(BALLAST)
+        } else {
+            What::Answer
+        };
+        let said_key = self.push(what, session, turn, "assistant", 1, |k| {
+            said(&keyed(bridge, k))
+        });
+        let result = answer
+            .map(|a| self.answer(session, turn, a))
+            .unwrap_or_default();
+        for p in &mut self.pieces[from..] {
+            p.lane = true;
+        }
+        self.bridges.push(said_key.clone());
+        (key, said_key, result)
+    }
+
+    /// GH #1528: a round of talk (`talk_round`) that carries nothing for
+    /// later but the fact that it was asked -- the time, the weather -- and
+    /// that the judge of the wall (`verdict_of_the_wall`) answers with
+    /// `asked` and `line`. Counted as garbage of the class `ballast`, both
+    /// rows; a round among the newest `keep_recent` stays raw whatever the
+    /// judge says, so a wall counts it as talk (`recent`).
+    pub fn asked_round(
+        &mut self,
+        recent: bool,
+        session: &str,
+        turn: &str,
+        words: &str,
+        answer: &str,
+        line: &str,
+    ) -> String {
+        let from = self.pieces.len();
+        let key = self.talk_round(session, turn, words, answer);
+        if !recent {
+            for p in &mut self.pieces[from..] {
+                p.what = What::Junk(BALLAST);
+            }
+        }
+        self.asked.push((key.clone(), line.to_string()));
+        key
+    }
+
+    /// GH #1528 (review I-1): a tool round (`lane_round`: the words, the
+    /// call, its result, the answer) that the judge of the wall answers with
+    /// `asked` and `line` -- the weather asked through the tool. The judge
+    /// sees the call and its result beside the words and the answer, so the
+    /// one line takes all four rows: counted as garbage of the class
+    /// `ballast`, every row, unless `recent`. Returns the keyword of the
+    /// words.
+    #[allow(clippy::too_many_arguments)]
+    pub fn asked_tool_round(
+        &mut self,
+        recent: bool,
+        session: &str,
+        turn: &str,
+        words: &str,
+        name: &str,
+        arguments: Value,
+        result: impl FnOnce(&str) -> String,
+        answer: &str,
+        line: &str,
+    ) -> String {
+        let from = self.pieces.len();
+        let what = if recent {
+            What::Other
+        } else {
+            What::Junk(BALLAST)
+        };
+        self.lane_round(
+            what, session, turn, words, name, arguments, "", result, answer,
+        );
+        let key = self.pieces[from].key.clone();
+        if !recent {
+            for p in &mut self.pieces[from..] {
+                p.what = What::Junk(BALLAST);
+            }
+        }
+        self.asked.push((key.clone(), line.to_string()));
+        key
+    }
+
+    /// GH #1528 (review I-1): a round of talk that the judge of the wall
+    /// answers with `asked` and `line`, with a row beside the person's words
+    /// in the same message that is nobody's words -- `beside` (`{k}` its
+    /// keyword) framed as a timer, `[timer <id>] ...`, which `./intake`
+    /// files as kind `timer`. The judge never sees such a row, so it stays
+    /// raw in its place (`What::Other`); the words and the answer are
+    /// counted as garbage of the class `ballast` unless `recent`. Returns
+    /// the keywords of the words and of the row beside them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn asked_round_beside(
+        &mut self,
+        recent: bool,
+        session: &str,
+        turn: &str,
+        words: &str,
+        beside: &str,
+        answer: &str,
+        line: &str,
+    ) -> (String, String) {
+        let from = self.pieces.len();
+        let key = self.words(session, turn, words);
+        let other = self.push(What::Other, session, turn, "timer", 0, |k| {
+            user(&keyed(beside, k))
+        });
+        self.answer(session, turn, answer);
+        for p in &mut self.pieces[from..] {
+            p.lane = true;
+            if !recent && p.key != other {
+                p.what = What::Junk(BALLAST);
+            }
+        }
+        self.asked.push((key.clone(), line.to_string()));
+        (key, other)
+    }
+
+    /// GH #1528 (re-check M-neu-2): a round of talk the judge answers with
+    /// `asked` and `line`, in front of whose words the curator pushed a
+    /// recall (`recall`: the call and the memory's result, written into the
+    /// ledger under the round's turn before the words arrive). The judge is
+    /// shown the recall too, so the one line takes all four rows and stands
+    /// where the round's first row stood -- a tool call. Counted as garbage
+    /// of the class `ballast`, every row. Returns the keyword of the words.
+    #[allow(clippy::too_many_arguments)]
+    pub fn asked_round_led_by_recall(
+        &mut self,
+        session: &str,
+        turn: &str,
+        query: &str,
+        recalled: impl FnOnce(&str) -> String,
+        words: &str,
+        answer: &str,
+        line: &str,
+    ) -> String {
+        let from = self.pieces.len();
+        self.recall(What::Junk(BALLAST), session, turn, query, recalled);
+        let key = self.asked_round(false, session, turn, words, answer, line);
+        for p in &mut self.pieces[from..] {
+            p.what = What::Junk(BALLAST);
+        }
+        key
+    }
+
+    /// GH #1528 (re-check I-neu-1): a round of talk the judge answers with
+    /// `asked` and `line` -- and then one more sentence of the companion
+    /// under the same turn, written into the ledger after the judge's
+    /// verdict (`late`, `{k}` its keyword). The judge never saw that row, so
+    /// the mark's `seen` is not the round's rows: the whole round stays raw,
+    /// every row counted as talk. Returns the keywords of the words and of
+    /// the late row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn asked_round_with_late_row(
+        &mut self,
+        session: &str,
+        turn: &str,
+        words: &str,
+        answer: &str,
+        late: &str,
+        line: &str,
+    ) -> (String, String) {
+        let key = self.talk_round(session, turn, words, answer);
+        let late = self.push(What::Answer, session, turn, "assistant", 0, |k| {
+            said(&keyed(late, k))
+        });
+        self.asked.push((key.clone(), line.to_string()));
+        (key, late)
+    }
+
+    /// GH #1528 (re-check I-neu-1): a round of talk the judge would answer
+    /// with `asked` and `line`, whose answer's block the store does not give
+    /// when the policy reads the round for the judge (`Wall::unread`). A row
+    /// the judge cannot be shown must not be taken by a line unseen, so the
+    /// judge is not asked and the round stays raw, counted as talk. Returns
+    /// the keywords of the words and of the answer.
+    pub fn asked_round_unread(
+        &mut self,
+        session: &str,
+        turn: &str,
+        words: &str,
+        answer: &str,
+        line: &str,
+    ) -> (String, String) {
+        let key = self.words(session, turn, words);
+        let gone = self.answer(session, turn, answer);
+        let n = self.pieces.len();
+        for p in &mut self.pieces[n - 2..] {
+            p.lane = true;
+        }
+        self.unread.push(gone.clone());
+        self.asked.push((key.clone(), line.to_string()));
+        (key, gone)
     }
 
     /// One errand that ends without an answer, the way a live one reaches
@@ -620,6 +904,10 @@ impl WallBuilder {
             prepare: nothing,
             beside: Vec::new(),
             one_role: "",
+            asked: self.asked,
+            judge: verdict_of_the_wall,
+            unread: self.unread,
+            bridges: self.bridges,
         }
     }
 }
@@ -664,6 +952,20 @@ impl Wall {
             self.name
         );
         self.one_role = why;
+        self
+    }
+
+    /// GH #1528: the stub of the judge of the ballast answers every request
+    /// with `judge` instead.
+    pub fn judged_by(mut self, judge: fn(&Wall, &Msg) -> Judged) -> Self {
+        self.judge = judge;
+        self
+    }
+
+    /// GH #1528 (R-39-5): the same wall with its bridges said as answers of
+    /// the round's own call -- no side call, so nothing marks them.
+    pub fn unmarked(mut self) -> Self {
+        self.bridges.clear();
         self
     }
 
@@ -749,6 +1051,9 @@ pub struct Knobs {
     pub gc_scaffold: bool,
     pub keep_rounds: i64,
     pub window_target: i64,
+    /// GH #1528: the judge of the ballast is on (`ballast_judge` of the
+    /// instance).
+    pub ballast: bool,
     /// Every knob of the shipped set (`SHIPPED`), as it applies to the run.
     pub all: Value,
     /// The example value sets (`curator_profiles::VALUE_SETS`).
@@ -798,7 +1103,8 @@ pub fn knobs_of(wall: &Wall, run: &Run) -> Knobs {
         instance_knobs(wall, run),
         "(lambda p: [switch_on(knob_of(p, 'gc')), switch_on(knob_of(p, 'gc_scaffold')), \
          int(number_of(p, 'keep_rounds')), max(0, int(number_of(p, 'window_target'))), \
-         dict((k, knob_of(p, k)) for k in SHIPPED)])(profile_params(ARGS, True))",
+         dict((k, knob_of(p, k)) for k in SHIPPED), switch_on(P.get('ballast_judge'))])\
+         (profile_params(ARGS, True))",
         profile_of(wall, run),
     );
     assert!(!err.contains("Traceback"), "{}: {err}", wall.name);
@@ -809,6 +1115,7 @@ pub fn knobs_of(wall: &Wall, run: &Run) -> Knobs {
         keep_rounds: got[2].as_i64().expect("keep_rounds"),
         window_target: got[3].as_i64().expect("window_target"),
         all: got[4].clone(),
+        ballast: got[5].as_bool().expect("ballast_judge"),
         roles: VALUE_SETS.iter().map(|r| r.to_string()).collect(),
     }
 }
@@ -848,6 +1155,16 @@ fn scaffold_rule(k: &Knobs) -> Collects {
     }
 }
 
+/// GH #1528: the class `ballast` collects at every rebuild where the judge
+/// is on; off, nobody marked a round.
+fn ballast_rule(k: &Knobs) -> Collects {
+    if k.ballast {
+        Collects::Always
+    } else {
+        Collects::Never
+    }
+}
+
 fn tools_rule(k: &Knobs) -> Collects {
     if k.keep_rounds <= 0 {
         Collects::Never
@@ -864,14 +1181,18 @@ pub enum Form {
     Shortened,
     Expired,
     Released,
+    /// GH #1528: a round the judge marked, one line for the whole round
+    /// (`asked_form`): every block of the round is shown in it.
+    Asked,
 }
 
 /// The classes that leave a block in each form: the marks of the classes of
 /// a form add up to the blocks the window shows in it.
-pub const FORM_CLASSES: [(Form, &[&str]); 3] = [
+pub const FORM_CLASSES: [(Form, &[&str]); 4] = [
     (Form::Shortened, &["shrunk_tools", "dup_recall", "scaffold"]),
     (Form::Expired, &["transient"]),
     (Form::Released, &["released"]),
+    (Form::Asked, &[BALLAST]),
 ];
 
 /// How the window of the next call shows a piece.
@@ -1018,6 +1339,248 @@ pub fn rebuild(wall: &Wall, run: &Run) -> Outcome {
     run_wall(wall, run).1.unwrap_or_else(|why| panic!("{why}"))
 }
 
+// THE JUDGE OF THE BALLAST (GH #1528, d58-3 ballast, R-583-2 form C). A
+// round that carries nothing for later but the fact that it was asked -- the
+// time, the weather -- is ballast: with `ballast_judge` "1" the policy asks a
+// small judge (the llm cell `./relevance`) about every closed round, beside
+// the path, and a round the judge calls `asked` becomes one line at the next
+// rebuild (`asked_form`), the original still readable through
+// `history_read`. The judge here is a stub: no model is called. It answers
+// on the hive the way the llm cell does -- the context of the request back,
+// `hop.finish_reason`, the strict JSON `{verdict, line}` as the text of one
+// assistant message -- or fails the way the cell fails.
+
+/// The class of the `gc` mark a round the judge marked is collected in, and
+/// the garbage a wall counts it as (`What::Junk(BALLAST)`).
+pub const BALLAST: &str = "ballast";
+
+/// The switch of `./policy` that turns the judge on, shipped "0".
+pub const JUDGE_SWITCH: &str = "ballast_judge";
+
+/// The judge's cell in the curator hive (`templates/curator/relevance`).
+pub const JUDGE_CELL: &str = "relevance";
+
+/// What the stub of the judge answers one request with.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Judged {
+    /// `{"verdict": "keep", "line": ""}`.
+    Keep,
+    /// `{"verdict": "asked", "line": <line>}`.
+    Asked(String),
+    /// The call failed: `finish_reason` "error" with this `error_code`, no
+    /// message.
+    Failed(&'static str),
+    /// The call ran out of its time: the llm cell's own answer to its
+    /// operation timeout (`finish_reason` "error", `error_code` "timeout").
+    TimedOut,
+    /// A text that is no answer of the form: the judge said this.
+    Broken(&'static str),
+    /// GH #1528 (review I-2): an answer that did not end with `stop` -- the
+    /// `finish_reason` named (`length`, `error`, ...) -- and still carries a
+    /// text, which may well be the JSON of the form.
+    Ends(&'static str, &'static str),
+    /// No answer at all.
+    Silent,
+}
+
+/// The one line a round the judge marked is shown as at the next rebuild:
+/// the short ids of its blocks in wall order, the way `EXPIRED_FORM` names
+/// one (`[#<id> expired]`), and the judge's line --
+/// `[#<id1> #<id2> asked: <line>]`. Each id is the way back: `history_read`
+/// with it brings the block back as it was.
+pub fn asked_form(ids: &[String], line: &str) -> String {
+    let ids: Vec<String> = ids.iter().map(|i| format!("#{i}")).collect();
+    format!("[{} asked: {line}]", ids.join(" "))
+}
+
+/// The ids (`#<id>`) a text in the form of `asked_form` names; none for any
+/// other text.
+pub fn asked_ids(text: &str) -> Vec<String> {
+    let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) else {
+        return Vec::new();
+    };
+    let Some((ids, _line)) = inner.split_once(" asked: ") else {
+        return Vec::new();
+    };
+    let ids: Vec<String> = ids.split(' ').map(str::to_string).collect();
+    if ids.is_empty() || ids.iter().any(|i| !i.starts_with('#') || i.len() < 2) {
+        return Vec::new();
+    }
+    ids
+}
+
+/// Every string a request to the judge carries, joined: what a stub or a
+/// statement looks for in it (a keyword, a line).
+pub fn request_text(req: &Msg) -> String {
+    Value::Object(req.body.clone()).to_string()
+}
+
+/// The judge of a wall: `asked` with its line for a round the wall sowed
+/// with `WallBuilder::asked_round` (its words' keyword stands in the
+/// request), `keep` for every other request.
+pub fn verdict_of_the_wall(wall: &Wall, req: &Msg) -> Judged {
+    let text = request_text(req);
+    wall.asked
+        .iter()
+        .find(|(key, _)| text.contains(key.as_str()))
+        .map(|(_, line)| Judged::Asked(line.clone()))
+        .unwrap_or(Judged::Keep)
+}
+
+/// The judge's answer to `req` on the hive, as its llm cell answers: the
+/// request's context back, the verdict in the hop and the body.
+pub fn judge_reply(h: &mut Hive, req: &Msg, judged: &Judged) {
+    let text =
+        |t: String| json!({"messages": [{"origin": "assistant", "type": "text", "text": t}]});
+    let (hop, body) = match judged {
+        Judged::Keep => (
+            json!({"finish_reason": "stop", "model": "judge-model"}),
+            text(json!({"verdict": "keep", "line": ""}).to_string()),
+        ),
+        Judged::Asked(line) => (
+            json!({"finish_reason": "stop", "model": "judge-model"}),
+            text(json!({"verdict": "asked", "line": line}).to_string()),
+        ),
+        Judged::Failed(code) => (
+            json!({"finish_reason": "error", "model": "judge-model", "error_code": code}),
+            json!({"messages": []}),
+        ),
+        Judged::TimedOut => (
+            json!({"finish_reason": "error", "model": "judge-model", "error_code": "timeout"}),
+            json!({"messages": []}),
+        ),
+        Judged::Broken(said) => (
+            json!({"finish_reason": "stop", "model": "judge-model"}),
+            text(said.to_string()),
+        ),
+        Judged::Ends(finish, said) => (
+            json!({"finish_reason": finish, "model": "judge-model"}),
+            text(said.to_string()),
+        ),
+        Judged::Silent => return,
+    };
+    h.judge_says(Msg {
+        context: req.context.clone(),
+        hop: obj(hop),
+        body: obj(body),
+        reply_to: String::new(),
+    });
+}
+
+/// Every request the judge holds, answered in order with `decide`. Returns
+/// the requests.
+pub fn answer_judge(h: &mut Hive, decide: impl Fn(&Msg) -> Judged) -> Vec<Msg> {
+    let mut done = Vec::new();
+    while let Some(req) = h.judge.pop_front() {
+        let judged = decide(&req);
+        judge_reply(h, &req, &judged);
+        done.push(req);
+    }
+    done
+}
+
+/// `rebuild`, and the hive it ran in: what the judge was asked
+/// (`Hive::judged`), and what the ledger answers after it.
+pub fn rebuild_with_hive(wall: &Wall, run: &Run) -> (Hive, Outcome) {
+    let (h, outcome) = run_wall(wall, run);
+    let outcome = outcome.unwrap_or_else(|why| panic!("{why}"));
+    (h, outcome)
+}
+
+/// GH #1528: the two turns of a run without a rebuild between them -- the
+/// wall sown (the judge answering each round as the wall says), then the
+/// first two words of the run said and answered, each turn reporting a
+/// prompt under every line and no cache that runs out, so nothing orders a
+/// rebuild. Returns the hive and the two calls that left for the target.
+pub fn quiet_turns(wall: &Wall, run: &Run) -> (Hive, [Msg; 2]) {
+    let (mut h, _) = sow(wall, run);
+    let package = json!({"input_soft": INPUT_SOFT, "input_hard": INPUT_HARD,
+                         "tokens_prompt": MEASURED_WARM});
+    let mut calls = Vec::new();
+    for (turn, words, answer) in [
+        (
+            "bank-live-1",
+            "And what is still open for today, quiet-1?",
+            "Nothing, quiet-2.",
+        ),
+        (
+            "bank-live-2",
+            "Good. Then tell me again where we stand, quiet-3.",
+            "Here we stand.",
+        ),
+    ] {
+        let call = curate_target(
+            &mut h,
+            &wall.session,
+            turn,
+            0,
+            json!([user(words)]),
+            mode("Be brief."),
+        );
+        h.tap(&call, "stop", package.clone(), json!([said(answer)]));
+        assert_eq!(
+            stamp(&h)["curate_mark"],
+            "none",
+            "{}: a quiet turn orders no rebuild: {}",
+            wall.name,
+            stamp(&h)
+        );
+        calls.push(call);
+    }
+    let [a, b]: [Msg; 2] = calls.try_into().unwrap_or_else(|_| unreachable!());
+    (h, [a, b])
+}
+
+/// The pieces of the round whose words carry `key` -- the words and every
+/// row of the same turn after them --, in wall order.
+pub fn round_of(wall: &Wall, key: &str) -> Vec<usize> {
+    let at = wall
+        .pieces
+        .iter()
+        .position(|p| p.key == key)
+        .unwrap_or_else(|| panic!("{}: no row {key}", wall.name));
+    let (session, turn) = (&wall.pieces[at].session, &wall.pieces[at].turn);
+    (at..wall.pieces.len())
+        .take_while(|i| wall.pieces[*i].session == *session && wall.pieces[*i].turn == *turn)
+        .collect()
+}
+
+/// The model's `history_read` of the block `#<id>`, in the round of the
+/// bank, on the lane a model's history tool takes (`in_history_call`):
+/// returns the texts of the one `tool_result` that answers it.
+pub fn history_read(h: &mut Hive, session: &str, turn: &str, id: &str) -> String {
+    h.out.clear();
+    let call = "call-ballast-read";
+    h.lane(
+        "in_history_call",
+        json!({"session_id": session, "turn_id": turn, "iter": "1",
+               "curator_call": "cc-ballast", "audience_set": ROUND_E}),
+        json!({"tool_name": "history_read", "tool_call_id": call}),
+        json!({"messages": [{"origin": "assistant", "type": "tool_call", "id": call,
+                             "text": json!({"id": format!("#{id}")}).to_string()}]}),
+    );
+    let results = h.routed("tool_result");
+    assert_eq!(
+        results.len(),
+        1,
+        "history_read #{id} is answered once: {:?} {:?}",
+        h.out,
+        h.stderr
+    );
+    results[0]
+        .messages()
+        .iter()
+        .map(|m| m["text"].as_str().unwrap_or("").to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The curate stamp of the last tap (`curate_mark`, and with
+/// `snapshot_window` "1" the watch: `prefix_break`, `window_lost`).
+pub fn curate_stamp(h: &Hive) -> Value {
+    stamp(h)
+}
+
 /// The figures the watch reads, counted over one run of a wall: the wall is
 /// run as `run` (`rebuild`, the same two turns), and the hive's own `stats`
 /// door is asked for `window`, `rebuild` and `gc` over the day up to the
@@ -1162,8 +1725,15 @@ fn sow(wall: &Wall, run: &Run) -> (Hive, Vec<i64>) {
     for (k, v) in &run.knobs {
         over.push(("policy", *k, v.clone()));
     }
+    for (cell, script) in &run.patches {
+        over.push((*cell, "script_inline", json!(script)));
+    }
     let mut h = Hive::with_prelude(&over, CLOCK);
     h.set_clock(wall.now.timestamp_micros());
+    let judging = run
+        .knobs
+        .iter()
+        .any(|(k, v)| *k == JUDGE_SWITCH && switch_on(v));
     // The target reports its package and its profile, as a model cell with
     // `package_line` does after its birth.
     let (hop, body) = curator_profiles::package_with(TARGET, profile_of(wall, run));
@@ -1189,7 +1759,46 @@ fn sow(wall: &Wall, run: &Run) -> (Hive, Vec<i64>) {
         {
             j += 1;
         }
-        seqs.extend(through_lanes(&mut h, &who, &wall.pieces[i..j]));
+        // GH #1528 (re-check I-neu-1): a block of the round the store does
+        // not give when the policy reads the round's words for the judge --
+        // a run with the judge off reads nothing for it.
+        let hidden: Vec<String> = wall.pieces[i..j]
+            .iter()
+            .filter(|_| judging)
+            .filter(|q| wall.unread.contains(&q.key))
+            .map(|q| sha256_hex(&canonical(&q.el)))
+            .collect();
+        if !hidden.is_empty() {
+            let list: Vec<String> = hidden.iter().map(|x| format!("'{x}'")).collect();
+            h.sql_at_phase = Some((
+                "ballast-words".to_string(),
+                format!(
+                    "UPDATE blocks SET hash = hash || '-unread' WHERE hash IN ({})",
+                    list.join(", ")
+                ),
+            ));
+        }
+        seqs.extend(through_lanes(
+            &mut h,
+            &who,
+            &wall.pieces[i..j],
+            &wall.bridges,
+        ));
+        // GH #1528: the judge of the ballast answers before the next round
+        // arrives, as a fast model does; it is never waited for.
+        answer_judge(&mut h, |m| (wall.judge)(wall, m));
+        if !hidden.is_empty() {
+            assert!(
+                h.sql_at_phase.take().is_none(),
+                "{who}: the policy read the words of the round {} for the judge",
+                wall.pieces[i].turn
+            );
+            h.db.execute_batch(
+                "UPDATE blocks SET hash = substr(hash, 1, length(hash) - 7) \
+                 WHERE hash LIKE '%-unread'",
+            )
+            .expect("the hidden blocks come back");
+        }
         i = j;
     }
     h.set_clock(wall.now.timestamp_micros());
@@ -1283,6 +1892,9 @@ fn run_sown(
         ),
     ];
     let package = json!({"input_soft": INPUT_SOFT, "input_hard": INPUT_HARD});
+    if run.trigger == Trigger::Day {
+        evening_then_morning(&mut h, wall);
+    }
     let call = curate_target(
         &mut h,
         &wall.session,
@@ -1302,14 +1914,26 @@ fn run_sown(
             measured["cache_expires_at"] = json!(rfc(wall.now + Duration::seconds(CACHE_TTL_S)));
             ("none", "cache")
         }
+        Trigger::Day => {
+            measured["tokens_prompt"] = json!(MEASURED_WARM);
+            ("day", "day")
+        }
     };
     h.tap(&call, "stop", measured, json!([said(&live[1])]));
     let before = stamp(&h);
     if before["curate_mark"] != mark {
-        let why = format!(
-            "{who}: the wall stands over its target ({}): {before} {:?}",
-            knobs.window_target, h.stderr
-        );
+        let why = if run.trigger == Trigger::Day {
+            format!(
+                "{who}: the first turn of the running day orders no rebuild of the day \
+                 (curate_mark {}, wanted day): {before} {:?}",
+                before["curate_mark"], h.stderr
+            )
+        } else {
+            format!(
+                "{who}: the wall stands over its target ({}): {before} {:?}",
+                knobs.window_target, h.stderr
+            )
+        };
         let next = curate_target(
             &mut h,
             &wall.session,
@@ -1401,6 +2025,146 @@ fn run_sown(
     (h, Ok(outcome))
 }
 
+/// The way into a run of `Trigger::Day`: one turn on the day of the wall at
+/// its instant, under every line (`MEASURED_WARM`), then the lab clock at
+/// the morning after (`morning_after`). The next turn is the first of the
+/// running day.
+fn evening_then_morning(h: &mut Hive, wall: &Wall) {
+    let package = json!({"input_soft": INPUT_SOFT, "input_hard": INPUT_HARD,
+                         "tokens_prompt": MEASURED_WARM});
+    h.set_clock(wall.now.timestamp_micros());
+    let eve = curate_target(
+        h,
+        &wall.session,
+        "bank-eve-1",
+        0,
+        json!([user(&format!("Good night for today, {}-eve-1.", wall.name))]),
+        mode("Be brief."),
+    );
+    h.tap(
+        &eve,
+        "stop",
+        package,
+        json!([said(&format!("Good night, {}-eve-2.", wall.name))]),
+    );
+    h.set_clock(morning_after(wall.now).timestamp_micros());
+}
+
+/// The window of a rebuild on the running day (d58-3 tag, contract point 7,
+/// OR-583.tag.4): the whole day beside the curated one, as measurement M1
+/// reads them. The wall is the running day itself.
+pub struct DayWindow {
+    /// `curate_mark` of the turn in front of the rebuild (`none`: no line).
+    pub mark: String,
+    /// The reason of the order the rebuild ran on (`cache`).
+    pub reason: String,
+    /// The requests the rebuild sent the summarizer (none when it folded
+    /// nothing).
+    pub requests: usize,
+    /// The plan the rebuild wrote for the round.
+    pub plan: Value,
+    /// The `seq` of every piece of the wall, in wall order.
+    pub seqs: Vec<i64>,
+    /// The call of the turn after: the window as sent.
+    pub next: Msg,
+    /// The plan snapshot the ledger keeps for that call (`snapshot_window`).
+    pub snapshot: Option<Vec<Value>>,
+}
+
+impl DayWindow {
+    /// Whether the piece `i` lies in the raw part of the plan: above the
+    /// cover, or kept raw under it (as `Outcome::raw`).
+    pub fn raw(&self, i: usize) -> bool {
+        let cover = self.plan["cover"].as_i64().unwrap_or(0);
+        let keep = self.plan["keep"].as_array().cloned().unwrap_or_default();
+        self.seqs[i] > cover || keep.contains(&json!(self.seqs[i]))
+    }
+}
+
+/// `wall` run as `run` through one rebuild on its own day, the running day
+/// (OR-583.tag.4): the rows sown, a turn at the instant of the wall that
+/// crosses no line (`MEASURED_WARM`) and whose cache runs out -- the order
+/// of the cache (GH #1464), a trigger that is no limit: it aims at the aim
+/// the package names (`rebuild_to` of the soft line, far over every wall),
+/// so no overflow cuts the day and what leaves the raw part leaves by its
+/// age alone --, the order fired, every request of the summarizer answered
+/// by the stub of the wall, and one more turn, whose call is the window
+/// returned. With `day_floor` "1" every row of the day has the age 0 and the
+/// window is the whole day raw; with "0" the horizon of the role curates it.
+/// Runs with `gc_on_cold` as shipped ("0"): the strike of the cache is the
+/// rebuild of before, not a collection.
+pub fn window_today(wall: &Wall, run: &Run) -> DayWindow {
+    let who = format!("{} as {} on the running day", wall.name, run.label());
+    let (mut h, seqs) = sow(wall, run);
+    let package = json!({"input_soft": INPUT_SOFT, "input_hard": INPUT_HARD});
+    let call = curate_target(
+        &mut h,
+        &wall.session,
+        "bank-live-1",
+        0,
+        json!([user(&format!(
+            "And what is still open for today, {}-live-1?",
+            wall.name
+        ))]),
+        mode("Be brief."),
+    );
+    let mut measured = package.clone();
+    measured["tokens_prompt"] = json!(MEASURED_WARM);
+    measured["cache_expires_at"] = json!(rfc(wall.now + Duration::seconds(CACHE_TTL_S)));
+    h.tap(
+        &call,
+        "stop",
+        measured,
+        json!([said(&format!(
+            "Nothing that cannot wait, {}-live-2.",
+            wall.name
+        ))]),
+    );
+    let mark = stamp(&h)["curate_mark"].as_str().unwrap_or("").to_string();
+    let order = h
+        .clock_order_for(ROUND_E)
+        .unwrap_or_else(|| panic!("{who}: the cache orders a rebuild: {:?}", h.stderr));
+    let reason = order.body["emit_body"]["reason"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    h.fire(&order);
+    let requests = condense(&mut h, wall).len();
+    let plan = h.plan_in(ROUND_E);
+    assert!(
+        plan["cover"].as_i64().is_some(),
+        "{who}: the rebuild wrote a plan: {plan} {:?}",
+        h.stderr
+    );
+    let next = curate_target(
+        &mut h,
+        &wall.session,
+        "bank-live-2",
+        0,
+        json!([user(&format!(
+            "Good. Then tell me again where we stand, {}-live-3.",
+            wall.name
+        ))]),
+        mode("Be brief."),
+    );
+    let snapshot = snapshot_of(&h, &next);
+    h.tap(
+        &next,
+        "stop",
+        package,
+        json!([said("Here is where we stand.")]),
+    );
+    DayWindow {
+        mark,
+        reason,
+        requests,
+        plan,
+        seqs,
+        next,
+        snapshot,
+    }
+}
+
 /// `Hive::curate` for the bank's target: one round on `in_curate` that
 /// names `TARGET` in `hop.target`; returns the call that left for it.
 fn curate_target(
@@ -1469,13 +2233,18 @@ fn curate_round(
 /// lanes of the hive, at the instant of the first of them. Returns the
 /// `seq` `./intake` gave each row; a row the ledger does not hold exactly
 /// once, with the element the wall counts, stops the run.
-fn through_lanes(h: &mut Hive, who: &str, pieces: &[Piece]) -> Vec<i64> {
+fn through_lanes(h: &mut Hive, who: &str, pieces: &[Piece], bridges: &[String]) -> Vec<i64> {
     h.set_clock(pieces[0].at.timestamp_micros());
     let package = json!({"input_soft": INPUT_SOFT, "input_hard": INPUT_HARD});
     let mut iter = 0;
     let mut call: Option<Msg> = None;
     let mut asked: Option<&Piece> = None;
-    for p in pieces {
+    let mut skip = 0;
+    for (k, p) in pieces.iter().enumerate() {
+        if skip > 0 {
+            skip -= 1;
+            continue;
+        }
         let open = |call: &Option<Msg>| -> Msg {
             call.clone()
                 .unwrap_or_else(|| panic!("{who}: the row {} answers no call of its round", p.key))
@@ -1489,7 +2258,18 @@ fn through_lanes(h: &mut Hive, who: &str, pieces: &[Piece]) -> Vec<i64> {
             p.el["type"].as_str().unwrap_or(""),
         ) {
             ("user", "text") => {
-                call = Some(curate_round(h, who, p, iter, json!([p.el]), None));
+                // GH #1528: a row beside the person's words (a timer frame,
+                // `WallBuilder::asked_round_beside`) arrives in the same
+                // message as the words.
+                let with: Vec<Value> = pieces[k..]
+                    .iter()
+                    .take_while(|q| {
+                        q.errand.is_none() && q.el["origin"] == "user" && q.el["type"] == "text"
+                    })
+                    .map(|q| q.el.clone())
+                    .collect();
+                skip = with.len() - 1;
+                call = Some(curate_round(h, who, p, iter, Value::Array(with), None));
             }
             ("assistant", "tool_call") => {
                 h.tap(&open(&call), "tool_calls", package.clone(), json!([p.el]));
@@ -1506,6 +2286,17 @@ fn through_lanes(h: &mut Hive, who: &str, pieces: &[Piece]) -> Vec<i64> {
                     Value::Object(slot)
                 });
                 call = Some(curate_round(h, who, p, iter, json!([a.el, p.el]), errors));
+            }
+            ("assistant", "text") if bridges.contains(&p.key) => {
+                // GH #1528 (R-39-5): a bridge is the answer of the policy's
+                // side call beside the round's call: its kind in the head
+                // (`call_kind` "side", lifted into the context by the edge),
+                // its id the call's with the ending of the first side call.
+                let mut side = open(&call);
+                let id = format!("{}-bridge", side.hop["curator_call"].as_str().unwrap_or(""));
+                side.hop.insert("curator_call".into(), json!(id));
+                side.hop.insert("call_kind".into(), json!("side"));
+                h.tap(&side, "stop", package.clone(), json!([p.el]));
             }
             ("assistant", "text") => {
                 h.tap(&open(&call), "stop", package.clone(), json!([p.el]));
@@ -1645,11 +2436,25 @@ impl Outcome {
             let behind_id = t
                 .find(&format!("[#{id}] "))
                 .is_some_and(|at| t[at..].ends_with(text));
+            // d58-3 treue T1 (GH #1524): an own answer of another session
+            // carries no id but opens with the frame line of its session
+            // (`ANSWER_FRAME`, `OTHER_ANSWER_FRAME`); behind that one line
+            // its text stands as written.
+            let behind_frame = t
+                .strip_suffix(text)
+                .and_then(|head| head.strip_suffix('\n'))
+                .is_some_and(|line| {
+                    line.starts_with('[') && line.ends_with(']') && !line.contains('\n')
+                });
             if m["type"] == p.el["type"]
                 && m["origin"] == p.el["origin"]
-                && (t == text || behind_id)
+                && (t == text || behind_id || behind_frame)
             {
                 return Shown::Whole;
+            }
+            if asked_ids(t).iter().any(|i| *i == format!("#{id}")) {
+                found = Shown::Form(Form::Asked);
+                continue;
             }
             if !named {
                 continue;
@@ -2149,6 +2954,15 @@ pub enum Off {
     /// would have left (`kept`): the sabotage is made in the outcome, as the
     /// mutants of the watch make theirs in the ledger.
     Kept,
+    /// The class has a spot in a curator script: the program of `cell` is
+    /// born with the one place `from` replaced by `to` (`patch_script`), the
+    /// run judged by the knobs of the run as it is. The sabotage is made in
+    /// the curator, not in its outcome.
+    Patched {
+        cell: &'static str,
+        from: &'static str,
+        to: &'static str,
+    },
 }
 
 /// The statement of the bank a mutant expects to turn red.
@@ -2226,6 +3040,11 @@ pub fn class_off_turns_the_bank_red(name: &str, class: &'static str, off: Off, r
                 o
             }
             Off::Kept => kept(wall, &sound, class),
+            Off::Patched { cell, from, to } => {
+                let mut o = rebuild(wall, &run.clone().patched(cell, from, to));
+                o.knobs = sound.knobs.clone();
+                o
+            }
         };
         let lines = against_class(&bank, wall, &broken, class);
         let head = match red {
@@ -2264,6 +3083,12 @@ pub mod notes;
 pub mod over_aim;
 #[path = "curator_bank/phone_day.rs"]
 pub mod phone_day;
+// GH #1528: no seat -- its runs switch the judge of the ballast on, which
+// the walls of the seats do not (`phone_asked::wall`).
+#[path = "curator_bank/phone_asked.rs"]
+pub mod phone_asked;
+#[path = "curator_bank/phone_bridge.rs"]
+pub mod phone_bridge;
 #[path = "curator_bank/released.rs"]
 pub mod released;
 #[path = "curator_bank/research.rs"]
@@ -2294,6 +3119,7 @@ pub fn bank() -> Bank {
     bank.class("transient", always);
     bank.class("released", always);
     bank.class("scaffold", scaffold_rule);
+    bank.class(BALLAST, ballast_rule);
     for (seat, register) in SEATS {
         let before = bank.walls.len();
         register(&mut bank);
@@ -2445,4 +3271,35 @@ pub fn run_walls_as<'a>(
         }
     }
     out
+}
+
+// kern
+// D58-3 kern (GH #1524, contract point 5): a mutant of the bank patches the
+// curator itself. The patched program reaches the hive as an override of the
+// param `script_inline` at the birth of the cell (`sow`), never through the
+// knobs of the run: those are the policy's and go into the judgement.
+
+/// The program of the curator cell `cell` with the one place `from` replaced
+/// by `to`. An error when `from` stands in the program not exactly once: a
+/// patch that misses its spot (or hits two) would sabotage nothing, or
+/// something else, and the bank would judge a curator nobody meant.
+pub fn patch_script(cell: &str, from: &str, to: &str) -> Result<String, String> {
+    let script = script_of(cell);
+    let n = script.matches(from).count();
+    if n != 1 {
+        return Err(format!(
+            "the patch of {cell} misses its spot: {from:?} stands {n} times in its program"
+        ));
+    }
+    Ok(script.replacen(from, to, 1))
+}
+
+impl Run {
+    /// The same run with the program of `cell` patched (`patch_script`);
+    /// panics when the patch misses its spot.
+    pub fn patched(mut self, cell: &'static str, from: &str, to: &str) -> Self {
+        let script = patch_script(cell, from, to).unwrap_or_else(|why| panic!("{why}"));
+        self.patches.push((cell, script));
+        self
+    }
 }

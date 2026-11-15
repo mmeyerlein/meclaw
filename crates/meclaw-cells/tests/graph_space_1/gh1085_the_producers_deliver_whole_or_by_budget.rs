@@ -15,10 +15,9 @@
 //! memory bundle, whose items have no length of their own.
 //!
 //! Fix round (GH #1085, the window of the RECEIVING model): a producer no
-//! request names a window to falls back to `input_soft_fallback`, the catalog
-//! row of its reader -- the summarizer's writer and an asker of the memory
-//! without a curator both take the smallest chat window of the catalog
-//! (237500 tokens) -- and the summarizer learns ONCE from a writer that
+//! request names a window to falls back to `input_soft_fallback`, since GH
+//! #1532 one documented window without a catalogue row (17500 tokens, the same
+//! in every core cell) -- and the summarizer learns ONCE from a writer that
 //! refuses its prompt as over `input_hard`. The tier-0 bundle grows with the
 //! window by the factor of tier 1, and the graph space keeps a one-liner whole.
 //!
@@ -40,66 +39,18 @@ const RECALL: &str = "../../templates/memory-hive/recall/config.json";
 const BRIEF: &str = "../../templates/objects/brief/config.json";
 const INDEX: &str = "../../templates/graph-space/index/config.json";
 
-/// OR-IG-9: `input_soft` of the row the writer is born on (`ctx.model`, a
-/// birth token, so the `light` tier `openai/gpt-6-luna`) -- what prep's
-/// fallback carries; the drift lock over every `input_soft_fallback` holds it
-/// to the row prep names.
-const WRITER_SOFT: usize = 250_000;
+/// GH #1532: what prep's fallback carries, the one fallback window
+/// (`NO_ROW_WINDOW`); the drift lock over every `input_soft_fallback` holds it.
+const WRITER_SOFT: usize = NO_ROW_WINDOW as usize;
 
 /// A fallback an operator sets to a wide row (237 500 tokens, the Anthropic
 /// rows): the window the recall bundles are sized by when no ask names one.
 /// The shipped recall fallback is the smallest chat row, under the old floor.
 const WIDE_FALLBACK: usize = 237_500;
 
-/// The smallest chat row of the shipped catalog (active or explicit, chat
-/// wire): the row recall's fallback names, since an ask without a window has
-/// no born model the memory knows (OR-IG-9).
-fn smallest_chat_row() -> (String, u64) {
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../templates/llm-registry/store/seed/models.jsonl");
-    std::fs::read_to_string(&p)
-        .expect("models.jsonl")
-        .lines()
-        .filter_map(|l| sj::from_str::<Value>(l).ok())
-        .filter(|r| matches!(r["status"].as_str(), Some("active" | "explicit")))
-        .filter(|r| {
-            matches!(
-                r["wire_dialect"].as_str(),
-                Some("chat_completions" | "responses")
-            )
-        })
-        .filter_map(|r| {
-            Some((
-                r["model_id"].as_str()?.to_string(),
-                r["input_soft"].as_u64()?,
-            ))
-        })
-        .min_by_key(|(id, soft)| (*soft, id.clone()))
-        .expect("a chat row")
-}
-
-/// Every chat row whose `input_soft` is the smallest one: two rows of one
-/// window size (`openai/gpt-4o` and `openai/gpt-4o-mini`, GH #1097) are both
-/// the smallest, and a shipped fallback may name either.
-fn smallest_chat_rows() -> Vec<String> {
-    let (_, soft) = smallest_chat_row();
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../templates/llm-registry/store/seed/models.jsonl");
-    std::fs::read_to_string(&p)
-        .expect("models.jsonl")
-        .lines()
-        .filter_map(|l| sj::from_str::<Value>(l).ok())
-        .filter(|r| matches!(r["status"].as_str(), Some("active" | "explicit")))
-        .filter(|r| {
-            matches!(
-                r["wire_dialect"].as_str(),
-                Some("chat_completions" | "responses")
-            )
-        })
-        .filter(|r| r["input_soft"].as_u64() == Some(soft))
-        .filter_map(|r| r["model_id"].as_str().map(str::to_string))
-        .collect()
-}
+/// GH #1532 (OR-IG-9): the one fallback window without a catalogue row, the
+/// same in every core cell -- what recall's and prep's fallbacks carry.
+const NO_ROW_WINDOW: u64 = 17_500;
 
 /// Run the shipped script of `config` with `params`, swallow its exit, then
 /// `probe` in the same globals; stdout of the probe.
@@ -264,15 +215,15 @@ fn the_summarizer_without_a_request_window_keeps_to_half_of_its_writers_catalog_
     // The close batch carries no `input_soft` (no curator asks the
     // summarizer): the shipped fallback is the writer's window. A day of
     // 40 older turns of 10 000 characters is 400 000 characters; half of
-    // 250 000 tokens, at three characters a token, is 375 000.
+    // 17 500 tokens, at three characters a token, is 26 250.
     assert_eq!(
         shipped_param(PREP, "input_soft_fallback"),
         json!(WRITER_SOFT)
     );
     assert_eq!(
         shipped_param(PREP, "input_soft_fallback_row"),
-        json!("openai/gpt-6-luna"),
-        "the row the writer is born on (OR-IG-9)"
+        Value::Null,
+        "the fallback names no catalogue row (GH #1532)"
     );
     let mut turns: Vec<Value> = (0..40)
         .map(|i| turn("user", &long(10_000, &format!("OLD-{i}-TAIL"))))
@@ -544,19 +495,18 @@ fn a_tier1_item_over_the_bundle_budget_is_cut_with_a_mark_not_dropped() {
 
 #[test]
 fn an_ask_without_a_window_sizes_the_bundle_by_the_smallest_catalog_row() {
-    // No curator asks (no `input_soft`). OR-IG-9: the shipped fallback is the
-    // smallest chat row -- 5 % of it is under the old 2000 tokens, so the
+    // No curator asks (no `input_soft`). GH #1532: the shipped fallback is the
+    // one window without a catalogue row -- 5 % of it is under the old 2000 tokens, so the
     // bundle keeps them. A fallback set to a wide row (237 500) gives 11 875
     // tokens: a fact of 30 000 characters (about 10 000 tokens) arrives
     // whole; one of 60 000 is cut with its mark and the bundle keeps its
     // budget.
-    let (_, soft) = smallest_chat_row();
+    let soft = NO_ROW_WINDOW;
     assert_eq!(shipped_param(RECALL, "input_soft_fallback"), json!(soft));
-    let row = shipped_param(RECALL, "input_soft_fallback_row");
-    assert!(
-        smallest_chat_rows().iter().any(|id| json!(id) == row),
-        "the fallback row {row} is not one of the smallest chat rows {:?}",
-        smallest_chat_rows()
+    assert_eq!(
+        shipped_param(RECALL, "input_soft_fallback_row"),
+        Value::Null,
+        "the fallback names no catalogue row (GH #1532)"
     );
     let floor = probe(
         RECALL,

@@ -1697,13 +1697,18 @@ fn the_shipped_catalogue_is_dated_and_translatable() {
             "tier {t} points at a row that is not reachable"
         );
     }
-    // GH #1025: the lab row is shipped as `explicit` -- a cheap row added for
-    // one lab use (GH #1017) is never the answer to unrelated prose.
-    let flash = models
+    // GH #1025: the cheapest hosted chat row with tools is shipped as
+    // `explicit` -- a cheap row added for one lab use (GH #1017, GH #1242) is
+    // never the answer to unrelated prose. Bound to the price, not to a row
+    // name: the catalogue keeps one model per family (GH #1525).
+    let cheapest = models
         .iter()
-        .find(|m| m["model_id"] == "qwen/qwen3.7-flash")
-        .expect("the qwen3.7-flash row");
-    assert_eq!(flash["status"], "explicit", "{flash}");
+        .filter(|m| m["wire_dialect"] == "chat_completions" && m["provider"] != "local")
+        .filter(|m| m["caps"]["tools"] == true)
+        .filter(|m| matches!(m["status"].as_str(), Some("active" | "explicit")))
+        .min_by_key(|m| m["cost_in"].as_u64().unwrap_or(u64::MAX))
+        .expect("a hosted chat row with tools");
+    assert_eq!(cheapest["status"], "explicit", "{cheapest}");
 }
 
 /// 9. GH #1025: a row with status `explicit` is reached by name -- a model_upsert

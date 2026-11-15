@@ -81,7 +81,9 @@ CLASSES (a path can carry several)
     evals_persona workshop/evals/persona/** -- its committed report included; it is NOT in IGNORED
     gate_infra    scripts/gate.sh, scripts/gate_legacy.sh, scripts/gate_plan.py,
                   scripts/precheck.py with the rules it imports (scripts/testing_bans.py,
-                  scripts/wall_clock.py), scripts/pipeline/pre.py, scripts/pipeline/locks.py,
+                  scripts/wall_clock.py, scripts/fixed_caps.py with its rules and baseline
+                  scripts/fixed_caps_rules.json, scripts/fixed_caps_baseline.json),
+                  scripts/pipeline/pre.py, scripts/pipeline/locks.py,
                   scripts/tests/**, scripts/test-tier.sh, scripts/wave_retro.py,
                   scripts/retro/**, scripts/display_sync.py, scripts/strand.sh,
                   scripts/wave_receipt.py, scripts/slow_tests.py, scripts/flake_triage.py,
@@ -1422,6 +1424,9 @@ def _classes_of_path(path):
                  "scripts/wave_receipt.py", "scripts/slow_tests.py",
                  "scripts/flake_triage.py", "scripts/testing_bans.py",
                  "scripts/wall_clock.py",
+                 # d58-3 raten (#1532): precheck's rule fixed-caps, its rules and baseline
+                 "scripts/fixed_caps.py", "scripts/fixed_caps_rules.json",
+                 "scripts/fixed_caps_baseline.json",
                  "scripts/stop_watch.py",
                  # d58-2 bank (#1465): the capture of the requests to the summarizer,
                  # its test in gate-selftest
@@ -4600,6 +4605,8 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_precheck",
               "scripts.tests.test_precheck_testing_bans",
               "scripts.tests.test_precheck_wall_clock",
+              # d58-3 raten (#1532): precheck's rule fixed-caps
+              "scripts.tests.test_precheck_fixed_caps",
               "scripts.tests.test_pipeline_locks",
               "scripts.tests.test_harness_fold",
               "scripts.tests.test_pipeline_pre",

@@ -3,6 +3,8 @@
 
 #[path = "../support/composite_packages.rs"]
 pub mod composite_packages;
+#[path = "../support/curator_llm.rs"]
+pub mod curator_llm;
 pub mod gh847_the_mount_restamps_every_turn_as_peer;
 pub mod gh849_a_peer_says_it_and_the_memory_says_who;
 pub mod gh849_each_fact_names_the_peer_who_said_it;

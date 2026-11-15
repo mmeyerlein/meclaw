@@ -53,7 +53,7 @@
       "recall": false,
       "keep_recent": 4,
       "notes_share": 0,
-      "window_target": 100000,
+      "window_target_share": 0.4,
       "state_lines": 8,
       "short_ids": "1",
       "identity_budget": "full",
@@ -66,7 +66,7 @@
       "model": {
         "type": "string",
         "secret": false,
-        "default": "openai/gpt-4o-mini",
+        "default": "openai/gpt-6-luna",
         "description": "Provider model id; the template carries ctx.model (strict, resolved at instantiation). Convention (K-H2): pass a RESOLVED literal."
       },
       "api_key": {
@@ -223,6 +223,14 @@
           "type": "array",
           "required": false
         },
+        "chars_per_token": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_per_image": {
+          "type": "number",
+          "required": false
+        },
         "dropped": {
           "type": "array",
           "required": false
@@ -263,8 +271,8 @@
     ]
   },
   "description": {
-    "purpose": "The bridging twin of talky's quick voice (GH #1398, #1248): the same model cell as `./quick` with the same params, born on the same start value. A speculating curator (`quick_speculative` on) sends it the bridge of a complex or research turn and of a tool round (`hop.target` \"quick_bridge\", `curator_call` ending in `-bridge`), so the bridge's sentence never waits behind a spec call and the tool round's call on `./quick` never waits behind the bridge. It answers like `./quick`: splitter, tap, errors. The model registry moves it to the row of the tier `quick` once it is subscribed there.",
-    "use_when": "Inside the talky composite only. The curator edges (`./curator` -> here on `quick` with `hop.target` \"quick_bridge\") carry restore_ttl; the answer edge (here -> `./splitter`) carries stop, tool_calls and length, the tap (here -> `./curator` on `in_llm`) every answer. Without `quick_speculative` on the curator every bridge goes to `./quick` and this cell receives nothing.",
+    "purpose": "The bridging twin of talky's quick voice (GH #1398, #1248): the same model cell as `./quick` with the same params, born on the same start value. A speculating curator (`spec_ahead` on) sends it the bridge of a complex or research turn and of a tool round (`hop.target` \"quick_bridge\", `curator_call` ending in `-bridge`), so the bridge's sentence never waits behind a spec call and the tool round's call on `./quick` never waits behind the bridge. It answers like `./quick`: splitter, tap, errors. The model registry moves it to the row of the tier `quick` once it is subscribed there.",
+    "use_when": "Inside the talky composite only. The curator edges (`./curator` -> here on `quick` with `hop.target` \"quick_bridge\") carry restore_ttl; the answer edge (here -> `./splitter`) carries stop, tool_calls and length, the tap (here -> `./curator` on `in_llm`) every answer. Without `spec_ahead` on the curator every bridge goes to `./quick` and this cell receives nothing.",
     "not_in_scope": "No window of its own, no recall, no sidecar: what it sees is the curator's choice."
   }
 }

@@ -39,7 +39,7 @@
       "compress_at": 0.5,
       "rebuild_to": 0.45,
       "keep_recent": 40,
-      "keep_recent_tokens": 80000,
+      "keep_recent_share": 0.32,
       "horizon": "day",
       "tiers": "raw,summary,none",
       "keep_rounds": 1,
@@ -51,7 +51,7 @@
       "recall_budget": 200,
       "short_ids": "1",
       "identity_budget": "full",
-      "window_target": 100000,
+      "window_target_share": 0.4,
       "notes_share": 0.02,
       "state_lines": 8
     }
@@ -74,7 +74,7 @@
       "model": {
         "type": "string",
         "secret": false,
-        "default": "openai/gpt-4o-mini",
+        "default": "openai/gpt-6-luna",
         "description": "Provider model id of the agent's one brain. The template carries ctx.model (strict, resolved at instantiation); pass a RESOLVED literal (K-H2). The shipped timeouts are derived from the row named in `external_timeout_ms_row`; a model on another row derives them again from that row."
       },
       "api_key": {
@@ -223,6 +223,14 @@
         },
         "price_tiers": {
           "type": "array",
+          "required": false
+        },
+        "chars_per_token": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_per_image": {
+          "type": "number",
           "required": false
         },
         "dropped": {

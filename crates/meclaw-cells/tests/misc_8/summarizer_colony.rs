@@ -333,9 +333,9 @@ async fn asked(mock: &MockOpenAI, i: usize) -> String {
 
 /// GH #1085 (R-IG-1), the real road: the collector's close batch carries no
 /// window -- no curator asks a summarizer -- and the shipped `./prep` sizes
-/// the day by its writer's window, `input_soft_fallback` (the row the writer is
-/// born on, openai/gpt-6-luna, 250 000 tokens -- OR-IG-9), half of it for the
-/// prompt. Before
+/// the day by its writer's window, `input_soft_fallback` (the one fallback
+/// window without a catalogue row, 17 500 tokens -- GH #1532, OR-IG-9), half
+/// of it for the prompt. Before
 /// the fix round the prompt went whole on this road: a long day was refused
 /// by the writer's `input_hard` and left no handover.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -343,7 +343,7 @@ async fn a_long_day_without_a_window_is_sized_by_the_writers_catalog_row() {
     let mock = MockOpenAI::start(vec![canned_chat_completion("A long day.", "stop")]).await;
     let td = tempfile::TempDir::new().unwrap();
     // 40 older turns of 10 000 characters: 400 000 characters, over the
-    // 375 000 half of 250 000 tokens holds at three characters a token.
+    // 26 250 half of 17 500 tokens holds at three characters a token.
     build_tree_with(&td, &mock.base_url, &long_day(40, 10_000), None);
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
@@ -355,7 +355,7 @@ async fn a_long_day_without_a_window_is_sized_by_the_writers_catalog_row() {
     assert_eq!(reqs.len(), 1, "one close, one provider call");
     let user = asked(&mock, 0).await;
     assert!(
-        user.chars().count() <= 375_000,
+        user.chars().count() <= 26_250,
         "the prompt keeps to half of the writer's window: {} chars",
         user.chars().count()
     );
@@ -372,7 +372,7 @@ async fn a_long_day_without_a_window_is_sized_by_the_writers_catalog_row() {
 }
 
 /// GH #1085 (OR-IG-4 step 4), the real road: a writer on a smaller window than
-/// the catalog row refuses the prompt as over its `input_hard` -- no model
+/// the fallback window refuses the prompt as over its `input_hard` -- no model
 /// call -- and names the number. `./prep` reads the day back from the refused
 /// prompt and sizes it ONCE more at half of that number: exactly one provider
 /// call, one handover.
@@ -380,10 +380,11 @@ async fn a_long_day_without_a_window_is_sized_by_the_writers_catalog_row() {
 async fn a_refused_prompt_is_sized_once_more_by_the_refusals_number() {
     let mock = MockOpenAI::start(vec![canned_chat_completion("A day, sized twice.", "stop")]).await;
     let td = tempfile::TempDir::new().unwrap();
-    // 20 older turns of 5000 characters: about 100 000 characters, about
-    // 34 000 tokens -- over an input_hard of 20 000. Half of 20 000 tokens is
-    // 30 000 characters.
-    build_tree_with(&td, &mock.base_url, &long_day(20, 5000), Some(20_000));
+    // 20 older turns of 5000 characters: about 100 000 characters. The first
+    // prompt keeps to half of the fallback window (GH #1532: 17 500 tokens,
+    // 26 250 characters, about 8 750 tokens) -- over an input_hard of 6 000.
+    // Half of 6 000 tokens is 9 000 characters.
+    build_tree_with(&td, &mock.base_url, &long_day(20, 5000), Some(6_000));
     let (h, mut sink_rx, _park_rx) = boot(&td).await;
 
     h.send(close_request()).await;
@@ -404,7 +405,7 @@ async fn a_refused_prompt_is_sized_once_more_by_the_refusals_number() {
     assert_eq!(reqs.len(), 1, "the refusal cost no model call");
     let user = asked(&mock, 0).await;
     assert!(
-        user.chars().count() <= 30_000,
+        user.chars().count() <= 9_000,
         "half of the refusal's number: {} chars",
         user.chars().count()
     );

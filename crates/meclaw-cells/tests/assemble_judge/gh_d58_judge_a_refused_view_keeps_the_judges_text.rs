@@ -71,7 +71,8 @@ fn in_time() -> String {
 
 /// The arguments the view's first ledger round carries in `cur_reason`.
 fn reason() -> String {
-    json!({"target": "decide", "n": 2, "budget": 1500, "limit": 8}).to_string()
+    // GH #1526: the share rides to the second round, no budget of the asker.
+    json!({"target": "decide", "n": 2, "share": 0.1875, "limit": 8}).to_string()
 }
 
 /// The door's refusal: a view ask for `decide` in a context without a round.

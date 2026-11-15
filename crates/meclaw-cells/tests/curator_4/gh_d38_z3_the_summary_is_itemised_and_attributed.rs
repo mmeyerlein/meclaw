@@ -98,7 +98,7 @@ fn the_summary_is_itemised_and_attributed() {
         .to_string();
     assert_eq!(
         transcript.lines().next(),
-        Some(format!("[#{q1}] ({day}) user: q1").as_str()),
+        Some(format!("[#{q1}] ({day}) person: q1").as_str()),
         "every transcript line carries the short id of its block: {transcript}"
     );
     for line in transcript.lines().filter(|l| !l.is_empty()) {

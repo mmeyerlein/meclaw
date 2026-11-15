@@ -28,7 +28,7 @@ definition is worse than none:
   noise: it is an errand the colony finished inside one hop.
 
 `--ledger <curator ledger cell.db>` adds one line per turn that speculated (FU1, the curator's
-`quick_speculative`): the `quick_spec` mark's column -- how long after the spec call fired the
+`spec_ahead`): the `quick_spec` mark's column -- how long after the spec call fired the
 turn was decided, and whether the held quick answer was kept or dropped, with the reason. The
 ledger is read read-only, like the log; it is the curator's own record, not a measurement here.
 

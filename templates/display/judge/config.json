@@ -52,6 +52,8 @@
               "cost_cached_in": {"type": "number", "required": false},
               "cost_cache_write": {"type": "number", "required": false},
               "price_tiers": {"type": "array", "required": false},
+              "chars_per_token": {"type": "number", "required": false},
+              "tokens_per_image": {"type": "number", "required": false},
               "dropped": {"type": "array", "required": false},
               "unverified": {"type": "array", "required": false}}
     },

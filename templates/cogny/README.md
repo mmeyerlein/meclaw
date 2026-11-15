@@ -1,4 +1,4 @@
-# `cogny@5.15.2`
+# `cogny@5.16.0`
 
 The agent core as one template. Seven units under one hive: [`collector`](../collector/),
 [`curator`](../curator/) and [`dispatcher`](../dispatcher/) -- each carrying its
@@ -97,12 +97,12 @@ The three sub-units are **references**, not copies. Each of the three directorie
 `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@6.1.0"},
+{"cell": {"type": "ref", "template": "collector@7.0.0"},
  "override_params": {"assemble": {"tools": ["*"]}}}
 ```
 
 ```json
-{"cell": {"type": "ref", "template": "curator@2.2.0"},
+{"cell": {"type": "ref", "template": "curator@3.0.0"},
  "override_params": {"writer": {"turn_write": "0"}}}
 ```
 
@@ -200,7 +200,7 @@ read (GH #889).
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`cogny@5.15.2` above it in its provenance chain.
+`cogny@5.16.0` above it in its provenance chain.
 
 **The library has to carry all three.** A reference resolves against the colony's template
 registry, so `collector`, `curator` and `dispatcher` have to sit in the same `templates/` directory
@@ -711,7 +711,7 @@ Now the knob is set where it belongs, and the sub-unit stays a reference to the 
 `collector`:
 
 ```json
-{"op": "instantiate", "template": "cogny@5.15.2", "at": "/cores/deep",
+{"op": "instantiate", "template": "cogny@5.16.0", "at": "/cores/deep",
  "override_params": {"collector/assemble": {"max_iter": 16}}}
 ```
 
@@ -741,7 +741,7 @@ read.
 
 - `ctx.model` -> `brain`. A **thinking** model: the shipped `external_timeout_ms` (3 058 s)
   and `message_timeout` (3 364 s) are derived by the timeout chain of `docs/cell-types.md` from the row it is
-  born on, `openai/gpt-6-sol` (GH #1097): the row's whole `max_output` at its measured `output_tps`. A fast channel model here
+  born on, `openai/gpt-6.1-sol` (GH #1097): the row's whole `max_output` at its measured `output_tps`. A fast channel model here
   wastes the split between the surface and the core.
 - `ctx.model_fast` is **gone since 4.4.0** ([#528](https://github.com/mmeyerlein/meclaw/issues/528)),
   with the lane it fed. An instantiation that still passes it is not refused -- an unused ctx

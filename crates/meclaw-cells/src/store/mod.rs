@@ -13,4 +13,7 @@ pub mod seed;
 pub use cell::StoreCell;
 pub use degraded::DegradedStoreCell;
 pub use factory::StoreCellFactory;
-pub use params::{CanonicalSpec, IndexSpec, SchemaEvolution, StoreParams, WriteSurface};
+pub use params::{
+    CanonicalSpec, FtsColumn, FtsDeclaration, FtsIndex, FtsSource, IndexSpec, SchemaEvolution,
+    StoreParams, WriteSurface,
+};

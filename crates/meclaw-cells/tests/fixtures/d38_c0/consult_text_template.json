@@ -117,6 +117,13 @@
           "session_id": "s1",
           "turn_id": "t1",
           "value": "{\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"path\":\"complex\",\"way\":\"consult\"}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "errand_link",
+          "session_id": "s1",
+          "turn_id": "t1",
+          "value": "{\"from\":\"k-00064c07-a6f7-4e80-8000-0000000001c0\"}"
         }
       ],
       "out": [
@@ -359,6 +366,13 @@
           "session_id": "s1",
           "turn_id": "t3",
           "value": "{\"call\":\"00064c07-a7dc-4040-8000-0000000001c0\",\"path\":\"talk\",\"way\":\"brain\"}"
+        },
+        {
+          "audience_set": "[\"member:e\"]",
+          "kind": "errand_link",
+          "session_id": "s1",
+          "turn_id": "t3",
+          "value": "{\"answer\":\"k-00064c07-a6f7-4e80-8000-0000000001c0\"}"
         }
       ],
       "out": [

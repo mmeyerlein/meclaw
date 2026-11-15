@@ -1,4 +1,4 @@
-# `talky@7.1.0`
+# `talky@8.0.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -7,7 +7,7 @@ A whole conversational agent as one template. Four referenced units under one hi
 and one error collector. No new cell type, no Rust.
 
 **The first production rollout wired this by hand.** Keeper in the ingress, collector at the seam,
-dispatcher for the fan-out, the close batch out to the write port -- one hundred and forty-nine edges,
+dispatcher for the fan-out, the close batch out to the write port -- one hundred and fifty-four edges,
 each of them a decision that had already been made in a README. That is the definition of a
 composite: a recurring unit that should be instantiated, not re-derived. Here it is one
 `add_nodes` plus the four port edges the parent has to draw anyway.
@@ -74,13 +74,13 @@ The five sub-units are **references**, not copies. Each of the five directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@6.1.0"}}
+{"cell": {"type": "ref", "template": "collector@7.0.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@7.1.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@8.0.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -152,7 +152,7 @@ spawns.
 | `in_turn` | in | the surface turn. The edge MUST promote the channel identity to `context.channel`, and the round to `context.audience_set` if closed sessions are to reach a memory. Since 5.4.0 the rim carries two more things through to the collector untouched: the channel's tool scope (`context.tools_allow` / `context.tools_deny`, stamped by the channel edge, constant per session -- the collector sends it with every brain call of the session as `tool_scope`, through `./curator` since 6.0.0, [#845](https://github.com/mmeyerlein/meclaw/issues/845)) and turns of `origin: "peer"` with their `speaker` / `speaker_ref`, which the collector keeps as role `peer` and never as this agent's own answer ([#847](https://github.com/mmeyerlein/meclaw/issues/847)). See the collector's README, "The channel's tool scope" and "The other side's words". Since GH #1305 an **inner turn** enters here too (OR-AG-15): `hop.kind == "inner"` with `hop.inner_source` and `hop.deliver_channel_node` is an event without a speaking person (a reminder an app hands the companion). Its own door puts it on the channel `inner:<inner_source>` with `context.channel_node` = the delivery node, in the round the caller handed in (`context.audience_set`, required) -- so its generation is its own and its window is the person's round. The keeper refuses one without a node (`inner_unrouted`) or without a round (`no_round`) on `reject`. `./curator` frames its words (`inner_header`) and files them as `event`, never as the person's; the answer goes to the delivery node like any answer to `context.channel_node`. A person's turn (`kind` absent or anything else) passes the door untouched |
 | `answer` | out | the finished turn. **Three** sorts since `collector@2.1.1`: a real answer, a round that hit `max_iter` (`hop.round_capped`, and since `collector@3.5.0` `hop.partial == "1"` with a named partial answer as its last turn, #570), and a turn the store refused to let be assembled (`hop.degraded`, which carries no `round_capped`) |
 | `write` | out | the closed session as one batch |
-| `error` | out | a normalised failure report. **MUST** be wired. It also carries the refusals of the word-for-word check (`hop.error_source` `sidecar_verify`, GH #1079): one per item whose quote did not stand in its source, never the item's words -- see "Quotes are checked word for word" |
+| `error` | out | a normalised failure report. **MUST** be wired. It also carries the refusals of the word-for-word check (`hop.error_source` `sidecar_verify`, GH #1079): one per item whose quote did not stand in its source, never the item's words -- see "Quotes are checked word for word". A failed model call names the model cell that failed in `hop.error_source` (`brain`, `quick` or `quick_bridge`; GH #1536): the edge into `./errors` stamps it as `hop.failed_cell`, because a cell knows no topology, and a failure without that stamp reads `brain` as before |
 
 The rest, each optional and each still at the same address:
 
@@ -501,7 +501,8 @@ confidence in it. `needs` lists the names of `needs` (`tool`, `reasoning`, `rese
 for a question that needs what the person said earlier -- their people, their life, their past,
 [#1435](https://github.com/mmeyerlein/meclaw/issues/1435))
 and `families` the names of `families` (`web`, `history`: the tool families of this
-composite's menu) the decider said yes to at `yes_threshold` or more; the families are
+composite's menu) the decider said yes to at `yes_threshold` or more -- the families at
+`family_threshold` when a set gives it a number ("" as shipped: `yes_threshold`); the families are
 the hint the curator scopes a quick round's tools by. `intent` is one of `intents`, or
 `""`. `duration` is how long the decider took, in ms: the moment of the ask rides on the
 hop of the call (`asked_at`), into context on the way to `./decide` (`route_asked_at`)
@@ -559,8 +560,9 @@ off, and off the stamp and the decide call are the bytes above.
   generation and round, in a block before the turn. `./route` first orders a view without a
   target from the curator (`view_ask` -> `in_view_ask`, answered as `view` -> `in_view`, D58
   [#1480](https://github.com/mmeyerlein/meclaw/issues/1480); the same round rule as
-  `history_read`), bounded by `context_budget_tokens` (1 500 as shipped, never above 4 000);
-  the turn's text rides out and back in `context.route_state`. The read hop counts in
+  `history_read`), sized by the curator as a share of the decide target's window
+  (`./history`'s `view_share`, [#1526](https://github.com/mmeyerlein/meclaw/issues/1526); the
+  view says its budget back as `budget_tokens`); the turn's text rides out and back in `context.route_state`. The read hop counts in
   `late_ms`. At 0 there is no read hop.
 
 
@@ -574,8 +576,8 @@ shipped, and off every message is the bytes above. A switch here and in the sect
   family, `affinity` in talky; the curator keeps them per person, [#1279](https://github.com/mmeyerlein/meclaw/issues/1279)),
   `./route` renders them in the decide state as `How this person meant earlier requests
   when asked`, one line per how-question, its answer and its class; no hints, no block.
-  The hints count against `context_budget_tokens` beside the turns the wall already put in the
-  window ([#1363](https://github.com/mmeyerlein/meclaw/issues/1363)): the newest that fit stay
+  The hints count against the view's `budget_tokens` beside the turns the wall already put in
+  the window, at the view's `chars_per_token` (#1526; none named: the estimate of three) (no budget named: no bound) ([#1363](https://github.com/mmeyerlein/meclaw/issues/1363)): the newest that fit stay
   whole, older ones go whole, and a cut ends the block on
   `...[cut: <k> of <n> hints shown, <t> of <total> tokens; budget of the window]`.
 - `./route`'s `judge_context` `"1"` orders a view for the target its `view_target` names (with
@@ -621,8 +623,8 @@ shipped, and off every message is the bytes above. A switch here and in the sect
   the length of the answer (#1417) -- and sends ONE stamp `{turn_id, audience_set, screen_form}` out of the rim on
   `verdict`, never on `stamp`.
   The route stamp never waits for it; an error, a refusal, an answer that is no form or a turn
-  without a round sends nothing. Its own `context_turns` (4) and `context_budget_tokens` (1 500)
-  size the read.
+  without a round sends nothing. Its own `context_turns` (4) sizes the read;
+  the curator sizes its budget by the target's window (#1526).
 - `in_delta` (a voice partial) reaches `./route` as `in_turn` with `context.delta` `"1"`: the wall
   is read as for a turn (`context_turns`, `judge_context`; the curator answers a delta from the
   round's newest rows, the call has no generation yet, #1369), then one decide call whose text
@@ -731,10 +733,10 @@ speaker after a speakable tool result, and the bridge of a `complex` or `researc
 `./brain`. Its edges are the brain's, once more: `./curator -> ./quick` on `quick`
 (`restore_ttl`), `./quick -> ./splitter` on `stop`, `tool_calls` and `length`, the tap
 `./quick -> ./curator` on `in_llm`, `./quick -> ./errors` on an error of a call that is no curator call or is a bridge (the error of every other quick call goes to the brain with the curator's `escalate` mark, reason `no_answer`, GH #1352) and a refused push out to
-`.` as `model_refused`. A push of the model registry addressed to `.../quick` takes its own door
+`.` as `model_refused`. The bridge's error edge leaves the curator's main calls to the curator as well, except a call of a delegated turn (`context.delegation_id`): its error also reaches `./errors`, exactly once, so the duplex cell that delegated the turn hears that it failed (GH #1536); for an `error` the curator still writes its wall row and `errand_outcome`. A push of the model registry addressed to `.../quick` takes its own door
 (`. -> ./quick` on `in_model`); the brain's door lets it pass.
 
-**Speculation (#1275, off by default).** With the curator policy's `quick_speculative` and the
+**Speculation (#1275, off by default).** With the curator policy's `spec_ahead` and the
 collector's knob of the same name on, the collector sends the curate of a turn once early,
 before the route stamp (`hop.spec` "1", no path), and the curator asks the quick voice at once.
 `./curator -> ./quick_spec` (since #1398, below) lifts `hop.spec` into `context.spec` (the brain
@@ -767,7 +769,7 @@ ever speaks through the curator's `spec_release`, and a dropped or late one neve
 `./quick_bridge` carries `./quick`'s cut to the splitter, its tap, its error drain and its refused
 push. Each has its own model door (`. -> ./quick_spec`, `. -> ./quick_bridge` on `in_model`), the
 brain's door lets both pass, and both stand in the credential lanes beside `./quick` (below).
-With `quick_speculative` "0", as shipped, no call reaches either sibling.
+With `spec_ahead` "0", as shipped, no call reaches either sibling.
 
 **Born on the brain's start value, moved by a tier.** `./quick` carries `${ctx.model}` like
 `./brain`, so a fresh composite speaks quick turns on the brain's model; the model registry moves
@@ -780,7 +782,11 @@ the tool runs.
 
 ## The internal wiring, edge by edge
 
-Seventy-seven edges of round in this hive's `params.graph` (the seventy-seventh D54g stamp's, GH #1506: the notice of a sharpened turn `./route -> ./collector` on `in_route`, the second judge's `view_ask` a second time, with `hop.wait_ms`; the seventy-third to seventy-sixth D54g stamp's, GH #1506: the second judge's view ask `./route -> ./curator` on `in_view_ask` with `hop.first`, the view back on `in_second_view`, the call `./route -> ./second_judge` and its answer on `in_second`; the seventy-second D58 moveout's, GH #1476:
+Eighty-one edges of round in this hive's `params.graph` (the eighty-first D54g b3err's, GH #1536: the failed bridge call of a delegated turn `./quick_bridge -> ./errors`; the seventy-eighth to eightieth GH #1526's: the
+package line of `./decide`, the target of the judges' view, into `./curator` on `in_limits_row` (never to
+`./route`), and the curator's two asks for it `./curator -> ./decide` on `catalog_ask`, one bound by
+`hop.catalog_for` and one without a handle, as it asks the four model cells below, OR-583.grenzen.15; the
+seventy-seventh D54g stamp's, GH #1506: the notice of a sharpened turn `./route -> ./collector` on `in_route`, the second judge's `view_ask` a second time, with `hop.wait_ms`; the seventy-third to seventy-sixth D54g stamp's, GH #1506: the second judge's view ask `./route -> ./curator` on `in_view_ask` with `hop.first`, the view back on `in_second_view`, the call `./route -> ./second_judge` and its answer on `in_second`; the seventy-second D58 moveout's, GH #1476:
 the lead's orders to the curator `./lead -> ./curator` on `in_feed` -- the early interrupt of a crisis heard
 on a partial, which the curator takes because this composite sets its `feed_in` "1"; the seventieth and
 seventy-first D58 lead's, GH #1474: the curator's three lanes to its lead `./curator -> ./lead` on
@@ -804,9 +810,9 @@ route stamp's read of the curator's wall and its answer, GH #1304, the thirty-fi
 asks for its words on its way to `./curator`, GH #1306, the thirty-sixth and thirty-seventh the
 inner turn's copies of the rounds into `./brain` and `./quick`, which set `hop.silence_ok`,
 GH #1320, the thirty-eighth and thirty-ninth a speculative quick answer's lane `in_spec_llm`
-into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the seventy-two that ARE the
-boundary (thirty-one door edges from `.`, forty-one leaving towards it, and those are the lanes
-above; D54g stamp (GH #1506) adds the second judge's model door `in_model` into `./second_judge` and its refused push; D58 note (GH #1477) adds the exit `note_receipt` out of `./curator`; D58 feed (GH #1481) adds the door `in_feed` into `./curator`; #1398 adds the siblings' model doors `in_model` into `./quick_spec` and `./quick_bridge`
+into `./curator` and a kept one's `spec_release` to `./splitter`, #1275) -- plus the seventy-three that ARE the
+boundary (thirty-two door edges from `.`, forty-one leaving towards it, and those are the lanes
+above; GH #1528 (d58-3 ballast) adds the ballast judge's model door `in_model` into `./curator`; D54g stamp (GH #1506) adds the second judge's model door `in_model` into `./second_judge` and its refused push; D58 note (GH #1477) adds the exit `note_receipt` out of `./curator`; D58 feed (GH #1481) adds the door `in_feed` into `./curator`; #1398 adds the siblings' model doors `in_model` into `./quick_spec` and `./quick_bridge`
 and their two refused pushes; #1411 adds the `partial` exits of `./brain` and `./quick`, and GH #1415 the speculation's partial road `./quick_spec -> ./curator` on `in_spec_partial` and its exit `partial` out of `./curator`; #1369 adds the door `in_call_end` into `./curator` and the exit `call_facts` out of it, #1401 the same door into `./session-keeper`; #1279 adds five doors -- `in_delta` into `./route`, `in_screen_topics` (since D58 judge #1480 `in_part`), `in_seed_ask` and
 `in_seed_line` into `./curator`, the screen model's door `in_model` into `./screen_model` -- and six
 exits -- `seed`, `live_feed` and `propose` out of `./curator`, `verdict` out of `./route` (a rim stamp
@@ -880,6 +886,7 @@ quick_spec --(any answer, !refused_subscriber)--> curator  in_spec_llm  <- every
 quick_spec --(partial, !finish_reason)--> curator  in_spec_partial  <- a spec sentence, passed only while the turn awaits it, #1411
 quick_bridge --(any answer, !refused_subscriber)--> curator  in_llm  <- the bridge's tap, #1398
 brain | quick | quick_spec | quick_bridge --(package, !finish_reason)--> curator  in_catalog  <- the model's package line, on a push or a question, #1449
+decide --(package, !finish_reason)--> curator  in_limits_row  <- its package line sizes only its view, #1526
 curator ==(spec_release, int(hop.iter) < 12, restore_ttl)==> splitter  <- a kept spec answer, the quick round once more, #1275
    .      --(in_pack)-----------> curator    <- THE DOOR IN THE WALL, GH #458
    .      --(in_pin)------------> curator    <- another hive's pin, GH #916
@@ -905,9 +912,10 @@ splitter --(length)--------------> collector    in_answer   <- a cut answer, its
 splitter --(sidecar: window | gap | memory | things, or sidecar_verify)--> curator  in_section  <- the curator's sections, GH #892; a section to check, GH #1079
 splitter --(sidecar, any other)-->  .        <- one per section, out of the sidecar port
 splitter --(answer_check, answer_check_sources set)--> curator  in_answer_check  <- the check asks for its turn's words, GH #1306
-brain --(error | content_filter, !refused_subscriber)-> errors
-quick --(error | content_filter, !refused_subscriber)-> errors
-quick_bridge --(error | content_filter, !refused_subscriber)-> errors
+brain --(error | content_filter, !refused_subscriber)-> errors   failed_cell := 'brain'  <- the drain's error_source, #1536
+quick --(error | content_filter, !refused_subscriber)-> errors   failed_cell := 'quick'
+quick_bridge --(error | content_filter, !refused_subscriber)-> errors   failed_cell := 'quick_bridge'
+quick_bridge --(error | content_filter, !refused_subscriber, delegation_id, a main call of the curator, !tool round)-> errors   failed_cell := 'quick_bridge'  <- a delegated turn hears its failure, #1536
 brain --(partial, !finish_reason)---> .   <- a sentence while the model streams, GH #1411
 quick --(partial, !finish_reason, !spec)-> .   <- the same for the quick voice
 curator --(partial, !finish_reason)--> .   <- a kept speculation's sentence, #1411
@@ -1121,7 +1129,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@7.1.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@8.0.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1839,8 +1847,9 @@ below names the CELL the knob belongs to, because that is what an
 | `inner_header` | param | `"[event from {source} -- not something the person said; decide whether and how to bring it up now, or say nothing]"` | curator/intake (GH #1305) -- the frame an inner turn's words stand under in the window; `{source}` is `hop.inner_source` |
 | `reasoning_effort` | param | `"medium"` | brain -- how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none`), since `6.7.2` ([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)); ships `medium` like every shipped `llm` cell ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)). It reaches the provider as `"reasoning": {"effort": ...}` (under the default `reasoning_wire`). A parent addresses it as `brain` (an assistant: `talky/brain`, `talky-chat/brain`) |
 | `classes`, `intents`, `needs`, `families`, `threshold`, `yes_threshold`, `late_ms`, `fallback_class` | param | four classes `talk`/`simple`/`complex`/`research`; four intents; needs `tool`/`reasoning`/`research`; families `web`/`history`; `0.6`; `0.5`; `1500`; `"talk"` | route -- the route question of every turn and when its answer counts (GH #1247). See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
-| `choices`, `stamp_out`, `context_turns`, `context_budget_tokens` | param | `{}`; `"0"`; `0`; `1500` | route -- a product's own questions in the same decide call, the stamp out of the rim on `stamp`, and the person's last turns for the decider (GH #1304); all off as shipped. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
+| `choices`, `stamp_out`, `context_turns` | param | `{}`; `"0"`; `0` | route -- a product's own questions in the same decide call, the stamp out of the rim on `stamp`, and the person's last turns for the decider (GH #1304); all off as shipped. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `unsure_families` | param | `"0"` | route -- `"1"` lets an unsure stamp keep the families the decider said yes to, its needs stay empty ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
+| `family_threshold` | param | `""` | route -- the bar of the families alone (OR-583-70): a number names a family the decider said yes to at that value or more, the needs stay at `yes_threshold`; `""` (shipped, or any value that is no number) is `yes_threshold`, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `stamp_needs_yes` | param | `"0"` | route -- `"1"` adds `needs_yes` to a judged stamp: the yes-value of every asked need the decider answered, also below `yes_threshold` ([#1466](https://github.com/mmeyerlein/meclaw/issues/1466)); never on a fallback stamp or the rim copy; off, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `partial_unit`, `partial_min_chars` | param | `"off"`; `12` | quick, brain -- `sentence` streams the answer and emits each finished sentence on the lane `partial` before the final answer, a sentence shorter than `partial_min_chars` waits for the next boundary (GH #1410); declared so a set can switch it on ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes |
 | `notes_class` | param | `"talk"` | route -- the class a stamp with a choice's note leaves on, since only the `brain` way shows turn notes (GH #1340); `""` keeps the decider's path. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
@@ -1871,12 +1880,12 @@ loop: only ONE round has to fit the budget. A tree that removes the restoring ed
 
 ```bash
 curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: application/json' \
-  -d '{"scope":"/main/agent","ctx":{"model":"openai/gpt-4o-mini"},"diff":{
+  -d '{"scope":"/main/agent","ctx":{"model":"openai/gpt-6-luna"},"diff":{
         "add_nodes":[{"name":"talky","template":"talky"}],
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all thirty-four cells (plus five hive markers); the two `timer`s
+The composite comes up with all thirty-five cells (plus five hive markers); the two `timer`s
 spawn as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:

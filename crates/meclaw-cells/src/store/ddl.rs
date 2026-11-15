@@ -521,21 +521,42 @@ pub fn apply_canonical_ddl(
 ///
 /// Identifiers come from `params.schema`, which is syntax-gated by
 /// [`check_new_identifier`] at parse time.
-pub fn apply_fts_ddl(
+pub fn apply_fts_ddl<D: crate::store::FtsDeclaration>(
     conn: &rusqlite::Connection,
-    fts: &BTreeMap<String, Vec<String>>,
+    fts: &BTreeMap<String, D>,
     canonical: &BTreeMap<String, Vec<crate::store::CanonicalSpec>>,
 ) -> Result<(), String> {
-    let tokenizer = crate::store::query::fts_tokenizer::TOKENIZER_NAME;
-    for (table, cols) in fts {
+    for (table, decl) in fts {
+        let decl = decl.fts_index();
+        let cols = decl.names();
         let index = format!("{table}_fts");
+        // GH #1531: the DECLARED tokenizer -- the store's stemming one unless
+        // the declaration names another -- and the content source: the base
+        // table, or the view a JSON-path column reads through.
+        let tokenizer = decl
+            .tokenize
+            .clone()
+            .unwrap_or_else(|| crate::store::query::fts_tokenizer::TOKENIZER_NAME.to_string());
+        let view = format!("{table}_fts_src");
+        let view_sql = decl
+            .has_sources()
+            .then(|| fts_source_view(table, &view, &decl));
+        let content = if view_sql.is_some() { &view } else { table };
         // Read off `sqlite_master` BEFORE the catalog lookup: this is plain
         // table text and needs no tokenizer, while `pragma_table_info` on an
         // FTS index opens the virtual table.
-        let stemmed = index_declares_stem_tokenizer(conn, &index).map_err(|e| e.to_string())?;
+        let declared = index_declares(
+            conn,
+            &index,
+            &tokenizer,
+            content,
+            &view,
+            view_sql.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
         let existing = existing_fts_columns(conn, &index).map_err(|e| e.to_string())?;
         if let Some(found) = existing {
-            if found == *cols && stemmed {
+            if found == cols && declared {
                 continue;
             }
             // Every binding of the table substitutes its own source for its
@@ -581,9 +602,12 @@ pub fn apply_fts_ddl(
             //
             // The tokenizer never makes a refused column drift acceptable: the
             // column list has to be migratable on its own, and only then does a
-            // missing tokenizer add its own reason to rebuild.
+            // tokenizer or a content source other than the declared one add its
+            // own reason to rebuild.
             let additive = |from: &[String]| from.len() < cols.len() && cols[..from.len()] == *from;
-            let columns_migratable = variants.iter().any(|v| v == cols || additive(v.as_slice()));
+            let columns_migratable = variants
+                .iter()
+                .any(|v| *v == cols || additive(v.as_slice()));
             if !columns_migratable {
                 return Err(format!(
                     "fts column drift on {index}: declared {cols:?}, existing {found:?} — \
@@ -602,24 +626,45 @@ pub fn apply_fts_ddl(
             ))
             .map_err(|e| e.to_string())?;
         }
+        // The view a JSON-path column reads through is (re)written with its
+        // index: its text is part of what `index_declares` compares, so a
+        // changed path rebuilds the index instead of leaving it stale. Dropped
+        // only when there is a VIEW of that name (a declaration that moved
+        // back to plain columns leaves its old one behind): a declared TABLE
+        // of the same name is never touched, `DROP VIEW` on it would fail the
+        // wake (GH #1531 review M-1).
+        let view_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?1)",
+                [&view],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if view_exists {
+            conn.execute_batch(&format!("DROP VIEW \"{view}\";"))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(sql) = &view_sql {
+            conn.execute_batch(&format!("{sql};"))
+                .map_err(|e| e.to_string())?;
+        }
         let col_list = cols
             .iter()
             .map(|c| format!("\"{c}\""))
             .collect::<Vec<_>>()
             .join(", ");
-        let new_vals = cols
-            .iter()
-            .map(|c| format!("new.\"{c}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let old_vals = cols
-            .iter()
-            .map(|c| format!("old.\"{c}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let row_vals = |row: &str| {
+            decl.columns
+                .iter()
+                .map(|c| fts_value(row, c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let new_vals = row_vals("new");
+        let old_vals = row_vals("old");
         let ddl = format!(
             "CREATE VIRTUAL TABLE IF NOT EXISTS \"{index}\" USING fts5({col_list}, \
-               content='{table}', content_rowid='rowid', tokenize='{tokenizer}');
+               content='{content}', content_rowid='rowid', tokenize='{tokenizer}');
              CREATE TRIGGER IF NOT EXISTS \"{index}_ai\" AFTER INSERT ON \"{table}\" BEGIN
                INSERT INTO \"{index}\"(rowid, {col_list}) VALUES (new.rowid, {new_vals});
              END;
@@ -639,6 +684,84 @@ pub fn apply_fts_ddl(
     Ok(())
 }
 
+/// The value one index column takes from a row (`new`/`old` in a trigger, the
+/// base table in the source view): the column itself, or the text at its JSON
+/// path (GH #1531). A value that is not JSON indexes as NULL instead of
+/// failing the write of its row -- the index is a projection, the row is the
+/// truth. The path passed `parse_json_path`, whose grammar admits no quote.
+fn fts_value(row: &str, col: &crate::store::FtsColumn) -> String {
+    let at = |c: &str| {
+        if row.is_empty() {
+            format!("\"{c}\"")
+        } else {
+            format!("{row}.\"{c}\"")
+        }
+    };
+    match &col.source {
+        None => at(&col.name),
+        Some(src) => {
+            let doc = at(&src.column);
+            format!(
+                "CASE WHEN json_valid({doc}) THEN json_extract({doc}, '{}') END",
+                src.path
+            )
+        }
+    }
+}
+
+/// The `CREATE VIEW` an index with JSON-path columns reads through (GH #1531):
+/// the base table's `rowid` and every index column by name. Spelled the way
+/// SQLite keeps it in `sqlite_master` (no `IF NOT EXISTS`), so the text read
+/// back is comparable to this one.
+fn fts_source_view(table: &str, view: &str, decl: &crate::store::FtsIndex) -> String {
+    let cols = decl
+        .columns
+        .iter()
+        .map(|c| format!("{} AS \"{}\"", fts_value("", c), c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("CREATE VIEW \"{view}\" AS SELECT rowid AS rowid, {cols} FROM \"{table}\"")
+}
+
+/// Whether an existing FTS index is built the way it is declared now: its
+/// `CREATE VIRTUAL TABLE` text names the declared tokenizer and content
+/// source, and the source view (if the declaration has one) is the one this
+/// code writes. Missing index ⇒ `false`.
+fn index_declares(
+    conn: &rusqlite::Connection,
+    index: &str,
+    tokenizer: &str,
+    content: &str,
+    view: &str,
+    view_sql: Option<&str>,
+) -> rusqlite::Result<bool> {
+    use rusqlite::OptionalExtension;
+    if !index_declares_tokenizer(conn, index, tokenizer)? {
+        return Ok(false);
+    }
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?1",
+            [index],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if !sql.is_some_and(|s| s.contains(&format!("content='{content}'"))) {
+        return Ok(false);
+    }
+    let Some(want) = view_sql else {
+        return Ok(true);
+    };
+    let have: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='view' AND name = ?1",
+            [view],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(have.as_deref() == Some(want))
+}
+
 /// Whether an existing FTS index already declares the store's stemming
 /// tokenizer (0.2.0 P3).
 ///
@@ -651,9 +774,25 @@ pub fn apply_fts_ddl(
 /// hand-written index that means the same thing differently (double quotes,
 /// extra spacing) is therefore rebuilt once and then reads as declared — the
 /// check is self-healing rather than clever, which is what keeps it idempotent.
+#[cfg(test)]
 fn index_declares_stem_tokenizer(
     conn: &rusqlite::Connection,
     index: &str,
+) -> rusqlite::Result<bool> {
+    index_declares_tokenizer(
+        conn,
+        index,
+        crate::store::query::fts_tokenizer::TOKENIZER_NAME,
+    )
+}
+
+/// Whether an existing FTS index declares `tokenizer` — the store's stemming
+/// one or the one its declaration names (GH #1531), compared the same way as
+/// [`index_declares_stem_tokenizer`].
+fn index_declares_tokenizer(
+    conn: &rusqlite::Connection,
+    index: &str,
+    tokenizer: &str,
 ) -> rusqlite::Result<bool> {
     use rusqlite::OptionalExtension;
     let declaration: Option<String> = conn
@@ -663,10 +802,7 @@ fn index_declares_stem_tokenizer(
             |r| r.get(0),
         )
         .optional()?;
-    let needle = format!(
-        "tokenize='{}'",
-        crate::store::query::fts_tokenizer::TOKENIZER_NAME
-    );
+    let needle = format!("tokenize='{tokenizer}'");
     Ok(declaration.is_some_and(|sql| sql.contains(&needle)))
 }
 
@@ -1024,6 +1160,164 @@ mod tests {
         assert!(!index_declares_stem_tokenizer(&conn, "nothing_fts").unwrap());
     }
 
+    /// GH #1531: an index over the text at a JSON path of a column, with the
+    /// trigram tokenizer. The rebuild indexes the rows written before it, the
+    /// text after an escaped line break is its own text (an index over the raw
+    /// JSON glues it to the `n` of `\n`), a word inside a compound is found,
+    /// rows written after it reach it through the triggers, a wake without
+    /// drift leaves the index alone, and a changed path or tokenizer
+    /// rebuilds it.
+    #[test]
+    fn fts_ddl_indexes_a_json_path_with_the_declared_tokenizer() {
+        let conn = conn_with_extensions();
+        conn.execute_batch(
+            "CREATE TABLE blocks (hash TEXT, body TEXT);
+             INSERT INTO blocks VALUES ('a', '{\"text\":\"Hello\\nWorld\",\"note\":\"x\"}');
+             INSERT INTO blocks VALUES ('b', 'not json at all');",
+        )
+        .unwrap();
+        let decl = |path: &str, tokenize: Option<&str>| {
+            BTreeMap::from([(
+                "blocks".to_string(),
+                crate::store::FtsIndex {
+                    columns: vec![crate::store::FtsColumn {
+                        name: "text".into(),
+                        source: Some(crate::store::FtsSource {
+                            column: "body".into(),
+                            path: path.into(),
+                        }),
+                    }],
+                    tokenize: tokenize.map(str::to_string),
+                },
+            )])
+        };
+        let hits = |q: &str| -> i64 {
+            conn.query_row(
+                "SELECT count(*) FROM blocks_fts WHERE blocks_fts MATCH ?1",
+                [q],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        apply_fts_ddl(&conn, &decl("$.text", Some("trigram")), &BTreeMap::new()).unwrap();
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'blocks_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("tokenize='trigram'"), "got: {sql}");
+        assert!(sql.contains("content='blocks_fts_src'"), "got: {sql}");
+        assert_eq!(hits("\"world\""), 1, "the word after the line break");
+        assert_eq!(hits("\"ello\""), 1, "a part of a word");
+        assert_eq!(hits("\"note\""), 0, "only the text at the path");
+
+        conn.execute(
+            "INSERT INTO blocks VALUES ('c', '{\"text\":\"the Zahnarzttermin\"}')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(hits("\"arzt\""), 1, "a row written after the index");
+
+        // A wake without drift: the emptied index stays empty.
+        conn.execute(
+            "INSERT INTO blocks_fts(blocks_fts) VALUES ('delete-all')",
+            [],
+        )
+        .unwrap();
+        apply_fts_ddl(&conn, &decl("$.text", Some("trigram")), &BTreeMap::new()).unwrap();
+        assert_eq!(hits("\"arzt\""), 0, "no rebuild without drift");
+
+        // A changed path rebuilds through the new view.
+        apply_fts_ddl(&conn, &decl("$.note", Some("trigram")), &BTreeMap::new()).unwrap();
+        assert_eq!(hits("\"note\""), 0, "the value, not the key");
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM blocks_fts WHERE blocks_fts MATCH '\"x\"'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0,
+            "a trigram query under three characters finds nothing"
+        );
+        apply_fts_ddl(&conn, &decl("$.text", Some("trigram")), &BTreeMap::new()).unwrap();
+        assert_eq!(hits("\"arzt\""), 1, "rebuilt after the path changed back");
+
+        // The stemming tokenizer is a drift of its own.
+        apply_fts_ddl(&conn, &decl("$.text", None), &BTreeMap::new()).unwrap();
+        assert!(index_declares_stem_tokenizer(&conn, "blocks_fts").unwrap());
+        assert_eq!(
+            hits("\"world\""),
+            1,
+            "the stemmed index reads the same path"
+        );
+    }
+
+    /// GH #1531 review M-1: a rebuild of an index without JSON-path columns
+    /// never drops a TABLE named like the source view -- `DROP VIEW` on it
+    /// failed the wake -- while a view a declaration left behind when it moved
+    /// back to plain columns goes with the rebuild.
+    #[test]
+    fn fts_ddl_drops_only_a_view_named_like_the_source_view() {
+        let conn = conn_with_extensions();
+        conn.execute_batch(
+            "CREATE TABLE t (a TEXT);
+             CREATE TABLE t_fts_src (x TEXT);
+             INSERT INTO t VALUES ('hello there');",
+        )
+        .unwrap();
+        let plain = BTreeMap::from([("t".to_string(), vec!["a".to_string()])]);
+        apply_fts_ddl(&conn, &plain, &BTreeMap::new()).expect("the wake holds");
+        let kind = |name: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT type FROM sqlite_master WHERE name = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .ok()
+        };
+        assert_eq!(
+            kind("t_fts_src").as_deref(),
+            Some("table"),
+            "the table stays"
+        );
+
+        let conn = conn_with_extensions();
+        conn.execute_batch(
+            "CREATE TABLE blocks (hash TEXT, body TEXT, text TEXT);
+             INSERT INTO blocks VALUES ('a', '{\"text\":\"hello\"}', 'hello');",
+        )
+        .unwrap();
+        let by_path = BTreeMap::from([(
+            "blocks".to_string(),
+            crate::store::FtsIndex {
+                columns: vec![crate::store::FtsColumn {
+                    name: "text".into(),
+                    source: Some(crate::store::FtsSource {
+                        column: "body".into(),
+                        path: "$.text".into(),
+                    }),
+                }],
+                tokenize: Some("trigram".into()),
+            },
+        )]);
+        apply_fts_ddl(&conn, &by_path, &BTreeMap::new()).unwrap();
+        let kind = |name: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT type FROM sqlite_master WHERE name = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .ok()
+        };
+        assert_eq!(kind("blocks_fts_src").as_deref(), Some("view"));
+        let plain = BTreeMap::from([("blocks".to_string(), vec!["text".to_string()])]);
+        apply_fts_ddl(&conn, &plain, &BTreeMap::new()).unwrap();
+        assert_eq!(kind("blocks_fts_src"), None, "the left-behind view goes");
+    }
+
     /// 0.2.0 P3: the tokenizer drift class. An index written by a previous
     /// release carries the same COLUMNS and a different tokenizer, so neither
     /// the additive nor the canonical class sees anything — without this class
@@ -1219,7 +1513,12 @@ mod tests {
     fn fts_ddl_without_declaration_is_a_noop() {
         let conn = conn_with_extensions();
         conn.execute("CREATE TABLE facts (id TEXT)", []).unwrap();
-        apply_fts_ddl(&conn, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        apply_fts_ddl(
+            &conn,
+            &BTreeMap::<String, Vec<String>>::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let n: i64 = conn
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE name LIKE '%_fts%'",

@@ -109,9 +109,9 @@ fn d58_target_the_intake_knows_the_errand_tool_by_its_knob() {
         usage(5_000_000),
         json!([call_of("c1", TOOL)]),
     );
-    let mark: Value = meclaw_core::serde_json::from_str(&h.lead_state("consult_pending:s1"))
-        .unwrap_or(Value::Null);
-    assert_eq!(mark["consult_id"], json!("c1"), "{mark} {:?}", h.stderr);
+    let mark: Value =
+        meclaw_core::serde_json::from_str(&h.lead_state("ask_pending:s1")).unwrap_or(Value::Null);
+    assert_eq!(mark["ask_id"], json!("c1"), "{mark} {:?}", h.stderr);
 
     // The next call: the tool is denied, the open errand stands in the slot
     // the instance names.
@@ -158,7 +158,7 @@ fn d58_target_a_tool_the_knob_does_not_name_starts_no_errand() {
         usage(5_000_000),
         json!([call_of("c1", "consult_cogny")]),
     );
-    assert_eq!(h.lead_state("consult_pending:s1"), "", "{:?}", h.stderr);
+    assert_eq!(h.lead_state("ask_pending:s1"), "", "{:?}", h.stderr);
 }
 
 const RULE: &str = r#"{"items":"facts","quote":"source"}"#;

@@ -79,7 +79,7 @@ examples/swarm/              the colony root, one --root, one process
 {
   "cell": { "type": "llm" },
   "params": {
-    "model": "openai/gpt-4o-mini",
+    "model": "openai/gpt-6-luna",
     "api_key": "",
     "credential_grant_id": "grant:openrouter@main/brain"
   }

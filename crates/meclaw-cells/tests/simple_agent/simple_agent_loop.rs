@@ -72,14 +72,15 @@ pub(crate) const SUBSCRIBER: &str = "agent:ava";
 pub(crate) const OPENROUTER_KEY: &str = "test-key";
 pub(crate) const ANTHROPIC_KEY: &str = "test-anthropic-key";
 
-/// The eight cells of `@2` that may spend a grant (R-SA-37: none of them
-/// carries one in the template; the embedder names it at birth): the eight
-/// model cells (`strong` among them, plan A2) and `tools/web_search`, which ships anonymous but opens the
+/// The cells of `@2` that may spend a grant (R-SA-37: none of them
+/// carries one in the template; the embedder names it at birth): the nine
+/// model cells (`strong` among them, plan A2; the curator's judge `curator/relevance`, GH #1528) and `tools/web_search`, which ships anonymous but opens the
 /// same credential lane one level deeper (`templates/tools/config.json`).
-pub(crate) const MODEL_CELLS: [&str; 9] = [
+pub(crate) const MODEL_CELLS: [&str; 10] = [
     "brain",
     "strong",
     "curator/summarizer",
+    "curator/relevance",
     "memory-hive/closer",
     "memory-hive/dialectic",
     "memory-hive/dreamer",

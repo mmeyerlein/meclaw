@@ -12,6 +12,9 @@
 //! wrote. This file pins that: a cited source stays, a line without an id, a
 //! line citing a block outside the transcript and a line with an unknown id
 //! are dropped, and the three are counted. What stays points at a source.
+//! GH #1539: the kept lines outnumber the dropped ones here -- a brief that
+//! drops more lines than it keeps leaves the old window
+//! (`gh_d583_nachlese_a_mostly_rejected_brief_leaves_the_old_window`).
 //! The ids stay out of everything spoken or seeded into a call, as they do
 //! today (GH #1345, `./handover` `without_ids` before a renewed session's
 //! block; the `history.handover` leaf keeps them for the model).
@@ -62,10 +65,12 @@ fn every_line_points_at_its_source_block() {
     h.answer(
         &format!(
             "- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
+             - person ({day}) hannah/works_as: Hannah works as a nurse. [asserted] [#{q1}]\n\
              - person ({day}) garden/size: The garden is small. [asserted]\n\
              - agent:self ({day}) offer/visit: A visit was offered. [#{a3}]\n\
              - topic ({day}): the garden [#ffffffffffff]\n\
-             - open ({day}): the garden fence [#{a2}]"
+             - open ({day}): the garden fence [#{a2}]\n\
+             - promised ({day}): agent:self will send the photos [#{a2}]"
         ),
         "stop",
     );
@@ -74,7 +79,9 @@ fn every_line_points_at_its_source_block() {
         text,
         format!(
             "- person ({day}) hannah/lives_in: Hannah lives in Lisbon. [asserted] [#{q1}]\n\
-             - open ({day}): the garden fence [#{a2}]"
+             - person ({day}) hannah/works_as: Hannah works as a nurse. [asserted] [#{q1}]\n\
+             - open ({day}): the garden fence [#{a2}]\n\
+             - promised ({day}): agent:self will send the photos [#{a2}]"
         ),
         "a cited source stays; none, a block outside the transcript and an unknown id \
          are dropped (GH #1517)"
@@ -86,7 +93,7 @@ fn every_line_points_at_its_source_block() {
         .collect();
     assert_eq!(
         marks,
-        vec![json!({"kept": 2, "dropped": 3})],
+        vec![json!({"kept": 4, "dropped": 3})],
         "the three are counted"
     );
     let sources: Value = sj::from_str(

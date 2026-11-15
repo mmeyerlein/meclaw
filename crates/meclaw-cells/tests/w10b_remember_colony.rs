@@ -60,6 +60,8 @@
 //! No provider is paid: the only wire in this tree is `MockOpenAI` -- the
 //! brain and, since GH #889, the curator's summarizer both point at it.
 
+#[path = "support/curator_llm.rs"]
+mod curator_llm;
 #[path = "mock_openai.rs"]
 mod mock_openai;
 
@@ -476,7 +478,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str, marker: &std::path::Path) 
     // of its own (the summarizer of its rebuilds). It is pointed at the same
     // mock so the tree has no way to a real provider; nothing in this short
     // run triggers a rebuild, so it is never asked.
-    patch(root, "main/talky/curator/summarizer/config.json", |v| {
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("main/talky/curator"), |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });

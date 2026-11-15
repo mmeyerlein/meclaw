@@ -1,4 +1,4 @@
-# `freeswitch@3.1.5`
+# `freeswitch@3.1.6`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -96,6 +96,7 @@ out and refuses the session. No key travels through `.env`.
 | out, `hop.route == 'seed_ask'` | the duplex half opens a session of a call and waits `seed_wait_ms` for its seed (D48); `hop` carries `reason` (`start`/`renew`/`recover`) and `renewal_n`, the body is empty. The answer comes back on `in_seed` |
 | out, `hop.route == 'usage'` | what a duplex call used (D48, `emit_usage` on the media half): `hop` carries `seconds` (the call's total over every provider session) and `final`, the final one also `complete`; the body is empty. Crosses the rim on the `delegation` edge since #1369; the member declares it as a port at `./channels` |
 | out, `hop.route == 'call_mark'` | a time mark of a duplex call (D48, `call_marks_s` / `call_mark_every_s` on the media half): `hop` carries `elapsed_s`; the body is empty. Crosses the rim with `usage` since #1369; the member declares it as a port at `./channels` |
+| out, `hop.route == 'first_audio'` | the first audible audio of an answer (`emit_first_audio` on the media half): one per duplex answer, `hop` carries `turn_id` and `t_first_audio_ms` on the session's clock; the body is empty. Crosses the rim with `usage` since #1534; before, every stamp of a phone call died at the media half as a `no_route` dead letter |
 | out, `hop.route == 'error'` | a caller with no entry in `callers` — whose leg is put down in the same breath — a request this hive cannot read, or the media half's own failure |
 | out, `tool_result` / `tool_schemas` | the receipt of a `call`/`hangup`, and the offer itself |
 | out, `call_accepted` / `call_queued` / `call_refused` / `call_abandoned` | what a second call got. One receipt per inbound call, empty `messages[]`, `hop` carries `call_id`, `policy`, `capacity` and `cause`. The installing manifest draws the edge that drains them |
@@ -279,7 +280,7 @@ and the three grants seeded there in the same declaration (`seed_rows`).
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.1.5",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.1.6",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -400,8 +401,8 @@ A media half with a `duplex` block emits `spoken`, `delegation` and `renewed`
 as well; its channel adds the three to the first edge's condition, as the
 `voice` channel's edge does -- a `renewed` the edge leaves out dies at the
 channel, and the renewed session goes on without its handover. The same holds
-for `seed_ask`, `usage` and `call_mark` (D48): the hive lets them out of its
-rim, and the line's own container leg carries the ones its set drains.
+for `seed_ask`, `usage` and `call_mark` (D48), and for `first_audio` (#1534):
+the hive lets them out of its rim, and the line's own container leg carries the ones its set drains.
 
 **`voice_session` is gone, and the call has a key of its own** (retracted in
 1.1.0, [#620](https://github.com/mmeyerlein/meclaw/issues/620)). Until 1.0.1 the
@@ -1277,7 +1278,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.1.5`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.1.6`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1290,7 +1291,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.1.5"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.1.6"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

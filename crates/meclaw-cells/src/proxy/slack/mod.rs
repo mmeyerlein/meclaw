@@ -14,4 +14,5 @@ pub mod db;
 pub mod emit;
 pub mod io;
 pub mod params;
+pub mod reaction;
 pub mod wire;

@@ -3,10 +3,12 @@
 //!
 //! An answer of a model no llm-registry push reached names no `input_soft`,
 //! no `context_window` and no `cache_expires_at`: before, no line was crossed
-//! and no clock armed, so the window was never rebuilt. Now the catalogue row
-//! the summarizer falls back on (`input_soft_fallback_row`) stands in -- its
-//! values are params of `./policy`, held here to the catalogue line -- and
-//! the round says it once with a `no_package` mark.
+//! and no clock armed, so the window was never rebuilt. Now the fallback
+//! package stands in -- its window the one fallback window of every core cell
+//! (`input_soft_fallback`, 17500, GH #1532), its other values the light
+//! tier's catalogue row, params of `./policy` held here to that line -- and
+//! the round says it once with a `no_package` mark: `no catalog row for
+//! <model>`.
 //!
 //! Runs the shipped curator hive (`support/curator_hive.rs`).
 
@@ -53,11 +55,15 @@ fn without_a_package_the_curator_still_rebuilds() {
         mark["missing"],
         json!(["input_soft", "context_window", "cache_expires_at"])
     );
-    assert_eq!(mark["row"], json!("openai/gpt-6-luna"));
+    // GH #1532: the mark says that no catalogue row was known, and for which
+    // model (the one the answer named).
+    assert_eq!(mark["note"], json!("no catalog row for test-model"));
+    assert!(mark.get("row").is_none(), "{mark}");
     assert_eq!(
         h.stderr
             .iter()
-            .filter(|l| l.contains("without a model package"))
+            .filter(|l| l.contains("without a model package")
+                && l.contains("no catalog row for test-model"))
             .count(),
         1,
         "{:?}",
@@ -86,10 +92,24 @@ fn without_a_package_the_curator_still_rebuilds() {
     assert_eq!(count(&h, "no_package"), 0);
 }
 
+/// d58-3 namen (N7, GH #1525): the policy ships no row and no window; the
+/// package is the one a composition sets -- talky's override of the row and
+/// the window over the shipped rest.
 #[test]
 fn the_fallback_package_is_its_catalogue_row() {
     let p = cell_config("policy")["params"].clone();
-    let id = p["input_soft_fallback_row"].as_str().expect("a row named");
+    // GH #1532: the window is the one fallback window, no row's; the other
+    // values are the light tier's row, the tier a birth token is born on.
+    assert_eq!(p["input_soft_fallback"], json!(17500));
+    assert!(p.get("input_soft_fallback_row").is_none());
+    let id = std::fs::read_to_string(repo("templates/llm-registry/store/seed/tiers.jsonl"))
+        .expect("the tiers")
+        .lines()
+        .filter_map(|l| meclaw_core::serde_json::from_str::<Value>(l).ok())
+        .find(|r| r["tier"] == "light" && r["active"] == 1)
+        .and_then(|r| r["model_id"].as_str().map(str::to_string))
+        .expect("a light tier");
+    let id = id.as_str();
     let raw = std::fs::read_to_string(repo("templates/llm-registry/store/seed/models.jsonl"))
         .expect("the catalogue");
     let row: Value = raw
@@ -98,14 +118,9 @@ fn the_fallback_package_is_its_catalogue_row() {
         .find(|r| r["model_id"] == id)
         .unwrap_or_else(|| panic!("no catalogue row {id}"));
     for (param, value) in [
-        ("input_soft_fallback", &row["input_soft"]),
         ("input_hard_fallback", &row["input_hard"]),
         ("cost_in_fallback", &row["cost_in"]),
         ("cost_cached_in_fallback", &row["cost_cached_in"]),
-        (
-            "chars_per_token_fallback",
-            &row["package"]["chars_per_token"],
-        ),
         ("cache_ttl_s_fallback", &row["cache_ttl_s"]),
     ] {
         assert!(value.as_f64().is_some(), "{id} states {param}");

@@ -1,5 +1,6 @@
 //! P12 S10/S11: the Slack Web API client — `apps.connections.open` and
-//! `chat.postMessage`.
+//! `chat.postMessage`; GH #1530 adds `reactions.add` and `reactions.remove`,
+//! the sign of a running turn.
 //!
 //! Both tokens travel in the `Authorization` header and nowhere else. Slack
 //! rejects an app-level token passed as a POST parameter outright, and the
@@ -33,6 +34,44 @@ impl std::fmt::Display for SlackError {
             Self::Permanent(m) => write!(f, "permanent: {m}"),
         }
     }
+}
+
+/// GH #1530 (OR-d54g.acktyp.2): a reaction call that did not reach its goal,
+/// with the wait Slack named for the next try. A removal that failed is tried
+/// again by its caller, so the rate limit's `Retry-After` travels with it.
+#[derive(Debug)]
+pub struct ReactionFailure {
+    /// The classified failure.
+    pub error: SlackError,
+    /// `Retry-After` of an HTTP 429, when Slack named one.
+    pub retry_after: Option<Duration>,
+}
+
+impl From<SlackError> for ReactionFailure {
+    fn from(error: SlackError) -> Self {
+        Self {
+            error,
+            retry_after: None,
+        }
+    }
+}
+
+impl std::fmt::Display for ReactionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+/// The seconds of a `Retry-After` header (Slack sends whole seconds).
+fn retry_after_of(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
 }
 
 /// Slack error codes that will not fix themselves by retrying.
@@ -73,11 +112,11 @@ fn is_permanent(code: &str) -> bool {
 /// The budget is the call's existing A-timeout param — it simply covers the
 /// whole operation now instead of half of it. Elapsed is classified
 /// `Transient`, so the backoff ladder takes it and the lane keeps living.
-async fn with_deadline<T>(
+async fn with_deadline<T, E: From<SlackError>>(
     budget: Duration,
     op_name: &str,
-    op: impl std::future::Future<Output = Result<T, SlackError>>,
-) -> Result<T, SlackError> {
+    op: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
     match tokio::time::timeout(budget, op).await {
         Ok(res) => res,
         Err(_) => {
@@ -91,7 +130,8 @@ async fn with_deadline<T>(
             Err(SlackError::Transient(format!(
                 "{op_name}: timeout after {} ms (whole operation)",
                 budget.as_millis()
-            )))
+            ))
+            .into())
         }
     }
 }
@@ -266,5 +306,97 @@ impl SlackClient {
             })
         };
         with_deadline(self.send_timeout, "chat.postMessage", op).await
+    }
+
+    /// GH #1530: `reactions.add` -- puts the reaction `name` on the message
+    /// `timestamp` in `channel` (scope `reactions:write`). The sign of a
+    /// running turn; the caller (the typing keeper) logs a failure and never
+    /// turns it into an emission.
+    ///
+    /// `already_reacted` is the goal reached (a redelivery, a second turn on
+    /// the same message), so it is `Ok`.
+    pub async fn reactions_add(
+        &self,
+        channel: &str,
+        timestamp: &str,
+        name: &str,
+    ) -> Result<(), SlackError> {
+        self.reaction_call("reactions.add", "already_reacted", channel, timestamp, name)
+            .await
+            .map_err(|f| f.error)
+    }
+
+    /// GH #1530: `reactions.remove` -- takes the reaction away again.
+    /// `no_reaction` is the goal reached (the add was refused, or a person
+    /// took it away), so it is `Ok`. A failure carries Slack's `Retry-After`
+    /// when it named one (OR-d54g.acktyp.2: the caller tries again).
+    pub async fn reactions_remove(
+        &self,
+        channel: &str,
+        timestamp: &str,
+        name: &str,
+    ) -> Result<(), ReactionFailure> {
+        self.reaction_call("reactions.remove", "no_reaction", channel, timestamp, name)
+            .await
+    }
+
+    /// One reaction call: JSON body like `chat.postMessage`, the bot token in
+    /// the header, the whole operation under `send_timeout` (hard rule 12),
+    /// errors classified like `chat.postMessage`'s. `reached` is the error
+    /// code that says the reaction already is where the call wants it. An
+    /// HTTP 429 carries its `Retry-After`.
+    async fn reaction_call(
+        &self,
+        method: &'static str,
+        reached: &'static str,
+        channel: &str,
+        timestamp: &str,
+        name: &str,
+    ) -> Result<(), ReactionFailure> {
+        let url = format!("{}/{method}", self.base_url);
+        let payload = json!({ "channel": channel, "timestamp": timestamp, "name": name });
+        let op = async {
+            let resp = self
+                .inner
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.bot_token))
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| SlackError::Transient(format!("{method}: {}", e.without_url())))?;
+            if resp.status().as_u16() == 429 {
+                return Err(ReactionFailure {
+                    error: SlackError::Transient(format!("{method}: ratelimited")),
+                    retry_after: retry_after_of(resp.headers()),
+                });
+            }
+            let body: JsonValue = resp.json().await.map_err(|e| {
+                SlackError::Transient(format!("{method}: body: {}", e.without_url()))
+            })?;
+            if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                return Ok(());
+            }
+            let code = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            if code == reached {
+                tracing::debug!(
+                    op = method,
+                    code,
+                    "slack: reaction already where it should be"
+                );
+                return Ok(());
+            }
+            let msg = format!("{method}: {code}");
+            Err(if is_permanent(code) {
+                SlackError::Permanent(msg)
+            } else {
+                SlackError::Transient(msg)
+            }
+            .into())
+        };
+        with_deadline(self.send_timeout, method, op).await
     }
 }

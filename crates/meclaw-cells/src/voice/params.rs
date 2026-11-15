@@ -812,6 +812,17 @@ pub struct GptLiveParams {
     /// the ceiling an append is cut at ([`Self::append_limit_chars`]).
     #[serde(default = "GptLiveParams::default_chars_per_token")]
     pub chars_per_token: f64,
+    /// GH #1532: the window of this cell's model in tokens, as its catalog
+    /// row names it (`input_soft`). Named in the `seed_ask` lane's
+    /// `hop.limits`, so whoever builds the start window can size it by the
+    /// model. `null` (the default) = not named, and the ask names none.
+    #[serde(default)]
+    pub input_soft: Option<u64>,
+    /// GH #1532: the tokens one inline image costs on this cell's model, as
+    /// its catalog row names it (`tokens_per_image`); named in `hop.limits`
+    /// beside the window. `null` (the default) = not named.
+    #[serde(default)]
+    pub tokens_per_image: Option<u64>,
 }
 
 /// The default of `duplex.advise_max_tokens`: the provider's documented
@@ -3344,6 +3355,35 @@ mod tests {
         )
         .expect("and round-trips through the one parser");
         assert!(matches!(back.stt, SttParams::Deepgram(_)));
+    }
+
+    /// GH #1532 (review raten I2): the `seed_ask` limits name the window and
+    /// the image cost of the cell's row when the block names them, and stay
+    /// what they were when it does not (a set override is taken).
+    #[test]
+    fn the_seed_ask_names_the_rows_window_and_image_cost() {
+        let block = |extra: JsonValue| {
+            let mut b = json!({"api_key": "k", "instructions": "x"});
+            if let (Some(obj), Some(more)) = (b.as_object_mut(), extra.as_object()) {
+                for (k, v) in more {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            meclaw_core::serde_json::from_value::<GptLiveParams>(b).expect("the block parses")
+        };
+        let named = crate::voice::providers::gpt_live::ask_limits(&block(
+            json!({"input_soft": 6000, "tokens_per_image": 1600}),
+        ));
+        assert_eq!(named["input_soft"], json!(6000), "{named}");
+        assert_eq!(named["tokens_per_image"], json!(1600), "{named}");
+        let bare = crate::voice::providers::gpt_live::ask_limits(&block(json!({})));
+        assert!(bare.get("input_soft").is_none(), "{bare}");
+        assert!(bare.get("tokens_per_image").is_none(), "{bare}");
+        assert_eq!(
+            bare.as_object().map(|o| o.len()),
+            Some(5),
+            "the ask names what it named before: {bare}"
+        );
     }
 
     fn live_with(extra: JsonValue) -> Result<VoiceParams, String> {

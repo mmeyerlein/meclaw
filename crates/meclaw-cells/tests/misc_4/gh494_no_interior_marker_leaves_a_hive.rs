@@ -63,7 +63,7 @@ use std::path::{Path, PathBuf};
 use meclaw_core::serde_json::{Value, from_str};
 
 /// Context the templates pass between hives on purpose. Never cleared at a rim.
-const SHARED: [&str; 38] = [
+const SHARED: [&str; 40] = [
     "actor",
     "asker",
     "audience_now",
@@ -88,6 +88,14 @@ const SHARED: [&str; 38] = [
     // handover would reach no call.
     "call_id",
     "channel",
+    // GH #1526 / #1532 -- the rate and the image cost of the asker's catalog
+    // row, beside `recall_input_soft` (its window) and of the same kind: the
+    // talky's, the cogny's and the simple agent's edges lift them off the hop
+    // into the context of the model call and of the memory ask, the member
+    // restates them into the memory hive, whose `./recall` and `./tool` read
+    // them there. Cleared at a rim, every reader past it counts at the core's
+    // 3 characters a token and 1024 tokens an image.
+    "chars_per_token",
     // GH #1305 -- the delivery node of a turn. The firewall stamps it on its
     // exit for a person's turn, and talky's inner door stamps it from
     // `hop.deliver_channel_node` for an event without a speaking person; either
@@ -187,6 +195,8 @@ const SHARED: [&str; 38] = [
     // `examples/organism/grow-channel.json` carries it byte for byte.
     "speaker",
     "subscriber",
+    // GH #1532 -- the image cost of the asker's row, see `chars_per_token`.
+    "tokens_per_image",
     "turn_id",
 ];
 

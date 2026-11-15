@@ -8,10 +8,11 @@
 //! it. A model alone does not guarantee it, so the way does when the stamp
 //! asks for it: in the TOOL ROUND of a `simple` turn whose stamp `needs` a
 //! `tool` (no tool result in the round yet) the quick call carries
-//! `tool_scope.require` and no sidecar contract (the answer comes in the next
-//! round), and beside it the bridge -- the quick model, no tool, no contract
-//! -- says one short sentence so phone and screen are not silent. The bridge
-//! is `interim` (`hop.interim`, lifted into the context by talky's edge): a
+//! `tool_scope.require` -- since OR-583-84 (d58-3 nachlese, changes OR-WG-6)
+//! with the round's system tree, the sidecar contract standing, so the tool
+//! round and the answer round share one prefix. Beside it the bridge (the
+//! quick model, no tool, no contract) says one short sentence so phone and
+//! screen are not silent. The bridge is `interim` (`hop.interim`, lifted into the context by talky's edge): a
 //! final answer would end the round before the tool result came back. The
 //! FORMULATION round (a tool result is there) runs as before: no require,
 //! the contract, the speaker rule. Without `needs: tool` nothing changes.
@@ -96,9 +97,11 @@ fn a_simple_turn_that_needs_a_tool_requires_the_call() {
         json!({"allow": ["web", "weather"], "hint": [], "require": true}),
         "the tool round requires the call"
     );
+    // OR-583-84 (changes OR-WG-6): the required call keeps the round's
+    // system tree -- the contract stands, as in the answer call after it.
     assert!(
-        contract_of(call).is_none(),
-        "the answer comes in the next round, so no contract now: {:?}",
+        contract_of(call).is_some(),
+        "the tool round keeps the round's contract: {:?}",
         call.body["system"]
     );
     assert_eq!(bridge.hop["call_kind"], json!("side"));

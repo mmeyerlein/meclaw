@@ -22,6 +22,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -250,7 +253,9 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
     // provider and nothing it asks can take a scripted answer meant for the
     // brain.
     if root.join(SUMMARIZER).is_file() {
-        patch(root, SUMMARIZER, |v| {
+        // GH #1528: the helper points every `llm` cell of the curator at the mock --
+        // the summarizer and the ballast judge alike.
+        curator_llm::patch_llm_cells(&root.join(CURATOR), |v| {
             v["params"]["base_url"] = json!(CLOSED_PORT);
             v["params"]["model"] = json!("summarizer-mock");
         });
@@ -277,6 +282,8 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
 
 /// The curator's summarizer inside the copied talky (`curator@1.0.0`, GH #888).
 const SUMMARIZER: &str = "main/talky/curator/summarizer/config.json";
+/// The copied talky's curator, whose `llm` cells point at the closed port (GH #1528).
+const CURATOR: &str = "main/talky/curator";
 /// The quick voice inside the copied talky (GH #1248).
 const QUICK: &str = "main/talky/quick/config.json";
 /// An endpoint nothing listens on: a call there fails at once and costs nothing.

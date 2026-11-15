@@ -31,6 +31,8 @@ fn knobs(no_recall: &str) -> Vec<(&'static str, Value)> {
         ("memory_tier", json!("1")),
         ("route_wait_ms", json!(150)),
         ("needs_no_recall", json!(no_recall)),
+        // d58-3 namen (GH #1525, O6): the need names the compositions set.
+        ("recall_needs", json!(["memory"])),
     ]
 }
 

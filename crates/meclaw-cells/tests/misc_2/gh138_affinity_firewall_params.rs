@@ -106,10 +106,6 @@ const SCRIPTED: &[Scripted] = &[
         knobs: &[
             ("firewall_rate_max", "_int", "RATE_MAX"),
             ("firewall_rate_window_ms", "_int", "RATE_WINDOW_MS"),
-            // GH #1085 (OR-IG-8): the window of the screened turns' model when
-            // none rides on the turn -- a catalogue row, held to it by
-            // `gh1085_fallback_windows_match_the_catalog`.
-            ("input_soft_fallback", "_int", "INPUT_SOFT_FALLBACK"),
         ],
     },
     Scripted {
@@ -397,11 +393,12 @@ fn every_knob_is_a_param_a_setting_and_a_script_literal_with_one_value() {
         );
     }
     assert_eq!(
-        total, 15,
+        total, 14,
         "the scripted half of this migration is nine knobs plus the cap of the \
          `identity_short` slot (GH #935) and the two bounds of the `list` op \
          (GH #965), less the screen's size cap, which ships unset since GH #1085, \
-         plus the screen's fallback window (GH #1085, OR-IG-8), plus the first \
+         plus the screen's fallback window (GH #1085, OR-IG-8), less it again \
+         (GH #1532: no cap without a window), plus the first \
          resend wait of `push` (GH #1096), plus the cap of `who.name` (GH #1225), \
          plus the read bound of the `hints` slot (#1279); \
          the clock has no script"

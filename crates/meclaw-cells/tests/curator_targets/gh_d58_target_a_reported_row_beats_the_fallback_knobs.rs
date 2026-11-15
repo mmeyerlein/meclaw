@@ -2,8 +2,9 @@
 //! fallback knobs.
 //!
 //! WHY this file exists: the curator's fallback knobs for window sizes
-//! (`context_window`, `input_soft_fallback`, `input_hard_fallback`,
-//! `input_soft_fallback_row`) stay: they are the word for a curator in front
+//! (`context_window`, `input_soft_fallback`, `input_hard_fallback`) stay
+//! (`input_soft_fallback_row` is gone since GH #1532: the fallback window
+//! names no row): they are the word for a curator in front
 //! of a cell that never reports (a colony without a registry). Once a target
 //! has reported its row they no longer count for it. Tiny fallbacks: the
 //! window of an unheard target is cut to them; the window of a reported
@@ -32,7 +33,6 @@ fn gh_d58_target_a_reported_row_beats_the_fallback_knobs() {
         "context_window",
         "input_soft_fallback",
         "input_hard_fallback",
-        "input_soft_fallback_row",
     ] {
         assert!(
             policy["params"].get(knob).is_some(),

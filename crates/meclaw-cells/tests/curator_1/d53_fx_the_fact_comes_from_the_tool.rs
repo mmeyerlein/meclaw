@@ -245,13 +245,14 @@ fn default_empty_is_byte_identical() {
     assert_eq!(off.3, 0);
 }
 
-/// Lock (review I-1): a delegation round's tool result is no fact of the
-/// curator. The delegation's own answer is what the voice speaks for the
-/// turn (`settle_delegation` counts one answer per delegation); a tool fact
-/// in the round would take that place or come twice -- round 2 of the
-/// delegation answers, the fact comes with it.
+/// Lock (review I-1, turned by GH #1540): a delegation round's tool result
+/// is the delegation's fact -- ONE, to the voice of the delegation, with the
+/// round's `delegation_id`, so the voice counts it as the delegation's one
+/// answer (`settle_delegation`) and drops a second. Before, the round sent
+/// none and the caller waited for round 2 in silence (BK L4 c). The
+/// delegation's round 2 still runs.
 #[test]
-fn a_delegation_round_sends_no_tool_fact() {
+fn a_delegation_round_sends_its_tool_fact_once() {
     if !shipped() {
         return;
     }
@@ -300,12 +301,18 @@ fn a_delegation_round_sends_no_tool_fact() {
         hop,
         json!({"messages": [tool_call("c1", "weather"), tool_result("c1", &result_text())]}),
     );
-    assert!(
-        facts(&h).is_empty(),
-        "no fact in a delegation round: {:?}",
-        h.out
+    let f = facts(&h);
+    assert_eq!(
+        f.len(),
+        1,
+        "the delegation's fact: {:?} {:?}",
+        h.out,
+        h.stderr
     );
-    assert!(tool_marks(&h).is_empty());
+    assert_eq!(f[0].hop["turn_id"], json!(key));
+    assert_eq!(f[0].hop["live"], json!("call-9"));
+    assert_eq!(tool_marks(&h), vec![json!({"tool": "weather"})]);
+    assert!(!h.state(&claim(key)).is_empty(), "the round's claim");
     assert_eq!(
         h.routed("quick").len() + h.routed("brain").len(),
         1,

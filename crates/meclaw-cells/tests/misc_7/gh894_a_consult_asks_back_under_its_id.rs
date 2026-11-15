@@ -738,7 +738,14 @@ fn section_of<'a>(out: &'a [Value], name: &str) -> &'a Value {
 
 /// The section names a CEL condition compares `hop.section` with.
 fn sections_named(cond: &str) -> Vec<String> {
-    let mut v: Vec<String> = cond
+    // GH #1538: the guard of the silent sections call names `memory` once more
+    // (the one section that call may hand on); it is not a section the edge
+    // routes, so only the part before that guard is read.
+    let routed = cond
+        .split(" && !(has(context.call_kind)")
+        .next()
+        .unwrap_or(cond);
+    let mut v: Vec<String> = routed
         .split("hop.section == '")
         .skip(1)
         .filter_map(|rest| rest.split('\'').next().map(str::to_string))

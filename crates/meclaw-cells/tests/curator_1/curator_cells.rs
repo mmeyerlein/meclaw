@@ -220,6 +220,10 @@ impl Hive {
             // GH #896: `./policy` hands the first call of a session it did not
             // serve last to `./handover`, so every round passes it once.
             "handover",
+            // GH #1526: `./policy` sends `./history` the window of a target on
+            // `in_limits` beside the catalog row's `lstore`, so a catalog lane
+            // runs it once.
+            "history",
         ] {
             cells.insert(name.to_string(), cell_config(name));
         }
@@ -227,6 +231,9 @@ impl Hive {
         // (`templates/lead`); this harness runs the curator as it ships,
         // `policy.lead_wired` off -- no lead is asked. `curator_hive.rs`
         // runs the curator with the lead a composite wires beside it.
+        // d58-3 namen (GH #1525): the knobs a composition sets since they
+        // ship empty, as the shared harness wires them.
+        curator_hive::namen_wire(&mut cells);
         for (cell, key, value) in over {
             let params = cells
                 .get_mut(*cell)
@@ -820,6 +827,9 @@ fn curator_template_shape() {
             "in_stats",
             // GH #1449: the package line of a model cell, before its first call.
             "in_catalog",
+            // D58-3 limits (GH #1526): the package line of a target with a
+            // view only -- its limits for history, no row of the wall.
+            "in_limits_row",
             "in_candidate",
             // GH #1303: notes right before the newest turn.
             "in_note",

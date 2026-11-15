@@ -32,6 +32,31 @@ fn talky(over: &[(&str, &str, Value)]) -> Hive {
     Hive::with(&all).reporting_composite("talky")
 }
 
+/// GH #1523: the registration of a talky's `things` under the mark `thing`
+/// -- the names `mentioned:` may hold.
+fn things_registered() -> (&'static str, &'static str, Value) {
+    (
+        "intake",
+        "sections",
+        json!({"things": {"lane": "thing_seen", "cap_share": 0.1, "mark": "thing"}}),
+    )
+}
+
+/// The section `things` of the answer of `turn`: the names the model saw.
+fn things(h: &mut Hive, turn: &str, names: &[&str]) {
+    let items: Vec<Value> = names
+        .iter()
+        .map(|n| json!({"name": n, "kind": "thing"}))
+        .collect();
+    h.lane(
+        "in_section",
+        json!({"session_id": "s1", "turn_id": turn, "iter": "0", "curator_call": "c-1",
+               "channel": "test", "audience_set": ROUND_E}),
+        json!({"section": "things"}),
+        json!({"messages": [], "section": "things", "payload": {"items": items}}),
+    );
+}
+
 fn ask_lane(session: &str, turn: &str, text: &str) -> (&'static str, Value, Value, Value) {
     (
         "in_recall_ask",
@@ -141,12 +166,19 @@ fn an_ask_whose_reads_all_failed_leaves_from_a_fresh_child() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    for leg in ["a-wall", "a-state", "a-topic"] {
+    // GH #1523: the read of the `thing` marks is a leg of the same bundle; a
+    // failed one is named like the others (the README's promise).
+    for leg in ["a-wall", "a-state", "a-topic", "a-thing"] {
         assert!(degraded.contains(&leg), "{leg} named: {degraded:?}");
     }
     assert_eq!(
-        asks[0].hop["recall_input_soft"], "250000",
-        "the fallback row's window"
+        asks[0].hop["recall_input_soft"], "17500",
+        "the one fallback window (GH #1532)"
+    );
+    assert!(
+        h.stderr.iter().any(|l| l.contains("no catalog row for ")),
+        "the fallback is said: {:?}",
+        h.stderr
     );
     assert!(
         asks[0].hop["recall_query"]
@@ -165,7 +197,7 @@ fn the_second_step_in_a_fresh_child_asks_the_same() {
     }
     let mut queries = Vec::new();
     for restart in [false, true] {
-        let mut h = talky(&[]);
+        let mut h = talky(&[things_registered()]);
         round(
             &mut h,
             "s1",
@@ -173,6 +205,7 @@ fn the_second_step_in_a_fresh_child_asks_the_same() {
             "My sister Hannah moved to Porto.",
             "Porto, lovely.",
         );
+        things(&mut h, "t1", &["Hannah", "Porto"]);
         if restart {
             // The first round had nothing more to read: this is the first `ask-b`.
             h.restart_at = Some(("push".into(), "ask-b".into(), 1));
@@ -420,7 +453,7 @@ fn the_limits_of_the_question_are_params() {
         assert_eq!(cfg["params"][k], json!(v), "{k}");
         assert_eq!(cfg["contract"]["settings"][k]["default"], json!(v), "{k}");
     }
-    let mut h = talky(&[("push", "entity_max", json!(1))]);
+    let mut h = talky(&[("push", "entity_max", json!(1)), things_registered()]);
     round(
         &mut h,
         "s1",
@@ -428,6 +461,7 @@ fn the_limits_of_the_question_are_params() {
         "My sister Hannah moved to Porto.",
         "Porto, lovely.",
     );
+    things(&mut h, "t1", &["Hannah", "Porto"]);
     let q = ask(&mut h, "s1", "t2", "Where does she live now?")[0].hop["recall_query"]
         .as_str()
         .unwrap_or("")

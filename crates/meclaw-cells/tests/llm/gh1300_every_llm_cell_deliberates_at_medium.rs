@@ -192,6 +192,44 @@ fn every_registry_package_that_names_a_reasoning_names_medium() {
     );
 }
 
+/// OR-EF-18: a row timed at effort low (the endpoint refuses reasoning off)
+/// ships the package `{"effort": "medium"}` because of the owner's ruling, not
+/// because of that measurement. Its note says so: the package sentence names
+/// the ruling and does not read as a consequence of the low effort (catalogue
+/// minor 1, wave d58-3: the notes of three rows said "…, so the package
+/// sends …").
+#[test]
+fn a_note_names_the_ruling_behind_the_medium_package_not_the_measurement() {
+    let seed = core_root().join("templates/llm-registry/store/seed/models.jsonl");
+    let text = std::fs::read_to_string(&seed).expect("the registry seed");
+    let mut seen = 0;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let row: Value = meclaw_core::serde_json::from_str(line).expect("a seed row");
+        let note = row["note"].as_str().unwrap_or_default();
+        if !note.to_lowercase().contains("reasoning at effort low") {
+            continue;
+        }
+        seen += 1;
+        let id = &row["model_id"];
+        assert!(
+            !note.contains(", so the package sends"),
+            "{id}: the package effort does not follow from the low measurement: {note}"
+        );
+        assert!(
+            note.contains("with reasoning at effort low, which this endpoint requires"),
+            "{id}: the note says the timing ran with reasoning at effort low: {note}"
+        );
+        assert!(
+            note.contains(
+                "the package sends the reasoning object {\"effort\": \"medium\"} \
+                 (owner ruling OR-EF-18, GH #1300)"
+            ),
+            "{id}: the note names the ruling behind the package: {note}"
+        );
+    }
+    assert!(seen >= 3, "the walk must see the rows timed at effort low");
+}
+
 /// The shipped `curator/summarizer` params with every `${…}` resolved, moved
 /// to the native Anthropic lane on Sonnet 5.5 at the mock.
 fn sonnet_summarizer(base_url: &str) -> Value {

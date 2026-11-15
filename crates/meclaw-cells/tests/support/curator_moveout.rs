@@ -51,7 +51,7 @@ pub const SESSION_M: &str = "s1";
 /// points 5 and 7), and the wording of a side call beside an errand
 /// (`bridge_wording`, moved with the rebase on feed, re-check M-1).
 pub const MOVED_KNOBS: [&str; 4] = [
-    "horizon_advise",
+    "horizon_feed",
     "horizon_defaults_ms",
     "horizon_quantile",
     "bridge_wording",
@@ -80,7 +80,7 @@ pub fn moveout_hive(over: &[(&str, &str, Value)]) -> Hive {
 /// The lead's waiting-time knobs on: `defaults` per family (ms).
 pub fn horizon_knobs(defaults: Value) -> Vec<(&'static str, &'static str, Value)> {
     vec![
-        ("lead", "horizon_advise", json!("1")),
+        ("lead", "horizon_feed", json!("1")),
         ("lead", "horizon_defaults_ms", json!(defaults.to_string())),
     ]
 }
@@ -276,13 +276,13 @@ pub fn lead_knobs(extra: Value) -> Value {
 /// iteration, no speculation.
 pub fn ask_head(live: &str) -> Value {
     json!({"channel": "text", "live": live, "session": SESSION_M, "turn": "t1",
-           "call": "c-t1", "iter": 0, "consult_id": "", "consult_class": "", "spec": "",
+           "call": "c-t1", "iter": 0, "ask_id": "", "ask_class": "", "spec": "",
            "escalate": "", "at": "2026-11-12T10:00:00.000000Z"})
 }
 
 /// The lead's state rows of a session that has decided nothing yet.
 pub fn no_state() -> Value {
-    json!({"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}})
+    json!({"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}})
 }
 
 /// `lead_verdict` of the shipped lead under `knobs` for a stamp of `path`,

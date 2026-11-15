@@ -24,14 +24,36 @@ use crate::curator_hive; // harness_fold: mod curator_hive;
 use crate::curator_profiles; // harness_fold: mod curator_profiles;
 
 use curator_hive::*;
-use meclaw_core::serde_json::json;
+use meclaw_core::serde_json::{Value, json};
 
 fn push_shipped() -> bool {
     repo("templates/curator/push/config.json").is_file()
 }
 
+/// A talky's curator with its `things` registered under the mark `thing`
+/// (GH #1523): the names `mentioned:` may hold.
 fn talky() -> Hive {
-    Hive::with(&[]).reporting_composite("talky")
+    Hive::with(&[(
+        "intake",
+        "sections",
+        json!({"things": {"lane": "thing_seen", "cap_share": 0.1, "mark": "thing"}}),
+    )])
+    .reporting_composite("talky")
+}
+
+/// The section `things` of the answer of `turn`: the names the model saw.
+fn things(h: &mut Hive, session: &str, turn: &str, names: &[&str]) {
+    let items: Vec<Value> = names
+        .iter()
+        .map(|n| json!({"name": n, "kind": "thing"}))
+        .collect();
+    h.lane(
+        "in_section",
+        json!({"session_id": session, "turn_id": turn, "iter": "0", "curator_call": "c-1",
+               "channel": "test", "audience_set": ROUND_E}),
+        json!({"section": "things"}),
+        json!({"messages": [], "section": "things", "payload": {"items": items}}),
+    );
 }
 
 fn ask(h: &mut Hive, session: &str, turn: &str, text: &str) -> Vec<Msg> {
@@ -86,6 +108,14 @@ fn a_fresh_session_asks_without_the_answers_of_the_last_one() {
         "Ich habe Tabletten hier und will mir das Leben nehmen.",
         "Bitte ruf jetzt die 112 an, die Telefonseelsorge hat 0800 111 0 111. Bleib in Reichweite.",
     );
+    // GH #1523: the model named them -- and a name the person said (the
+    // tablets) is of the earlier session all the same.
+    things(
+        &mut h,
+        "w2",
+        "w2#2",
+        &["Telefonseelsorge", "Tabletten", "Video"],
+    );
     let text = "Ich bin heute so traurig, mein Sohn hat schon wieder abgesagt.";
     let q = query(&mut h, "s1", "s1#1", text);
     for word in [
@@ -118,6 +148,12 @@ fn the_anchors_are_the_persons_words_never_the_models() {
         "t1",
         "Gestern war ich mit Herrn Hartung im Rosengarten.",
         "Und hat Frau Bader schon angerufen? Die Telefonseelsorge ist da.",
+    );
+    things(
+        &mut h,
+        "s1",
+        "t1",
+        &["Hartung", "Rosengarten", "Bader", "Telefonseelsorge"],
     );
     let q = query(&mut h, "s1", "t2", "Was meinst du dazu?");
     for name in ["Hartung", "Rosengarten"] {

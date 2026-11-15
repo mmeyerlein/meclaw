@@ -34,6 +34,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -117,7 +120,10 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// in all. COMPUTED in the strand from the shipped tree (one `llm` cell more
 /// under `templates/talky/`, one `talky` in this example: 38 + 1); no run
 /// there, the first run measures it.
-const CELLS_AFTER_GROW: usize = 39;
+/// d58-3 ballast (GH #1528): the curator's ballast judge (`curator/relevance`),
+/// a model cell beside the summarizer -- thirty-five from `talky`, forty in
+/// all. MEASURED (40 against 39 in the strand's run).
+const CELLS_AFTER_GROW: usize = 40;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are
@@ -390,13 +396,12 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     // model of its own, so nothing here can reach a paid endpoint; nothing in
     // this run triggers a rebuild, so it is never asked -- the two-request
     // count below would say so if it were.
-    patch(
-        &root.join("templates/curator/summarizer/config.json"),
-        |v| {
-            v["params"]["base_url"] = json!(base_url);
-            v["params"]["model"] = json!("gpt-4o-mock");
-        },
-    );
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("templates/curator"), |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
     // The per-turn lane is NOT patched here (GH #220), and since GH #889 it is
     // no collector param any more: the curator's writer carries `turn_write`
     // and ships it `"1"`. The freshness assertion at the end of the main test is

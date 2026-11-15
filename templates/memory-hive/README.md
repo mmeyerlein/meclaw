@@ -1,4 +1,4 @@
-# `memory-hive@3.21.5`
+# `memory-hive@3.22.0`
 
 A **member's** memory as a hive of existing cell types — no new cell type, no Rust. Seventeen cells:
 `store` (all durable data), `writer`, `recall`, `extract-glue`, `close-glue`, `closer`,
@@ -710,6 +710,8 @@ Like `close_report`, the receipt counts what LEFT on the inline ingress, not wha
 ingress may still refuse a closure on its direction or its source and says so in `scratch`. A
 correction speaks for one axis of a turn, never for the turn, so it takes no turn out of the
 extraction queue. The window is bounded by `correction_fact_rows` (default 64) on `./close-glue`.
+
+An answer of the speaking model that withdraws its own earlier turn ([#1524](https://github.com/mmeyerlein/meclaw/issues/1524)) names that turn in the field `withdraws` of its episode, and `./writer` closes the episodes of the withdrawn assistant turn in the same write (`closure_source` `withdrawn:<turn>`), so `./recall` leaves them out like a forgotten turn.
 
 ## A conversation, read whole ([#1309](https://github.com/mmeyerlein/meclaw/issues/1309))
 
@@ -1538,7 +1540,7 @@ the substrate answers a `transfer` body slot for every cell that has a `cell.db`
 type and before `handle()` runs ([#253](https://github.com/mmeyerlein/meclaw/issues/253), and
 since [#555](https://github.com/mmeyerlein/meclaw/issues/555) it writes and reads DIRECTORIES).
 
-`memory-hive@3.21.5` therefore carries a **walk** and nothing else. Two messages, one each way:
+`memory-hive@3.22.0` therefore carries a **walk** and nothing else. Two messages, one each way:
 
 ```json
 {"operation": "export", "to": "<dir>/memory-hive", "tables": [ …the sixteen… ]}
@@ -1944,7 +1946,7 @@ nothing, and two members of one colony shared one memory configuration. Now a mu
 member's recall and leaves the other alone:
 
 ```json
-{"add_nodes": [{"name": "alex", "template": "member@2.10.2",
+{"add_nodes": [{"name": "alex", "template": "member@2.10.3",
                 "override_params": {"memory-hive/recall": {"tier1_topk": 40,
                                                            "sem_max_distance": 0.35}}}]}
 ```
@@ -2036,8 +2038,7 @@ say "no legacy subject at all".
 | `bundle_episode_budget` | `null` (package; `6` without) | The episode share of the fusion cut (P15 O-7): episodes take at most this many of the `TOPK` slots and keep that many against any fact wall. Whichever side cannot fill its share lets the other backfill, so the bundle is never shorter than a plain prefix would be |
 | `tier1_tokens` | `null` (package; `bundle_share` of `input_soft_fallback` without) | Token budget of the tier-1 bundle; candidates are taken in fused order until the next one does not fit. It measures the **payload** candidate — what travels to the model — never the record in `recall_diagnostic`: the trace pays no prompt budget, so costing it would spend the whole #296 saving on refilling the budget instead of shipping a smaller bundle. `tier1_topk` stays the count cap |
 | `bundle_share` | `0.05` | GH #1040: the share of the asker's usable window (its model package's `input_soft` -- the catalog row, cut by the curator to the model's own window alone since GH #1085; context `recall_input_soft` from the curator's ask) the tier-1 bundle takes, never under 2000 tokens. Every knob shown as `null` (package) grows by the same factor — the three query limits by at most twice. An item (a claim, an episode's content, a supersession marker) has no length of its own since 3.13.2 (GH #1085; `tier0_episode_chars` and `tier1_item_chars`, both 400, are gone): only the bundle counts, an item that does not fit it even alone is cut to what is left with the mark `...[cut: <shown> of <total> chars shown; budget of the window]`, and a tier-0 list the budget ended is named (`...[dropped: <n> <list> over the bundle budget of <tokens> tokens]`). Context `input_soft` is read first, `recall_input_soft` is its alias. luna (`input_soft` 250k, its catalog row for every role since GH #1085): 12.5k tokens, 125 items, 125 per leg, 38 episodes, queries 400/500/48 — the low end of the 5-10 % of the usable window KD2 proposed. Without a package the count and query limits keep their old values and the two bundles take their share of `input_soft_fallback`; a number set on a knob overrides the package for that knob |
-| `input_soft_fallback` | `17500` | GH #1085 (R-IG-1): the window in tokens of an asker no request names one for -- a tool caller without a curator, a peer, a harness. Such an asker has no born model this hive knows, so it is `input_soft` of the smallest chat row of the llm-registry catalog (OR-IG-9; `openai/gpt-4o-mini`); a decisions or embeddings row never asks a memory. The tier-1 bundle takes `bundle_share` of it, never less than the old 2000 tokens, and the tier-0 bundle grows by the same factor; with the shipped row the share is under 2000, so both keep their old size. The count limits and the query guard keep their old values, because they select and the curator mirrors the guard. `0`: no window, the bundles keep their old size |
-| `input_soft_fallback_row` | `openai/gpt-4o-mini` | the catalog row `input_soft_fallback` is; the script does not read it, the drift lock `gh1085_fallback_windows_match_the_catalog` holds the two together |
+| `input_soft_fallback` | `17500` | GH #1085 (R-IG-1): the window in tokens of an asker no request names one for -- a tool caller without a curator, a peer, a harness. Such an asker has no born model this hive knows, so it is the one documented window, 17500 tokens, the same in every core cell (GH #1532, OR-IG-9): without a catalog row an overflow at the system gate is worse than a window too small; each use writes `no catalog row for <model>` on stderr. The tier-1 bundle takes `bundle_share` of it, never less than the old 2000 tokens, and the tier-0 bundle grows by the same factor; at 17500 the share is under 2000, so both keep their old size. The count limits and the query guard keep their old values, because they select and the curator mirrors the guard. `0`: no window, the bundles keep their old size |
 | `rrf_k` | `60` | RRF constant |
 | `rrf_w_keyword` | `1.0` | Fusion weight of the keyword (FTS) leg |
 | `rrf_w_semantic` | `1.0` | Fusion weight of the semantic (embedding) leg |
@@ -2241,7 +2242,7 @@ hangs on a weak model: a small village name silently "corrected" into a spelling
 exist, English predicates (`was in`, `was with`) mixed into a German axis set, the same fact
 written to three predicate axes, and — the one that P15 made measurable — belief SUMMARY
 sentences instead of the change narrative the contract asks for. Evidenced 2026-08-10 against
-`openai/gpt-5.6-luna`: the change narrative comes out exact
+the small model of the provider's previous generation: the change narrative comes out exact
 (`Alex preferred Helix until 2026-08-08, then switched to vscode.`, scenario T9, 5/5
 assertions, ≈ 0.02 ¢ per run — names generalized from the original run) and the
 collection-sentence failure class is gone. `openai/gpt-5.6-sol`
@@ -2638,8 +2639,8 @@ factor (the old defaults were one proportion, 20 items of about 100 tokens). The
 by at most twice: a query is not a window, and past a few sentences a longer one buys
 contamination. An ask without a package -- an outside caller, an older curator -- keeps the old
 count and query limits, and its two bundles take their share of `input_soft_fallback` (GH #1085),
-the window of the smallest chat row of the catalog -- with the shipped row (`openai/gpt-4o-mini`,
-17500 tokens) that share is under the old 2000 and 1200, so they keep them; a fallback of 237500
+the one fallback window without a catalog row (17500 tokens, said on stderr as `no catalog row
+for <model>`, GH #1532) -- that share is under the old 2000 and 1200, so they keep them; a fallback of 237500
 tokens would give 11875 for tier 1 and 7125 for tier 0. A number set on a knob wins over the package
 for that knob. A `tier1_tokens` set to a number is a ceiling: the
 count and item limits grow by its factor where that is the smaller one, never below the old values.

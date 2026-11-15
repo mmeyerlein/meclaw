@@ -1,0 +1,15 @@
+{
+  "wire": "chat",
+  "n": 20,
+  "sent": 16,
+  "window_tokens": 4000,
+  "reasoning": "mandatory_low",
+  "switch_note": "HTTP 400: Reasoning is mandatory for this endpoint and cannot be disabled.",
+  "tool_calls": 16,
+  "hits": 16,
+  "hit_rate": 1.0,
+  "p50_ms": 982.7,
+  "p95_ms": 1104.0,
+  "prompt_tokens_p50": 6040,
+  "misses": []
+}

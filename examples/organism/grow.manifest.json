@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "os",
-            "template": "meclaw-os@2.4.9"
+            "template": "meclaw-os@2.4.10"
           }
         ],
         "add_edges": []
@@ -18,7 +18,7 @@
         "add_nodes": [
           {
             "name": "acme",
-            "template": "org@2.2.24"
+            "template": "org@2.2.25"
           }
         ],
         "add_edges": [
@@ -161,7 +161,7 @@
         "add_nodes": [
           {
             "name": "alex",
-            "template": "member@2.10.2",
+            "template": "member@2.10.3",
             "override_params": {
               "access/vault": {
                 "key_source": "plainfile",
@@ -315,7 +315,7 @@
         "add_nodes": [
           {
             "name": "assistants/scribe",
-            "template": "assistant@4.0.2",
+            "template": "assistant@4.0.3",
             "override_params": {
               "cogny/brain": {
                 "temperature": 0.2,
@@ -374,6 +374,15 @@
               },
               "cogny/curator/summarizer": {
                 "credential_grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer"
+              },
+              "talky/curator/relevance": {
+                "credential_grant_id": "grant:openrouter@member-alex/talky-curator-relevance"
+              },
+              "talky-chat/curator/relevance": {
+                "credential_grant_id": "grant:openrouter@member-alex/talky-chat-curator-relevance"
+              },
+              "cogny/curator/relevance": {
+                "credential_grant_id": "grant:openrouter@member-alex/cogny-curator-relevance"
               }
             }
           }
@@ -699,6 +708,31 @@
             }
           },
           {
+            "from": "./assistants/scribe/talky/curator/relevance",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_context": {
+                "requester": "'agent:scribe/talky-curator-relevance'"
+              },
+              "set_hop": {
+                "route": "'in_invoke'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky/curator/relevance",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-curator-relevance'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
             "from": "./assistants/scribe/talky/decide",
             "to": "./access",
             "lane": "credential_request",
@@ -892,6 +926,31 @@
             "to": "./assistants/scribe/talky-chat/curator/summarizer",
             "lane": "in_sealed",
             "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-curator-summarizer'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
+          },
+          {
+            "from": "./assistants/scribe/talky-chat/curator/relevance",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_context": {
+                "requester": "'agent:scribe/talky-chat-curator-relevance'"
+              },
+              "set_hop": {
+                "route": "'in_invoke'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/talky-chat/curator/relevance",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/talky-chat-curator-relevance'",
             "modifier": {
               "set_hop": {
                 "route": "'in_sealed'"
@@ -1097,6 +1156,31 @@
                 "route": "'in_sealed'"
               }
             }
+          },
+          {
+            "from": "./assistants/scribe/cogny/curator/relevance",
+            "to": "./access",
+            "lane": "credential_request",
+            "condition": "has(hop.route) && hop.route == 'credential_request'",
+            "modifier": {
+              "set_context": {
+                "requester": "'agent:scribe/cogny-curator-relevance'"
+              },
+              "set_hop": {
+                "route": "'in_invoke'"
+              }
+            }
+          },
+          {
+            "from": "./access",
+            "to": "./assistants/scribe/cogny/curator/relevance",
+            "lane": "in_sealed",
+            "condition": "has(hop.route) && hop.route == 'ack' && has(hop.operation) && hop.operation == 'vault.deliver' && has(hop.grant_id) && hop.grant_id == 'grant:openrouter@member-alex/cogny-curator-relevance'",
+            "modifier": {
+              "set_hop": {
+                "route": "'in_sealed'"
+              }
+            }
           }
         ],
         "seed_rows": [
@@ -1137,6 +1221,26 @@
                 },
                 "cred_ref": "cred:openrouter",
                 "purpose": "authenticate scribe's talky/curator/summarizer against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
+                "grant_id": "grant:openrouter@member-alex/talky-curator-relevance",
+                "requester": "agent:scribe/talky-curator-relevance",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's talky/curator/relevance against the provider",
                 "issued_at": "2026-01-01T00:00:00.000000Z",
                 "expires_at": "2099-01-01T00:00:00.000000Z",
                 "rule_id": "alex-credential-read",
@@ -1305,6 +1409,26 @@
                 }
               },
               {
+                "grant_id": "grant:openrouter@member-alex/talky-chat-curator-relevance",
+                "requester": "agent:scribe/talky-chat-curator-relevance",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's talky-chat/curator/relevance against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
+              },
+              {
                 "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
                 "requester": "agent:scribe/talky-chat-decide",
                 "capability": "credential.read",
@@ -1463,6 +1587,26 @@
                 "constraints": {
                   "rate_per_min": 60
                 }
+              },
+              {
+                "grant_id": "grant:openrouter@member-alex/cogny-curator-relevance",
+                "requester": "agent:scribe/cogny-curator-relevance",
+                "capability": "credential.read",
+                "subject": "member:alex",
+                "scope": {
+                  "actions": [
+                    "vault.deliver"
+                  ],
+                  "cred_class": "llm"
+                },
+                "cred_ref": "cred:openrouter",
+                "purpose": "authenticate scribe's cogny/curator/relevance against the provider",
+                "issued_at": "2026-01-01T00:00:00.000000Z",
+                "expires_at": "2099-01-01T00:00:00.000000Z",
+                "rule_id": "alex-credential-read",
+                "constraints": {
+                  "rate_per_min": 60
+                }
               }
             ]
           },
@@ -1494,7 +1638,7 @@
               },
               {
                 "id": "ev-organism-0000000003",
-                "grant_id": "grant:openrouter@member-alex/talky-decide",
+                "grant_id": "grant:openrouter@member-alex/talky-curator-relevance",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1505,7 +1649,7 @@
               },
               {
                 "id": "ev-organism-0000000004",
-                "grant_id": "grant:openrouter@member-alex/talky-quick",
+                "grant_id": "grant:openrouter@member-alex/talky-decide",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1516,7 +1660,7 @@
               },
               {
                 "id": "ev-organism-0000000005",
-                "grant_id": "grant:openrouter@member-alex/talky-quick_spec",
+                "grant_id": "grant:openrouter@member-alex/talky-quick",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1527,7 +1671,7 @@
               },
               {
                 "id": "ev-organism-0000000006",
-                "grant_id": "grant:openrouter@member-alex/talky-quick_bridge",
+                "grant_id": "grant:openrouter@member-alex/talky-quick_spec",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1538,7 +1682,7 @@
               },
               {
                 "id": "ev-organism-0000000007",
-                "grant_id": "grant:openrouter@member-alex/talky-screen_model",
+                "grant_id": "grant:openrouter@member-alex/talky-quick_bridge",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1549,7 +1693,7 @@
               },
               {
                 "id": "ev-organism-0000000008",
-                "grant_id": "grant:openrouter@member-alex/talky-second_judge",
+                "grant_id": "grant:openrouter@member-alex/talky-screen_model",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1560,7 +1704,7 @@
               },
               {
                 "id": "ev-organism-0000000009",
-                "grant_id": "grant:openrouter@member-alex/talky-chat",
+                "grant_id": "grant:openrouter@member-alex/talky-second_judge",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1571,7 +1715,7 @@
               },
               {
                 "id": "ev-organism-0000000010",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
+                "grant_id": "grant:openrouter@member-alex/talky-chat",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1582,7 +1726,7 @@
               },
               {
                 "id": "ev-organism-0000000011",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-curator-summarizer",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1593,7 +1737,7 @@
               },
               {
                 "id": "ev-organism-0000000012",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-quick",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-curator-relevance",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1604,7 +1748,7 @@
               },
               {
                 "id": "ev-organism-0000000013",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-quick_spec",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-decide",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1615,7 +1759,7 @@
               },
               {
                 "id": "ev-organism-0000000014",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-quick_bridge",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-quick",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1626,7 +1770,7 @@
               },
               {
                 "id": "ev-organism-0000000015",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-screen_model",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-quick_spec",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1637,7 +1781,7 @@
               },
               {
                 "id": "ev-organism-0000000016",
-                "grant_id": "grant:openrouter@member-alex/talky-chat-second_judge",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-quick_bridge",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1648,7 +1792,7 @@
               },
               {
                 "id": "ev-organism-0000000017",
-                "grant_id": "grant:openrouter@member-alex/cogny",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-screen_model",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",
@@ -1659,7 +1803,40 @@
               },
               {
                 "id": "ev-organism-0000000018",
+                "grant_id": "grant:openrouter@member-alex/talky-chat-second_judge",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000019",
+                "grant_id": "grant:openrouter@member-alex/cogny",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000020",
                 "grant_id": "grant:openrouter@member-alex/cogny-curator-summarizer",
+                "event": "granted",
+                "at": "2026-01-01T00:00:00.000000Z",
+                "actor": "operator",
+                "reason_code": "",
+                "detail": {
+                  "why": "seeded with the level: credential_grant_id is immutable, so the grant has to exist before the cell that names it ever asks"
+                }
+              },
+              {
+                "id": "ev-organism-0000000021",
+                "grant_id": "grant:openrouter@member-alex/cogny-curator-relevance",
                 "event": "granted",
                 "at": "2026-01-01T00:00:00.000000Z",
                 "actor": "operator",

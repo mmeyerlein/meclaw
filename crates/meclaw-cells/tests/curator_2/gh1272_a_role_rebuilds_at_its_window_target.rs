@@ -272,14 +272,41 @@ fn a_target_rebuild_that_cannot_reach_its_aim_is_not_repeated() {
     assert_eq!(target_orders(&h), 3);
 }
 
+/// The window the answer below reports (`context_window`), without a package.
+const REPORTED: i64 = 400_000;
+
+/// talky's `(window_target, aim)` for a model whose only known window is
+/// `window`: the profile's `window_target_share` of it (GH #1526,
+/// OR-583.grenzen.12), its aim read off the policy as `preset` reads it.
+fn preset_of(window: i64) -> (i64, i64) {
+    let brain = read_json(&repo("templates/talky/brain/config.json"));
+    let share = brain["params"]["window_profile"]["window_target_share"]
+        .as_f64()
+        .expect("talky's main target names its window target as a share");
+    let t = (share * window as f64).round() as i64;
+    let (got, err) = policy_scope(
+        curator_profiles::set_knobs("talky", json!({"window_target": t})),
+        "[WINDOW_TARGET, target_aim_of({})]",
+        Value::Null,
+    );
+    assert_eq!(got[0], json!(t), "{err}");
+    let a = got[1].as_i64().unwrap_or_else(|| panic!("{got} {err}"));
+    assert!(a > 0 && a < t, "an aim under the target: {got}");
+    (t, a)
+}
+
 /// Review I-2: without the model's package (no `input_soft`, only its
 /// window) the hive still marks `target` and names the aim of the rebuild.
+/// GH #1526 (OR-583.grenzen.12/.14): the target is a share of the target's
+/// window; without a row and without `input_soft` that window is the one the
+/// model reported (`context_window`), so the target sits at the share of it
+/// -- 160 000 of 400 000 --, not at the 100 000 of a window of 250 000.
 #[test]
 fn without_a_package_the_target_names_its_aim() {
     if !shipped() {
         return;
     }
-    let (target, aim) = preset();
+    let (target, aim) = preset_of(REPORTED);
     let mut h = talky(&[]);
     let call = h.curate(
         "s",
@@ -291,7 +318,7 @@ fn without_a_package_the_target_names_its_aim() {
     h.tap(
         &call,
         "stop",
-        json!({"tokens_prompt": target + 1000, "context_window": 400_000}),
+        json!({"tokens_prompt": target + 1000, "context_window": REPORTED}),
         json!([said("a")]),
     );
     let s = stamp(&h);

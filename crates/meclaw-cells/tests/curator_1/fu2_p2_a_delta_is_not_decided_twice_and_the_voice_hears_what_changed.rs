@@ -204,7 +204,7 @@ fn live_feed_sends_one_fact_section_after_duplex_turn() {
 
 fn delta_hive() -> Hive {
     let mut h = Hive::with(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!("")),
         ("lead", "delta_speculation", json!("1")),
     ])
@@ -272,6 +272,44 @@ fn delta_result_reused_when_final_text_equal() {
         keys_like(&h, "delta")
     );
     assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
+}
+
+/// D54g listennote (GH #1538, review M2): a reused delta's call carries the
+/// delta stamp's choices on `hop.choices` like its move (#1506) -- the JSON
+/// text the collector puts on the seam, keys sorted.
+#[test]
+fn delta_result_reused_carries_the_stamps_choices() {
+    if !shipped() {
+        return;
+    }
+    let mut h = delta_hive();
+    let choices = json!({"risk": {"value": "strained", "p": 0.9, "source": "model"},
+                         "depth": {"value": "important", "p": 0.9, "source": "model"}});
+    h.out.clear();
+    h.lane(
+        "in_delta_stamp",
+        json!({"session_id": "s1", "turn_id": "t1", "delta": "1"}),
+        json!({"turn_id": "t1", "path": "simple"}),
+        json!({"messages": [], "stamp": {"turn_id": "t1", "path": "simple", "p": 0.9,
+                                         "intent": "", "needs": [], "families": ["web"],
+                                         "duration": 5, "choices": choices,
+                                         "text_norm": "what is the weather in berlin"}}),
+    );
+    spec_curate(&mut h, "t1", ASK);
+    let quick = h.routed("quick");
+    assert_eq!(quick.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    let carried = quick[0]
+        .hop
+        .get("choices")
+        .and_then(Value::as_str)
+        .map(|t| sj::from_str::<Value>(t).expect("the choices are JSON text"));
+    assert_eq!(
+        carried,
+        Some(choices),
+        "the reused call carries the delta's choices: {:?}",
+        quick[0].hop
+    );
+    assert_eq!(marks(&h, "delta")[0]["verdict"], json!("reused"));
 }
 
 #[test]
@@ -431,9 +469,9 @@ fn fu2_p2_defaults_byte_identical() {
         assert!(marks(&h, "delta").is_empty());
         seen
     };
-    let shipped_run = run(&[("lead", "quick_speculative", json!("1"))]);
+    let shipped_run = run(&[("lead", "spec_ahead", json!("1"))]);
     let absent_run = run(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("policy", "live_feed", Value::Null),
         ("policy", "live_feed_section", Value::Null),
         ("lead", "delta_speculation", Value::Null),
@@ -442,7 +480,7 @@ fn fu2_p2_defaults_byte_identical() {
 }
 
 /// live-2 #1370: the set writes `live_feed`, `delta_speculation` (and
-/// `quick_speculative`) as JSON `true` (soul2me 0.45 `04-assistant.json`);
+/// `spec_ahead`) as JSON `true` (soul2me 0.45 `04-assistant.json`);
 /// `str(True)` is "True", so the feed and the delta stayed off without a word.
 /// One rule for every switch of the wave, the presenter's `knob()`: JSON true,
 /// "1", "true" or "on" is on.
@@ -464,7 +502,7 @@ fn live_feed_and_delta_switches_read_json_true() {
     );
 
     let mut h = Hive::with(&[
-        ("lead", "quick_speculative", json!(true)),
+        ("lead", "spec_ahead", json!(true)),
         ("lead", "spec_tools", json!("")),
         ("lead", "delta_speculation", json!(true)),
     ])

@@ -26,6 +26,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -494,18 +497,19 @@ fn build_tree(td: &TempDir, base_url: &str) {
         v["params"]["night_from_utc"] = json!("00:00");
         v["params"]["night_until_utc"] = json!("00:00");
     });
-    for cell in [
-        "brain",
-        "quick",
-        "quick_spec",
-        "quick_bridge",
-        "curator/summarizer",
-    ] {
+    for cell in ["brain", "quick", "quick_spec", "quick_bridge"] {
         patch(root, &format!("main/talky/{cell}/config.json"), |v| {
             v["params"]["base_url"] = json!(base_url);
             v["params"]["model"] = json!(START);
         });
     }
+    // GH #1528: every `llm` cell of the curator -- the summarizer and the
+    // ballast judge alike -- carries `${ctx.model}`, which a tree booted from
+    // disk cannot resolve; the helper points each at the mock.
+    curator_llm::patch_llm_cells(&root.join("main/talky/curator"), |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!(START);
+    });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

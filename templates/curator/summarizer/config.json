@@ -141,6 +141,14 @@
           "type": "array",
           "required": false
         },
+        "chars_per_token": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_per_image": {
+          "type": "number",
+          "required": false
+        },
         "dropped": {
           "type": "array",
           "required": false

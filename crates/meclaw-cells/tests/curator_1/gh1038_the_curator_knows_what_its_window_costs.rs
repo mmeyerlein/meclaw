@@ -65,6 +65,18 @@ fn talky(more: &[(&str, &str, Value)]) -> Hive {
     Hive::with(&all).reporting_composite("talky")
 }
 
+/// The window target off (`window_target` 0 on the instance, which wins over
+/// the profile's share, OR-583.grenzen.16). Since GH #1526 (OR-583.grenzen.12)
+/// talky's target is a share of its target's window -- 0.4 of the package's
+/// `input_soft` --, so at the small soft lines below (1 700, 2 500, 5 000) it
+/// orders a `target` rebuild at 680, 1 000 and 2 000 tokens, where the 100 000
+/// tokens of before lay out of reach. The tests that use it pin the rules
+/// beside the target (hard, the measured window, cost); the target's own rule
+/// is `gh1272_a_role_rebuilds_at_its_window_target`.
+fn target_off() -> (&'static str, &'static str, Value) {
+    ("policy", "window_target", json!(0))
+}
+
 /// The limits and prices of a model as the llm cell stamps them (GH #1037).
 fn package(soft: i64, hard: i64, cost_in: f64, cost_cached_in: f64) -> Value {
     json!({"input_soft": soft, "input_hard": hard, "cost_in": cost_in,
@@ -176,7 +188,7 @@ fn hard_comes_before_the_cells_estimate_of_the_next_window_reaches_it() {
     // over `input_hard`, not on measured tokens. Measured, this window (1 600)
     // is under soft (1 700) and under hard (2 300); estimated, the next one --
     // this call (>= 2 000) and its answer (>= 200) -- reaches 0.9 of hard.
-    let mut h = talky(&[]);
+    let mut h = talky(&[target_off()]);
     turn_of(
         &mut h,
         6000,
@@ -190,7 +202,7 @@ fn hard_comes_before_the_cells_estimate_of_the_next_window_reaches_it() {
     // With room to spare under hard, nothing is ordered. (A cached price of
     // 0 keeps the cost rule out of it: since OR-HK-25 it would rebuild this
     // window, 0.94 of soft, at 10 %.)
-    let mut h = talky(&[]);
+    let mut h = talky(&[target_off()]);
     turn_of(
         &mut h,
         6000,
@@ -214,7 +226,7 @@ fn a_continuations_sum_is_not_the_window() {
     // under it by what the call held (its projection, ~2 000): no rebuild,
     // and the stamp names the projection. A cached price of 0 keeps the
     // cost rule out of it (OR-HK-25 would rebuild 0.8 of soft at 10 %).
-    let mut h = talky(&[]);
+    let mut h = talky(&[target_off()]);
     turn_of(
         &mut h,
         6000,
@@ -294,7 +306,7 @@ fn under_soft_a_dear_cache_is_compressed_for_cost() {
         json!({"tokens_prompt": 4000, "tokens_cached": 3900}),
         package(5000, 100_000, 10.0, 1.0),
     );
-    let mut h = talky(&[("policy", "rebuild_to", json!(0.35))]);
+    let mut h = talky(&[("policy", "rebuild_to", json!(0.35)), target_off()]);
     turn_of(&mut h, 15_000, "a", usage.clone());
     assert_eq!(last_add(&h).body["emit_body"]["reason"], "cost");
     let s = stamp(&h);
@@ -313,6 +325,7 @@ fn under_soft_a_dear_cache_is_compressed_for_cost() {
     let mut h = talky(&[
         ("policy", "amortise_turns", json!(2)),
         ("policy", "rebuild_to", json!(0.35)),
+        target_off(),
     ]);
     turn_of(&mut h, 15_000, "a", usage);
     assert!(h.clock.is_empty(), "{:?}", h.clock);

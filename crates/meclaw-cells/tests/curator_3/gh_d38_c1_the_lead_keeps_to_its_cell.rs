@@ -153,12 +153,12 @@ fn the_switch_is_gone_from_the_policy() {
         "def route_and_reason(",
         "def routes_of(",
         "PATH_ROUTES = ",
-        "MEMORY_TO_BRAIN = ",
+        "RECALL_TO_FALLBACK = ",
         "def spec_key(",
         "def spec_verdict(",
         "def spec_doomed(",
         "def spec_settle(",
-        "def without_consult(",
+        "def without_ask(",
         "def early_interrupt(",
     ] {
         assert!(
@@ -174,7 +174,7 @@ fn the_switch_is_gone_from_the_policy() {
         assert!(!policy.contains(gone), "the policy holds `{gone}`");
         assert!(!lead.contains(gone), "the lead still holds `{gone}`");
     }
-    for key in ["\"escalated:\"", "\"consult_pending:\""] {
+    for key in ["\"escalated:\"", "\"ask_pending:\""] {
         assert!(
             !policy.contains(key),
             "the policy still names the lead's row {key}"

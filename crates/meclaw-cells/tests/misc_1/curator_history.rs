@@ -202,6 +202,15 @@ impl Hive {
         let ledger = meclaw_cells::store::StoreParams::parse(&cells["ledger"]["params"])
             .expect("the ledger params parse");
         meclaw_cells::store::ddl::apply_declared_schema_ddl(&db, &ledger).expect("ddl");
+        // GH #1531: the full-text index of the wall's text, in the store's
+        // order (schema -> canonical -> fts -> seed) on a connection that
+        // carries the store's extensions -- `history_search` asks it, as in
+        // `support/curator_hive.rs`.
+        meclaw_cells::store::query::install_connection_extensions(&db).expect("extensions");
+        meclaw_cells::store::ddl::apply_canonical_ddl(&db, &ledger.canonical)
+            .expect("canonical ddl");
+        meclaw_cells::store::ddl::apply_fts_ddl(&db, &ledger.fts, &ledger.canonical)
+            .expect("fts ddl");
         meclaw_cells::store::seed::load_seed_if_present(
             &db,
             &repo("templates/curator/ledger"),
@@ -929,8 +938,12 @@ fn limit_and_context_bound_the_answer() {
     );
 }
 
+/// GH #1531: `scan_budget` bounds no search. The search asks the wall's
+/// index and checks every candidate the round may see, so five hits past a
+/// budget of three are all found, newest first, and nothing is cut -- before,
+/// the scan stopped at the budget and said `truncated_scan`.
 #[test]
-fn a_scan_over_budget_says_truncated_scan() {
+fn a_search_past_scan_budget_finds_every_hit() {
     if !shipped() {
         return;
     }
@@ -947,18 +960,15 @@ fn a_scan_over_budget_says_truncated_scan() {
         ));
     }
     let (m, p) = h.history("history_search", json!({"query": "needle"}));
-    assert_eq!(
-        error_of(&m),
-        "",
-        "a cut scan is an answer, not a refusal: {p}"
-    );
-    assert_eq!(p["truncated_scan"], true, "{p}");
-    assert_eq!(p["cut_by"], "scan_budget", "{p}");
-    assert_eq!(p["scanned"], 3);
+    assert_eq!(error_of(&m), "", "an answer, not a refusal: {p}");
+    assert_eq!(p["truncated_scan"], false, "nothing is cut: {p}");
+    assert_eq!(p["cut_by"], Value::Null, "no cut: {p}");
+    assert_eq!(p["scanned"], 5, "every candidate checked: {p}");
+    assert_eq!(p["total_hits"], 5, "{p}");
     assert_eq!(
         ids(&p, "hits"),
-        vec![short(&needles[4]), short(&needles[3]), short(&needles[2])],
-        "the hits up to the cut, newest first: {p}"
+        needles.iter().rev().map(|n| short(n)).collect::<Vec<_>>(),
+        "every hit past the budget, newest first: {p}"
     );
     let mut h = Hive::with(&[("history", "scan_budget", json!(5))]);
     for i in 1..=5 {
@@ -980,9 +990,12 @@ fn a_scan_over_budget_says_truncated_scan() {
 }
 
 /// Bounded reads (GH #893): a pattern that backtracks without end is answered in
-/// time, under its call id, with the hits up to the moment the time budget
-/// ran out -- never a runner timeout (`script_timeout` carries no route, the
-/// call would stay unanswered until the collector gives up on the round).
+/// time, under its call id -- never a runner timeout (`script_timeout` carries
+/// no route, the call would stay unanswered until the collector gives up on
+/// the round). Since GH #1531 the answer is the refusal `too_slow`, showing
+/// nothing it read: the time budget is a hang mark, never a cut of the hits.
+/// A pattern with no literal to look up (`(a+)+$`) is refused with
+/// `needs_literal` before anything is read.
 #[test]
 fn a_catastrophic_pattern_is_answered_in_time() {
     if !shipped() {
@@ -998,21 +1011,28 @@ fn a_catastrophic_pattern_is_answered_in_time() {
         &user(&format!("{}b", "a".repeat(40))),
         &at(20, 1),
     );
-    let quick = h.sow(2, "s1", "t2", "user", &user("aaaa"), &at(20, 2));
-    let t = std::time::Instant::now();
+    h.sow(2, "s1", "t2", "user", &user("aaaa"), &at(20, 2));
     let (m, p) = h.history(
         "history_search",
         json!({"query": "(a+)+$", "mode": "regex"}),
     );
-    let took = t.elapsed();
-    assert_eq!(error_of(&m), "", "a cut search is an answer: {p}");
-    assert_eq!(
-        ids(&p, "hits"),
-        vec![short(&quick)],
-        "the hits before the cut: {p}"
+    assert_eq!(error_of(&m), "needs_literal", "no literal to look up: {p}");
+    // `aaa` is the literal: both rows are candidates, the older one does not
+    // finish.
+    let t = std::time::Instant::now();
+    let (m, p) = h.history(
+        "history_search",
+        json!({"query": "aaa(a+)+$", "mode": "regex"}),
     );
-    assert_eq!(p["truncated_scan"], true, "{p}");
-    assert_eq!(p["cut_by"], "time_budget", "{p}");
+    let took = t.elapsed();
+    assert_eq!(
+        error_of(&m),
+        "too_slow",
+        "a refusal in time, not a cut: {p}"
+    );
+    assert_eq!(p["error"], "too_slow", "{p}");
+    assert_eq!(p["hits"], Value::Null, "nothing it read is shown: {p}");
+    assert!(p["detail"].is_string(), "the refusal says why: {p}");
     let runner = cell_config("history")["params"]["external_timeout_ms"]
         .as_u64()
         .expect("the runner's timeout");
@@ -1022,13 +1042,14 @@ fn a_catastrophic_pattern_is_answered_in_time() {
     );
 }
 
-/// Bounded reads (GH #893): a search reads the wall page by page, newest first,
-/// and stops at the page that fills its `limit` -- the bodies of a whole wall
-/// are never fetched to show eight hits of its newest turns. The hits it
-/// counts are those of the pages it read (`stopped_at_limit` says so), and a
-/// hit's neighbours come from the wall, not from the page it stood on.
+/// Bounded reads (GH #893, GH #1531): a search fetches the bodies of its index
+/// candidates only -- never those of the rows around them -- and counts every
+/// hit among them; `limit` bounds what it shows (`stopped_at_limit` says that
+/// more exist), not what it counts. `page_rows` 2 splits the candidates' reads
+/// into `in` lists of two, and a hit's neighbours come from the wall, not from
+/// the read it stood in.
 #[test]
-fn a_search_reads_page_by_page_and_stops_at_its_limit() {
+fn a_search_reads_only_its_candidates_and_counts_past_its_limit() {
     if !shipped() {
         return;
     }
@@ -1045,17 +1066,28 @@ fn a_search_reads_page_by_page_and_stops_at_its_limit() {
             )
         })
         .collect();
+    // Seven rows without the word, newer than every needle: no candidates.
+    for i in 8..=14 {
+        h.sow(
+            i,
+            "s1",
+            &format!("t{i}"),
+            "user",
+            &user(&format!("hay number {i}")),
+            &at(20, i as u32),
+        );
+    }
     let (m, p) = h.history("history_search", json!({"query": "needle", "limit": 2}));
     assert_eq!(error_of(&m), "", "{p}");
     assert_eq!(ids(&p, "hits"), vec![short(&n[6]), short(&n[5])], "{p}");
     assert_eq!(p["stopped_at_limit"], true, "{p}");
-    assert_eq!(p["total_hits"], 2, "counted in the pages read: {p}");
-    assert_eq!(p["scanned"], 2);
+    assert_eq!(p["total_hits"], 7, "every hit counted: {p}");
+    assert_eq!(p["scanned"], 7);
     assert_eq!(p["truncated_scan"], false);
     assert_eq!(
         h.read_of("blocks:body"),
-        2,
-        "the bodies of one page, not of the wall: {:?}",
+        7,
+        "the bodies of the candidates, not of the 14 rows of the wall: {:?}",
         h.reads
     );
     h.reads.clear();
@@ -1065,16 +1097,16 @@ fn a_search_reads_page_by_page_and_stops_at_its_limit() {
         vec![short(&n[6]), short(&n[5]), short(&n[4])],
         "{p}"
     );
-    assert_eq!(p["total_hits"], 4, "the second page is counted whole: {p}");
+    assert_eq!(p["total_hits"], 7, "{p}");
     assert_eq!(p["stopped_at_limit"], true);
-    assert_eq!(h.read_of("blocks:body"), 4, "{:?}", h.reads);
-    // No limit reached: every page, and nothing stopped early.
+    assert_eq!(h.read_of("blocks:body"), 7, "{:?}", h.reads);
+    // No limit reached: every hit shown, and nothing stopped early.
     let (_, p) = h.history("history_search", json!({"query": "needle"}));
     assert_eq!(p["total_hits"], 7, "{p}");
     assert_eq!(p["scanned"], 7);
     assert_eq!(p["stopped_at_limit"], false);
     assert_eq!(p["truncated_scan"], false);
-    // A neighbour across the edge of the page the hit stood on.
+    // A neighbour across the edge of the `in` list the hit stood in.
     let (_, p) = h.history(
         "history_search",
         json!({"query": "needle", "limit": 2, "context": 1}),
@@ -2820,20 +2852,20 @@ fn alike(visible: &[i64], hidden: &[i64], tool: &str, args: Value) -> Value {
     p1
 }
 
-/// GH #925 (review I-1, OR-BD-74): `scan_budget` and the pages of a search
-/// count only the rows the round may see. Rows of another round among them --
-/// in the newest page, in the last one, after the budget's last row -- move
-/// nothing the answer says: `scanned`, `total_hits`, `cut_by`, the hits and
-/// the page where `limit` stops are those of the same wall without them, so a
-/// cut is no counter of the hidden rows. Since GH #932 they cost no ledger
-/// round trip either: the store never hands them back (`alike`).
+/// GH #925 (review I-1, OR-BD-74), GH #1531: a search counts only the rows
+/// the round may see. Rows of another round among them -- newest, oldest,
+/// between -- are index candidates like any other, yet move nothing the
+/// answer says: `scanned`, `total_hits`, the hits and where `limit` stops are
+/// those of the same wall without them, and `scan_budget` (10 here) cuts
+/// none of it. Since GH #932 they cost no ledger round trip either: the store
+/// never hands them back (`alike`).
 #[test]
 fn a_budget_counts_only_the_rows_the_round_may_see() {
     if !shipped() {
         return;
     }
     let visible: Vec<i64> = (1..=14).map(|i| i * 100).collect();
-    // Seven hidden rows, fewer than (2 - 1) x `scan_budget`.
+    // Seven hidden rows among fourteen visible ones -- newest, oldest, between.
     let hidden = [1_450, 1_250, 950, 650, 450, 50, 30];
     let p = alike(
         &visible,
@@ -2841,12 +2873,16 @@ fn a_budget_counts_only_the_rows_the_round_may_see() {
         "history_search",
         json!({"query": "needle", "limit": 20}),
     );
-    assert_eq!(p["scanned"], 10, "{p}");
-    assert_eq!(p["total_hits"], 10, "{p}");
-    assert_eq!(p["cut_by"], "scan_budget", "{p}");
-    assert_eq!(p["hits"].as_array().map(Vec::len), Some(10), "{p}");
+    assert_eq!(
+        p["scanned"], 14,
+        "every visible candidate, past the budget: {p}"
+    );
+    assert_eq!(p["total_hits"], 14, "{p}");
+    assert_eq!(p["cut_by"], Value::Null, "no cut: {p}");
+    assert_eq!(p["truncated_scan"], false, "{p}");
+    assert_eq!(p["hits"].as_array().map(Vec::len), Some(14), "{p}");
     assert_eq!(p["hits"][9]["seq"], 500, "the tenth visible row: {p}");
-    // `limit` stops at the visible page that fills it and counts it whole.
+    // `limit` bounds the hits shown and counts every one.
     let p = alike(
         &visible,
         &hidden,
@@ -2854,7 +2890,7 @@ fn a_budget_counts_only_the_rows_the_round_may_see() {
         json!({"query": "needle", "limit": 5}),
     );
     assert_eq!(p["stopped_at_limit"], true, "{p}");
-    assert_eq!(p["total_hits"], 8, "two visible pages: {p}");
+    assert_eq!(p["total_hits"], 14, "every visible hit: {p}");
     for args in [
         json!({"query": "needle", "limit": 1}),
         json!({"query": "needle", "limit": 6, "context": 1}),
@@ -2870,7 +2906,8 @@ fn a_budget_counts_only_the_rows_the_round_may_see() {
         json!({"query": "needle", "limit": 20}),
     );
     assert_eq!(p["truncated_scan"], false, "{p}");
-    // The newest page wholly hidden; hidden rows only in the last page.
+    // Hidden rows only above the newest visible one; hidden rows only between
+    // two older visible ones.
     for hidden in [&[1_410, 1_420, 1_430, 1_440][..], &[610, 620, 630][..]] {
         alike(
             &visible,
@@ -2879,15 +2916,15 @@ fn a_budget_counts_only_the_rows_the_round_may_see() {
             json!({"query": "needle", "limit": 20}),
         );
     }
-    // The round trips: the first read, ceil(10 / 4) = 3 pages, the
-    // neighbours' two -- 6, with nine hidden rows as without them (GH #932:
-    // no read that plans the rest, no wider neighbour read).
+    // The round trips: the candidates, their rows, their check (GH #1531),
+    // the neighbours' two -- 5, with nine hidden rows as without them (GH
+    // #932: no read that plans the rest, no wider neighbour read).
     let crowd = [1_410, 1_420, 1_430, 1_440, 610, 620, 630, 450, 440];
     let args = json!({"query": "needle", "limit": 20, "context": 1});
     let p = alike(&visible, &crowd, "history_search", args.clone());
-    assert_eq!(p["scanned"], 10, "{p}");
+    assert_eq!(p["scanned"], 14, "{p}");
     let (_, _, trips) = asked(&mut needle_wall(&visible, &crowd), "history_search", args);
-    assert_eq!(trips, 1 + 3 + 2, "{trips} ledger round trips");
+    assert_eq!(trips, 3 + 2, "{trips} ledger round trips");
 }
 
 /// GH #925 (OR-BD-74, OR-BD-86) and GH #932: a wall full of hidden rows
@@ -3144,7 +3181,8 @@ fn the_neighbours_are_the_nearest_rows_the_round_may_see() {
     // The old share of the row bound: `scan_budget` 10 -> 20 rows for the one
     // side short of its window (`context` 2: six rows the round may see); 15
     // and more hidden rows beside the hit cut the search before GH #932.
-    // `limit` 1 and `page_rows` 1 stop the scan itself after the hit.
+    // `limit` 1 shows the one hit; `page_rows` 1 reads the candidates one
+    // hash per `in` list (GH #1531: the search reads no page of the wall).
     let over = [
         ("history", "scan_budget", json!(10)),
         ("history", "page_rows", json!(1)),
@@ -3568,71 +3606,54 @@ const S3_FIXED: usize = 10;
 /// reserve 16 (GH #929).
 const SEGMENT_MAX: usize = 64 - 16;
 
-/// GH #925 (OR-BD-78, OR-BD-86) and GH #932: the ledger round trips of the
-/// longest search at `scan_budget` `budget` and `page_rows` `page` -- the
-/// first read (`search-rows`), one per page the budget needs (`search-page`,
-/// ceil(budget / page): each page's bundle reads the page, its bodies and
-/// what follows), and the neighbours' two (`search-near`, `search-near-2`).
-/// Before GH #932 a hidden row added two more: the read that planned the rest
-/// of the wall (OR-BD-74) and the wider read beside a hit (OR-BD-86). The
-/// store filters every read of the round now (`round_where`), so neither is
-/// ever taken. It depends on the number of pages alone, not on the rows in
-/// them, which is what lets
-/// `the_longest_search_takes_the_round_trips_worked_out_from_its_settings`
-/// prove it on a small wall.
-fn longest_search_trips(budget: usize, page: usize) -> usize {
-    1 + budget.div_ceil(page) + 2
+/// GH #1531: the ledger round trips of the longest search -- the index
+/// candidates (`search-cands`), their wall rows (`search-rows`), the rows
+/// once more beside their bodies for the check (`search-check`), and the
+/// neighbours' two (`search-near`, `search-near-2`). The reads of one step
+/// go in one round trip however many `in` lists `page_rows` splits them into,
+/// so the number depends on neither `scan_budget`, `page_rows` nor the size
+/// of the wall. Before GH #932 a hidden row added two more: the read that
+/// planned the rest of the wall (OR-BD-74) and the wider read beside a hit
+/// (OR-BD-86); the store filters every read of the round now (`round_where`),
+/// so neither is ever taken.
+fn longest_search_trips() -> usize {
+    3 + 2
 }
 
-/// GH #925 (OR-BD-78, OR-BD-86): at the SHIPPED settings the longest search
-/// stays inside the GH #929 reserve: 1 + ceil(5000 / 400) + 2 = 16 ledger
-/// round trips, 10 + 2 x 16 = 42 on the chain (18 and 46 before GH #932
-/// dropped the two reads hidden rows cost).
-/// Worked out from `params` alone, so a changed knob fails here without a
-/// colony and without a clock; that the script takes exactly these trips is
-/// pinned by the run below.
+/// GH #925 (OR-BD-78, OR-BD-86), GH #1531: the longest search stays inside
+/// the GH #929 reserve at any setting: 5 ledger round trips, 10 + 2 x 5 = 20
+/// on the chain (42 when a search read the wall page by page). That the
+/// script takes exactly these trips is pinned by the run below.
 #[test]
 fn the_longest_search_at_the_shipped_settings_fits_the_chain_reserve() {
     if !shipped() {
         return;
     }
-    let params = &cell_config("history")["params"];
-    let knob = |k: &str| -> usize {
-        params[k]
-            .as_u64()
-            .or_else(|| params[k].as_str().and_then(|s| s.parse().ok()))
-            .unwrap_or_else(|| panic!("history `{k}` is a number: {params}")) as usize
-    };
-    let (budget, page) = (knob("scan_budget"), knob("page_rows"));
-    let bound = longest_search_trips(budget, page);
+    let bound = longest_search_trips();
     assert!(
         S3_FIXED + 2 * bound <= SEGMENT_MAX,
-        "scan_budget {budget} / page_rows {page}: up to {bound} ledger round trips, a \
-         history call of {} on the chain -- over the reserve of {SEGMENT_MAX} (GH #929)",
+        "up to {bound} ledger round trips, a history call of {} on the chain -- over the \
+         reserve of {SEGMENT_MAX} (GH #929)",
         S3_FIXED + 2 * bound
     );
 }
 
-/// GH #925 (OR-BD-78, OR-BD-86) and GH #932: the longest search takes EXACTLY
-/// the round trips `longest_search_trips` works out -- a wall past the budget,
-/// the one hit in its oldest scanned row with `context` 2, one row of another
-/// round on top and six of the hit's own session on either side of it. The
-/// hidden rows stay on the wall: they cost no round trip and take no
-/// neighbour away, since the store never hands them back.
+/// GH #925 (OR-BD-78, OR-BD-86), GH #932 and GH #1531: the longest search
+/// takes EXACTLY the round trips `longest_search_trips` works out, at every
+/// setting -- a wall past `scan_budget`, the one hit far below its newest
+/// row with `context` 2, one row of another round on top that holds the word
+/// too (an index candidate the round may not see) and six of the hit's own
+/// session on either side of it. The hidden rows stay on the wall: they cost
+/// no round trip, take no neighbour away and cut nothing, since the store
+/// never hands them back.
 ///
-/// Run at small settings, not the shipped ones: at 5000 / 400 the wall is
-/// 6000 rows, 1.7 s here, and the public CI runner (2026-10-01) spent the
-/// shipped 3000 ms `time_budget_ms` at 4000 of them -- `cut_by` `time_budget`,
-/// a cut of its own and not the row bounds this test is about. 50 / 4 is the
-/// shipped ratio (13 pages, the last one short: the same 16 trips over 60
-/// rows), 48 / 4 ends on a full page (12 pages, 15 trips), 20 / 20 is one
-/// page (4 trips).
+/// 50 / 4 is the shipped ratio, 48 / 4 ends `in` lists on a full one, 20 /
+/// 20 is one list: the same 5 trips each.
 ///
-/// GH #1211: even the small wall ran into the shipped budget under load, so
-/// the clock is taken out of the way through the setting: `time_budget_ms`
-/// is the hang mark (`deadline::HANG`, scaled), never a verdict on the host's
-/// speed. The budget cut itself is pinned on its own, without a clock, in
-/// `a_spent_time_budget_cuts_the_search_at_its_first_page`.
+/// GH #1211: the clock is taken out of the way through the setting:
+/// `time_budget_ms` is the hang mark (`deadline::HANG`, scaled), never a
+/// verdict on the host's speed. The spent budget is pinned on its own,
+/// without a clock, in `a_spent_time_budget_refuses_a_search_with_candidates`.
 #[test]
 fn the_longest_search_takes_the_round_trips_worked_out_from_its_settings() {
     if !shipped() {
@@ -3689,17 +3710,18 @@ fn the_longest_search_takes_the_round_trips_worked_out_from_its_settings() {
             "history_search",
             json!({"query": "needle", "limit": 8, "context": 2}),
         );
-        assert_eq!(code, "", "{at_settings}: {p}");
         assert_ne!(
-            p["cut_by"], "time_budget",
-            "HANG: {at_settings}: the search ran {hang_ms} ms (the hang mark as \
-             `time_budget_ms`) without reaching its row bounds: {p}"
+            code, "too_slow",
+            "HANG: {at_settings}: the check ran past {hang_ms} ms (the hang mark as \
+             `time_budget_ms`): {p}"
         );
+        assert_eq!(code, "", "{at_settings}: {p}");
         assert_eq!(
             p["total_hits"], 1,
-            "{at_settings}: the hit in the oldest scanned row: {p}"
+            "{at_settings}: the one hit the round may see: {p}"
         );
-        assert_eq!(p["cut_by"], "scan_budget", "{at_settings}: {p}");
+        assert_eq!(p["cut_by"], Value::Null, "{at_settings}: no cut: {p}");
+        assert_eq!(p["truncated_scan"], false, "{at_settings}: {p}");
         let near = |side: &str| -> Vec<String> {
             p["hits"][0][side]
                 .as_array()
@@ -3726,19 +3748,19 @@ fn the_longest_search_takes_the_round_trips_worked_out_from_its_settings() {
         );
         assert_eq!(
             trips,
-            longest_search_trips(budget, page),
+            longest_search_trips(),
             "{at_settings}: the ledger round trips of the longest search"
         );
     }
 }
 
-/// GH #1211: the time budget cuts a search, pinned without a clock. A
-/// `time_budget_ms` of 0 is spent before the first page is read, so the cut
-/// can only be the budget's: the first boundary after page one (or the slice
-/// alarm inside it) ends the search, long before `scan_budget`, and the
-/// verdict is on the fields, never on how long the call took.
+/// GH #1211, GH #1531: a spent time budget decides a search without a clock.
+/// A `time_budget_ms` of 0 (or less) is spent before the check begins: a
+/// search with candidates the round may see is refused with `too_slow`,
+/// showing nothing -- never a cut answer, never a verdict on how long the
+/// call took. A search without a candidate checks nothing and answers.
 #[test]
-fn a_spent_time_budget_cuts_the_search_at_its_first_page() {
+fn a_spent_time_budget_refuses_a_search_with_candidates() {
     if !shipped() {
         return;
     }
@@ -3760,12 +3782,76 @@ fn a_spent_time_budget_cuts_the_search_at_its_first_page() {
         );
     }
     let (code, p, _trips) = asked(&mut h, "history_search", json!({"query": "needle"}));
-    assert_eq!(code, "", "a cut search is an answer: {p}");
-    assert_eq!(p["cut_by"], "time_budget", "the spent budget cuts: {p}");
-    assert_eq!(p["truncated_scan"], true, "{p}");
-    let scanned = p["scanned"].as_u64().expect("`scanned` is a number");
-    assert!(
-        scanned <= page as u64,
-        "the cut ends the search within its first page of {page}, scanned {scanned}: {p}"
-    );
+    assert_eq!(code, "", "no candidate, nothing to check -- an answer: {p}");
+    assert_eq!(p["total_hits"], 0, "{p}");
+    assert_eq!(p["truncated_scan"], false, "{p}");
+    for i in 0..rows {
+        h.sow(
+            rows * 10 + 10 * (i + 1),
+            "s1",
+            &format!("tn{i}"),
+            "user",
+            &user(&format!("needle number {i}")),
+            &at(20, 1),
+        );
+    }
+    let (code, p, _trips) = asked(&mut h, "history_search", json!({"query": "needle"}));
+    assert_eq!(code, "too_slow", "the spent budget refuses: {p}");
+    assert_eq!(p["error"], "too_slow", "{p}");
+    assert_eq!(p["hits"], Value::Null, "nothing it read is shown: {p}");
+    assert_eq!(p["cut_by"], Value::Null, "never a cut: {p}");
+}
+
+/// The shipped history cell's `check_rows` (its pure half loaded with the
+/// shipped params, `time_budget_ms` set to `budget`) on no row and on one row.
+const CHECK_ROWS_PROBE: &str = r#"
+import ast, io, json, sys
+inp = json.load(sys.stdin)
+sys.stdin = io.StringIO("")
+src, params = inp["src"], inp["params"]
+scope = {"P": params, "doc": {"params": params, "body": {}, "envelope": {}}}
+for n in ast.parse(src).body:
+    if isinstance(n, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef)) or (
+            isinstance(n, ast.Assign)
+            and all(isinstance(t, ast.Name) and t.id.isupper() for t in n.targets)):
+        try:
+            exec(compile(ast.Module(body=[n], type_ignores=[]), "cell", "exec"), scope)
+        except Exception:
+            if not isinstance(n, ast.Assign):
+                raise
+args = lambda: {"mode": "phrase", "query": "needle", "scanned": 0, "total": 0, "hits": [],
+                "limit": 5}
+row = {"seq": 10, "hash": "h1", "session_id": "s1", "turn_id": "t1", "kind": "user"}
+print(json.dumps([scope["check_rows"](args(), [], {}),
+                  scope["check_rows"](args(), [row], {"h1": "{}"})]))
+"#;
+
+/// Wave d58-3, search minor m-1: a NEGATIVE `time_budget_ms` is spent like 0.
+/// The check of a search (phase `search-check`) with no row left to check --
+/// the index named a block, the read of its body brought none -- answers
+/// without arming the clock: before, it armed `setitimer` with the negative
+/// value, which Python refuses, and the search died instead of answering.
+/// With a row to check the spent budget refuses (`False` -> `too_slow`).
+#[test]
+fn a_negative_time_budget_answers_an_empty_check_and_refuses_a_full_one() {
+    if !shipped() {
+        return;
+    }
+    for budget in [0, -1] {
+        let mut params = cell_config("history")["params"].clone();
+        params["time_budget_ms"] = json!(budget);
+        let doc = json!({"src": script_of("history"), "params": params});
+        let out = run_python(CHECK_ROWS_PROBE, &doc.to_string());
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(
+            out.status.success(),
+            "time_budget_ms {budget}: the check of no row does not fail: {err}"
+        );
+        let got: Value = sj::from_slice(&out.stdout).expect("JSON");
+        assert_eq!(
+            got,
+            json!([true, false]),
+            "time_budget_ms {budget}: no row answers, a row is too slow"
+        );
+    }
 }

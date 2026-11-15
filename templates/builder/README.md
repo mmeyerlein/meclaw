@@ -1,4 +1,4 @@
-# `builder@1.33.0`
+# `builder@1.34.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -468,7 +468,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.13.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.14.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.2.1"}], "…": "…"}}]}
@@ -1885,7 +1885,7 @@ them alone gets the lane wrong:
 
 | | value | why |
 |---|---|---|
-| `params.external_timeout_ms` | 3 058 000 | the operation timeout (A): how long ONE model call may take before the cell emits a clean `provider_timeout` and carries on. Since GH #1097 derived by the timeout chain (`docs/cell-types.md` § llm) from the row the composer is born on (`openai/gpt-6-sol`, `contract.settings.external_timeout_ms_row`) |
+| `params.external_timeout_ms` | 3 058 000 | the operation timeout (A): how long ONE model call may take before the cell emits a clean `provider_timeout` and carries on. Since GH #1097 derived by the timeout chain (`docs/cell-types.md` § llm) from the row the composer is born on (`openai/gpt-6.1-sol`, `contract.settings.external_timeout_ms_row`) |
 | `cell.message_timeout` | 3 364 000 | the substrate backstop (B), A plus the backstop margin of the chain (10 s, at least 10 %), so that A always fires first — `docs/meclaw-overview.md` § Timeouts, "B generous, A precise" |
 | `params.max_tokens` | 0 | the completion budget, and **reasoning spends it too**. Since GH #1097 (R-HK-13) the cell names no cap of its own: the request carries the model's catalogue `max_output` |
 

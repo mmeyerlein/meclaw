@@ -178,6 +178,12 @@ pub fn cell_scope(cell: &str, over: Value, probe: &str, args: Value) -> (Value, 
         .to_string();
     let mut params = cfg["params"].as_object().cloned().unwrap_or_default();
     params.remove("script_inline");
+    // d58-3 namen (GH #1525): the lead's knobs whose shipped default lost a
+    // composition's name are wired as the hive wires them ([`namen_wiring`]);
+    // the curator's cells run on their shipped defaults here.
+    if cell == "lead" {
+        params.extend(namen_wired("lead"));
+    }
     for (k, v) in over.as_object().cloned().unwrap_or_default() {
         params.insert(k, v);
     }
@@ -291,6 +297,32 @@ fn shipped_edges(rel: &str, keep: impl Fn(&str, &str) -> bool) -> Vec<Edge> {
         .collect()
 }
 
+/// `msg` sent out of `from` across `edges`: every edge whose condition holds,
+/// its modifier applied, as `(to, message)`.
+fn cross(edges: &[Edge], from: &str, msg: &Msg) -> Vec<(String, Msg)> {
+    let mut out = Vec::new();
+    for e in edges.iter().filter(|e| e.from == from) {
+        if let Some(c) = &e.condition
+            && !matches!(evaluate_condition(c, &msg.context, &msg.hop), Ok(true))
+        {
+            continue;
+        }
+        let mut m = msg.clone();
+        if let Some(modif) = &e.modifier {
+            let h = Headers::from_parts(msg.context.clone(), msg.hop.clone());
+            match apply_modifier(modif, &h) {
+                Ok(h) => {
+                    m.context = h.context;
+                    m.hop = h.hop;
+                }
+                Err(_) => continue,
+            }
+        }
+        out.push((e.to.clone(), m));
+    }
+    out
+}
+
 /// Which of the three edge lists a routing step reads: the curator hive's,
 /// the lead hive's, or the composite's bridge between the two.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -390,6 +422,12 @@ pub struct Hive {
     pub out: Vec<Msg>,
     pub clock: Vec<Msg>,
     pub summ: VecDeque<Msg>,
+    /// GH #1528 (d58-3 ballast): the requests to the judge of the ballast
+    /// (`./relevance`, an llm cell like the summarizer) not answered yet --
+    /// a recorder, answered by the test (`curator_bank::answer_judge`).
+    pub judge: VecDeque<Msg>,
+    /// GH #1528: every request the judge was sent, in order.
+    pub judged: Vec<Msg>,
     pub stderr: Vec<String>,
     /// Every ledger operation the hive ran, with the cell that sent it (the
     /// edge's `from`, never the cell the answer is addressed to): who writes
@@ -446,7 +484,8 @@ pub struct Hive {
     /// ledger message whose tool_call id is `leg` (or starts with it, when it
     /// ends in `*`) with that code, and runs the other legs: one read or
     /// write of a bundle failing. An entry is taken in the message it struck;
-    /// set `ledger_may_refuse` with it.
+    /// of two equal entries one strikes a message, the other the next (a leg
+    /// refused twice: read, read again). Set `ledger_may_refuse` with it.
     pub refuse_legs: Vec<(String, String)>,
     /// GH #1260 (fix round 1): every emission of a hive cell is checked
     /// against that cell's own `contract.emits`, the way the colony's
@@ -678,6 +717,7 @@ impl Hive {
                 }
             }
         }
+        namen_wire(&mut cells);
         for (cell, key, value) in over {
             let params = cells
                 .get_mut(*cell)
@@ -711,6 +751,15 @@ impl Hive {
         // -> seed). The unique index on `state.key` is what turns the insert of
         // a round's first row into a compare-and-set.
         meclaw_cells::store::ddl::apply_index_ddl(&db, &ledger.indexes).expect("index ddl");
+        // GH #1531: the full-text index of the wall's text, in the store's
+        // order (schema -> indexes -> canonical -> fts -> seed) on a
+        // connection that carries the store's extensions -- `history_search`
+        // asks it.
+        meclaw_cells::store::query::install_connection_extensions(&db).expect("extensions");
+        meclaw_cells::store::ddl::apply_canonical_ddl(&db, &ledger.canonical)
+            .expect("canonical ddl");
+        meclaw_cells::store::ddl::apply_fts_ddl(&db, &ledger.fts, &ledger.canonical)
+            .expect("fts ddl");
         meclaw_cells::store::seed::load_seed_if_present(
             &db,
             &repo("templates/curator/ledger"),
@@ -756,6 +805,8 @@ impl Hive {
             out: Vec::new(),
             clock: Vec::new(),
             summ: VecDeque::new(),
+            judge: VecDeque::new(),
+            judged: Vec::new(),
             stderr: Vec::new(),
             ledger_ops: Vec::new(),
             ledger_may_refuse: false,
@@ -971,13 +1022,19 @@ impl Hive {
                 reply_to: String::new(),
             };
         }
-        let struck: Vec<(String, String)> = self
-            .refuse_legs
-            .iter()
-            .filter(|(leg, _)| calls.iter().any(|c| leg_matches(leg, &c["id"])))
-            .cloned()
-            .collect();
-        self.refuse_legs.retain(|e| !struck.contains(e));
+        // One of two equal entries strikes this message, the other the next
+        // one (wave d58-3, stapel minor m-A): before, both went in the first
+        // message, so "refused twice" was refused once and read again whole.
+        let mut struck: Vec<(String, String)> = Vec::new();
+        let mut rest: Vec<(String, String)> = Vec::new();
+        for e in std::mem::take(&mut self.refuse_legs) {
+            if !struck.contains(&e) && calls.iter().any(|c| leg_matches(&e.0, &c["id"])) {
+                struck.push(e);
+            } else {
+                rest.push(e);
+            }
+        }
+        self.refuse_legs = rest;
         let refused_as = |id: &Value| {
             struck
                 .iter()
@@ -1078,27 +1135,7 @@ impl Hive {
             Scope::Lead => &self.lead_edges,
             Scope::Bridge => &self.bridge,
         };
-        let mut out = Vec::new();
-        for e in edges.iter().filter(|e| e.from == from) {
-            if let Some(c) = &e.condition
-                && !matches!(evaluate_condition(c, &msg.context, &msg.hop), Ok(true))
-            {
-                continue;
-            }
-            let mut m = msg.clone();
-            if let Some(modif) = &e.modifier {
-                let h = Headers::from_parts(msg.context.clone(), msg.hop.clone());
-                match apply_modifier(modif, &h) {
-                    Ok(h) => {
-                        m.context = h.context;
-                        m.hop = h.hop;
-                    }
-                    Err(_) => continue,
-                }
-            }
-            out.push((e.to.clone(), m));
-        }
-        out
+        cross(edges, from, msg)
     }
 
     fn pump(&mut self, from: &str, msg: Msg) {
@@ -1174,6 +1211,10 @@ impl Hive {
                     }
                     "./clock" => self.clock.push(m),
                     "./summarizer" => self.summ.push_back(m),
+                    "./relevance" => {
+                        self.judged.push(m.clone());
+                        self.judge.push_back(m);
+                    }
                     cell => {
                         let name = cell.trim_start_matches("./").to_string();
                         for o in self.run_cell(&name, &m) {
@@ -1318,6 +1359,49 @@ impl Hive {
             json!({"messages": [], "package": row, "window_profile": profile,
                    "system_order": params["system_order"].clone()}),
         );
+    }
+
+    /// GH #1526 (d58-3 grenzen, OR-583.grenzen.11): the package line of the
+    /// model cell `cell` of the shipped composite `templates/<comp>` with the
+    /// catalogue row `row`, in the form the `llm` cell writes it (`hop.route`
+    /// `package`, `hop.package_of`, profile and system order of its
+    /// template), sent across the composite's own shipped edges out of
+    /// `./<cell>` -- not put on a lane of this hive by the test. What an edge
+    /// hands to `./curator` enters here on the lane that edge names. Every
+    /// receiver comes back as `(to, route)`, so a test sees where the line
+    /// went and not only what the curator made of it.
+    pub fn package_line_through(
+        &mut self,
+        comp: &str,
+        cell: &str,
+        row: Value,
+    ) -> Vec<(String, String)> {
+        let params =
+            read_json(&repo(&format!("templates/{comp}/{cell}/config.json")))["params"].clone();
+        let own = format!("./{cell}");
+        let edges = shipped_edges(&format!("templates/{comp}/config.json"), |f, _| f == own);
+        let line = Msg {
+            context: Map::new(),
+            hop: obj(json!({"route": "package", "package_of": format!("/{comp}/{cell}")})),
+            body: obj(json!({"messages": [], "package": row,
+                             "window_profile": params["window_profile"].clone(),
+                             "system_order": params["system_order"].clone()})),
+            reply_to: String::new(),
+        };
+        let mut went = Vec::new();
+        for (to, m) in cross(&edges, &own, &line) {
+            let route = m.route().to_string();
+            went.push((to.clone(), route.clone()));
+            if to == "./curator" {
+                self.lane(
+                    &route,
+                    Value::Object(m.context),
+                    Value::Object(m.hop),
+                    Value::Object(m.body),
+                );
+            }
+        }
+        went
     }
 
     /// `profile` with every policy knob of `keys` the test set (and did not
@@ -1494,6 +1578,13 @@ impl Hive {
         self.pump_many(starts);
     }
 
+    /// GH #1528 (d58-3 ballast): what the judge of the ballast (`./relevance`)
+    /// says, as its llm cell says it: `msg` leaves that cell and takes the
+    /// hive's edges from there.
+    pub fn judge_says(&mut self, msg: Msg) {
+        self.pump("./relevance", msg);
+    }
+
     /// The summarizer's answer to the oldest request it holds.
     pub fn answer(&mut self, text: &str, finish: &str) -> Msg {
         self.answer_with(text, finish, json!({}))
@@ -1632,6 +1723,22 @@ impl Hive {
     pub fn release_held(&mut self) {
         self.hold = None;
         self.hold_lane = None;
+        let held = std::mem::take(&mut self.held);
+        for m in held {
+            let outs = self.run_cell("policy", &m);
+            let starts = outs
+                .into_iter()
+                .map(|o| ("./policy".to_string(), o))
+                .collect();
+            self.pump_many(starts);
+        }
+    }
+
+    /// GH #1529: the held messages delivered to `./policy` like
+    /// [`Hive::release_held`], but the holds stay: a message the delivery
+    /// routes to `./policy` on a held lane is held again (the second verdict
+    /// of a call the policy asks anew after its handover).
+    pub fn deliver_held(&mut self) {
         let held = std::mem::take(&mut self.held);
         for m in held {
             let outs = self.run_cell("policy", &m);
@@ -2301,8 +2408,12 @@ pub fn sent_of(h: &Hive, call: &Msg) -> Option<Vec<Value>> {
     if list.is_empty() { None } else { Some(list) }
 }
 
-/// GH #1462: the forms an entry of `sent` may name.
-pub const SENT_FORMS: [&str; 6] = ["raw", "stub", "released", "expired", "cut", "built"];
+/// GH #1462: the forms an entry of `sent` may name. `rows_out` (d58-3
+/// nachlese, GH #1539): a block that stays with the quote rows the window
+/// holds raw taken out (`recall_in_wall` "1", row by row).
+pub const SENT_FORMS: [&str; 7] = [
+    "raw", "stub", "released", "expired", "cut", "built", "rows_out",
+];
 
 /// GH #1462: a window put together again from a `sent` list and the blocks
 /// of the ledger alone -- nothing of the call itself is read.
@@ -2807,4 +2918,113 @@ impl Talk {
         m.insert("left_out".into(), Value::Array(out));
         self.write_plan(&plan);
     }
+}
+
+// kern (d58-3 N14, GH #1524): the reader of the pin
+// `gh_d58_frame_every_shipped_composition_sets_one_place_at_both_cells`,
+// lifted here so its counter-arm `gh_d583_kern_a_place_at_one_cell_only_is_red`
+// judges the pin's own reader and not a copy of it.
+
+/// The knobs a composition sets once at `curator/policy` and once at
+/// `curator/history`, with one value.
+pub const PLACE_KNOBS: [&str; 2] = ["place", "timezone"];
+
+/// The value `knob` has at `cell` under the overrides `over` of a curator
+/// node: the override, else the cell's shipped param.
+pub fn place_value_at(over: &Value, cell: &str, knob: &str) -> Value {
+    match over.get(cell).and_then(|c| c.get(knob)) {
+        Some(v) if !v.is_null() => v.clone(),
+        _ => cell_config(cell)["params"][knob].clone(),
+    }
+}
+
+/// Every knob of [`PLACE_KNOBS`] whose value differs between the two cells
+/// under the overrides `over` of the curator node `name`.
+pub fn place_findings(name: &str, over: &Value) -> Vec<String> {
+    PLACE_KNOBS
+        .iter()
+        .filter_map(|k| {
+            let (p, h) = (
+                place_value_at(over, "policy", k),
+                place_value_at(over, "history", k),
+            );
+            (p != h).then(|| format!("{name}: `{k}` is {p} at policy and {h} at history"))
+        })
+        .collect()
+}
+
+// namen
+
+/// d58-3 namen (GH #1525, N7, N9a, N9b, O6): the knobs of the curator and
+/// the lead whose shipped default lost a composition's name, as talky's and cogny's
+/// compositions set them -- the values the hive shipped before the strand.
+/// A test's own override wins. No fallback row or window: the compositions
+/// set none since the raten ruling F (GH #1532, OR-583.stapel.5).
+pub fn namen_wiring() -> Vec<(&'static str, &'static str, Value)> {
+    vec![
+        ("policy", "errand_slot", json!("consult")),
+        ("policy", "recall_needs", json!(["memory"])),
+        ("policy", "state_needs", json!(["memory", "orga"])),
+        ("policy", "pending_note", json!(NAMEN_PENDING_NOTE)),
+        ("policy", "pending_state", json!("a consult")),
+        ("intake", "errand_slot", json!("consult")),
+        (
+            "intake",
+            "agent_sources",
+            json!("advice:cogny,delegation:voice"),
+        ),
+        ("push", "nothing_prefix", json!(NAMEN_NOTHING_PREFIX)),
+        ("lead", "recall_needs", json!(["memory"])),
+        ("lead", "side_slot", json!("bridge")),
+        ("lead", "bridge_places", json!(NAMEN_BRIDGE_PLACES)),
+        ("lead", "bridge_texts", json!(NAMEN_BRIDGE_TEXTS)),
+        ("lead", "interrupt_section", json!("interrupt")),
+        // Fix round (review M1): the renamed knobs talky sets under their
+        // new keys, at today's values.
+        ("lead", "recall_to_fallback", json!("0")),
+        ("lead", "ask_pending_ms", json!(120000)),
+    ]
+}
+
+/// The side call texts the compositions set on the lead (`bridge_texts`):
+/// the lead's wording before the strand, which names the speaking surface.
+pub const NAMEN_BRIDGE_TEXTS: &str = r#"{"tool": "You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. Your lookup is already running right now{fill}; it was started for you, and its result follows in this turn. Say one short sentence that bridges the wait, in your own words: only that you are looking it up, one moment. Never speak of missing access, missing abilities or limits of any kind. Ask the person nothing: the answer is on its way. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Speak plainly: write no tool call, no JSON, no code and no command.", "soon": "You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. The answer follows in this turn, within about {seconds} seconds. Say one short sentence that bridges the wait, in your own words: only that you are on it and the answer is still coming. Never speak of missing access, missing abilities or limits of any kind. Ask nothing about this request itself: its answer is on its way. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Call no tool.", "later": "You are handling this request for the person right now; speak in your own voice as the one doing it, never refuse it and never say you cannot do something. It is researched in the background; that takes about {minutes} minutes, and the result comes in a later turn. Tell the person so in your own words and name the waiting time. Then keep the conversation going on another subject -- how they are, or what else is on their mind -- never on this request: ask nothing about it, not its details, not their wishes or experiences with it, not what matters to them in it; the research has what it needs. Never speak of missing access, missing abilities or limits of any kind. You do not have the answer: state no facts, no numbers, no results, no guesses and no forecasts, not even likely ones; do not answer the request yet. Call no tool."}"#;
+
+/// The words of the places the compositions set on the lead
+/// (`bridge_places`), shipped before the strand.
+pub const NAMEN_BRIDGE_PLACES: &str = r#"{"places": {"weather": "at the weather service", "web": "on the web"}, "rest": "in other places", "before": ", ", "join": " and "}"#;
+
+/// The empty-state sentence of the recalling hive the compositions set on
+/// the push (`nothing_prefix`, review M2): the push's literal before the fix
+/// round.
+pub const NAMEN_NOTHING_PREFIX: &str = "Nothing in this memory answers";
+
+/// The pending note the compositions set (`pending_note`): the policy's
+/// wording before the strand, `{id}`/`{at}` the ask's id and start.
+pub const NAMEN_PENDING_NOTE: &str = "A consult is pending (id {id}, since {at}): the backend \
+     works on this request and its answer comes on its own. Do not consult again; say it is \
+     being looked into if asked.";
+
+/// [`namen_wiring`] into the cells of a hive, each knob only where the cell
+/// declares it.
+pub fn namen_wire(cells: &mut BTreeMap<String, Value>) {
+    for (cell, key, value) in namen_wiring() {
+        if let Some(params) = cells
+            .get_mut(cell)
+            .and_then(|c| c["params"].as_object_mut())
+            && params.contains_key(key)
+        {
+            params.insert(key.to_string(), value);
+        }
+    }
+}
+
+/// [`namen_wiring`] of one cell as params, for a test that runs the cell's
+/// script on its own (`policy_step`).
+pub fn namen_wired(cell: &str) -> Map<String, Value> {
+    namen_wiring()
+        .into_iter()
+        .filter(|(c, _, _)| *c == cell)
+        .map(|(_, k, v)| (k.to_string(), v))
+        .collect()
 }

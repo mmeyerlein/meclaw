@@ -16,7 +16,7 @@ A bridge to a provider, consuming and emitting the universal body format. Exactl
 "cell": { "type": "llm" },
 "params": {
   "provider": "openai",
-  "model": "openai/gpt-4o-mini",
+  "model": "openai/gpt-6-luna",
   "api_key": "",
   "credential_grant_id": "grant:openrouter@main/brain",
   "base_url": "https://openrouter.ai/api/v1"

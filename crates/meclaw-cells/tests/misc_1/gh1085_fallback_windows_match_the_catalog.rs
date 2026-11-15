@@ -19,6 +19,17 @@
 //! typed beside it, a fallback that names no row or a row the catalogue does
 //! not have fails here and not in a colony.
 //!
+//! GH #1532 (coordinator ruling OR-IG-9): the producer's own window,
+//! `input_soft_fallback` itself, names no row any more -- without a catalogue
+//! row an overflow at the system gate is worse than a window too small, so it
+//! is ONE documented value, [`NO_ROW_WINDOW`] tokens, in every core cell, and
+//! a value without a row is held to that number. A second reader's window
+//! (`embed_input_soft_fallback`) still names its row. A frozen version that
+//! still names a row is held to it as before.
+//!
+//! OR-583.stapel.5, raten F: the curator of talky and cogny ships no fallback
+//! window of its own any more; the floor holds them to zero.
+//!
 //! Zero, empty or null is "no fallback" (the producer then delivers whole) and
 //! passes. The scan passes with no hit at all as well, and says how many it
 //! held, so a strand that adds the param is covered the moment it lands.
@@ -47,6 +58,9 @@ fn repo(rel: &str) -> PathBuf {
 
 /// The suffix of the param that names a fallback's catalogue row (OR-IG-9).
 const ROW: &str = "_row";
+
+/// The one fallback window without a catalogue row (GH #1532).
+const NO_ROW_WINDOW: u64 = 17500;
 
 /// Every row of the shipped catalogue with its `input_soft`, whatever the
 /// row's status: a retired row is still a number the catalogue states.
@@ -214,6 +228,18 @@ fn check(doc: &Value, catalogue: &BTreeMap<String, u64>) -> (usize, Vec<String>)
         rows_named(doc, &name, &mut named);
         let row = match named.len() {
             1 => named.into_iter().next().unwrap_or_default(),
+            0 if name == KEY => {
+                // GH #1532: no row, the one documented window.
+                if n == NO_ROW_WINDOW {
+                    held += 1;
+                } else {
+                    wrong.push(format!(
+                        "{at} = {n}: names no catalogue row, so it is the one fallback \
+                         window {NO_ROW_WINDOW} (GH #1532)"
+                    ));
+                }
+                continue;
+            }
             0 => {
                 wrong.push(format!(
                     "{at} = {n}: names no catalogue row (`{name}{ROW}`, OR-IG-9)"
@@ -290,7 +316,7 @@ fn every_fallback_window_is_the_row_it_names() {
         let config = root.join(template).join(cell).join("config.json");
         let got = held_in.get(config.as_path()).copied().unwrap_or(0);
         floor += want;
-        if got < *want {
+        if got < *want || (*want == 0 && got > 0) {
             let rel = config
                 .strip_prefix(repo(""))
                 .unwrap_or(&config)
@@ -314,16 +340,20 @@ fn every_fallback_window_is_the_row_it_names() {
 /// config inside it, and the fewest windows that config holds -- each as
 /// param and setting, most also as a script literal (derive twice: its own
 /// window and the embedding row's). Only templates on disk count, so the
-/// floor is that of the tree the test runs in.
+/// floor is that of the tree the test runs in. The curator ships no window
+/// since d58-3 namen (N7, GH #1525), and since the raten ruling F
+/// (OR-583.stapel.5) the compositions set none on it either: a summarizer
+/// without a catalogue row falls back to the core's one window, so talky and
+/// cogny hold exactly zero -- a window set there again is red, as a missing
+/// one is for the producers that ship one.
 const SHIPS: &[(&str, &str, usize)] = &[
     ("coder-pipeline", "dispatch", 3),
-    ("curator", "handover", 2),
-    ("curator", "policy", 2),
+    ("cogny", "curator", 0),
     ("file-space", "derive", 6),
-    ("firewall", "screen", 3),
     ("memory-hive", "recall", 3),
     ("research-assistant", "dispatch", 3),
     ("summarizer", "prep", 3),
+    ("talky", "curator", 0),
 ];
 
 /// The scan finds what it claims to find: each written form, and a value that
@@ -404,7 +434,18 @@ fn a_fallback_is_held_to_the_row_it_names() {
     let (_, wrong) = check(&other, &catalogue);
     assert!(wrong[0].contains("states input_soft 17500"), "{wrong:?}");
 
+    // GH #1532: the producer's own window without a row is the one window.
     let unnamed = json!({"params": {KEY: 17500}});
+    let (held, wrong) = check(&unnamed, &catalogue);
+    assert_eq!((held, wrong.len()), (1, 0), "{wrong:?}");
+    let unnamed = json!({"params": {KEY: 8000}});
+    let (_, wrong) = check(&unnamed, &catalogue);
+    assert!(
+        wrong[0].contains("the one fallback window 17500"),
+        "{wrong:?}"
+    );
+    // A second reader's window still names its row.
+    let unnamed = json!({"params": {"embed_input_soft_fallback": 2048}});
     let (_, wrong) = check(&unnamed, &catalogue);
     assert!(wrong[0].contains("names no catalogue row"), "{wrong:?}");
 

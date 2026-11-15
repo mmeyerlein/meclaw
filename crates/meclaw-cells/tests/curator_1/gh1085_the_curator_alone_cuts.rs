@@ -19,7 +19,7 @@
 //! * the window is the one of the model that READS the content (OR-IG-4):
 //!   the summarizer's for its transcripts -- the registry's push of its
 //!   package, the stamp on its answers, the bound of a refusal, before them
-//!   the catalogue row in `input_soft_fallback` (OR-IG-8) --, never the one
+//!   the one fallback window `input_soft_fallback` (OR-IG-8, GH #1532) --, never the one
 //!   this hive serves; a find said aloud to the voice model goes whole;
 //! * over the carrier (one system leaf, 4 MiB) a pin is refused with its
 //!   size and the bound;
@@ -432,8 +432,8 @@ fn the_transcript_keeps_to_the_summarizers_window() {
     );
 }
 
-/// Before any window is known the catalogue row in `input_soft_fallback`
-/// measures the transcript (OR-IG-8); a summarizer that refuses the request
+/// Before any window is known the one fallback window `input_soft_fallback`
+/// measures the transcript (OR-IG-8, GH #1532); a summarizer that refuses the request
 /// as over its window teaches its bound (`input_over_hard`, 1000 tokens),
 /// and the next transcript keeps to half of it (OR-IG-4 (4)).
 #[test]
@@ -442,15 +442,18 @@ fn a_refusal_teaches_the_summarizers_window() {
         return;
     }
     let mut h = Hive::with(&[("policy", "keep_recent", json!(1))]);
+    // d58-3 namen (N7, GH #1525) and raten F (GH #1532, OR-583.stapel.5):
+    // the curator ships no row and no composition sets one or a window.
     assert_eq!(
         cell_config("policy")["params"]["input_soft_fallback"],
-        json!(250000),
-        "the row the summarizer is born on (OR-IG-9)"
+        json!(17500),
+        "the one fallback window of every core cell (GH #1532, OR-IG-9)"
     );
-    assert_eq!(
-        cell_config("policy")["params"]["input_soft_fallback_row"],
-        json!("openai/gpt-6-luna"),
-        "a birth token, so the `light` tier"
+    assert!(
+        cell_config("policy")["params"]
+            .get("input_soft_fallback_row")
+            .is_none(),
+        "the fallback names no catalogue row (GH #1532)"
     );
     let first = "r".repeat(5_000);
     rebuild_after(&mut h, 1, &first);
@@ -622,9 +625,9 @@ fn close_session(h: &mut Hive, session: &str) {
 }
 
 /// The note's transcript: a session far over the 60000 characters of before,
-/// with a tool result over the 2000, goes whole under the catalogue row of
-/// `input_soft_fallback` -- and the served window (1000 tokens) never
-/// measures it (OR-IG-4); once the summarizer stamped its own window on the
+/// with a tool result over the 2000, keeps to half of the one fallback window
+/// `input_soft_fallback` (GH #1532: 17 500 tokens, 26 250 characters), said on
+/// stderr -- and the served window (1000 tokens) never measures it (OR-IG-4); once the summarizer stamped its own window on the
 /// note of an earlier session (1000 tokens: 1500 characters) the newest
 /// lines that fit, the earlier ones said as left out, the cut on the hop.
 #[test]
@@ -641,7 +644,7 @@ fn the_note_transcript_keeps_to_the_summarizers_window() {
             h.answer_with("An earlier note.", "stop", json!({"input_soft": 1000}));
             assert_eq!(h.state("summarizer_input_soft"), "1000", "{:?}", h.stderr);
         }
-        let tool = long_session(&mut h);
+        long_session(&mut h);
         close(&mut h);
         let req = h.summ.back().expect("a note request").clone();
         let text = transcript_of(&req);
@@ -650,9 +653,19 @@ fn the_note_transcript_keeps_to_the_summarizers_window() {
             assert!(text.starts_with("...[dropped: "), "{text}");
             assert!(!cuts_of(&req).is_empty(), "{:?}", req.hop);
         } else {
-            assert!(text.chars().count() > 75_000, "{}", text.chars().count());
-            assert!(text.contains(&format!("tool result: {tool}")));
-            assert!(!text.contains("...[dropped:"));
+            // GH #1532: 17 500 x 0.5 x 3 = 26 250 characters, far under the
+            // session, and above the served window's 1 500.
+            let n = text.chars().count();
+            assert!(n <= 26_250 && n > 1_500, "{n}");
+            assert!(text.starts_with("...[dropped: "), "{text}");
+            assert!(!cuts_of(&req).is_empty(), "{:?}", req.hop);
+            assert!(
+                h.stderr
+                    .iter()
+                    .any(|l| l.contains("curator/handover: no catalog row for ?")),
+                "{:?}",
+                h.stderr
+            );
         }
         let prompt = req.body["system"]["instructions"]["text"].as_str().unwrap();
         assert!(

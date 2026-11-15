@@ -7,11 +7,17 @@ in line between the CHANGELOG cut and the export, and to run
 in a prompt, and § Shipped stopped at v0.77.0 while fifteen minor and patch
 releases shipped after it. The step now runs in `release.sh prepare`: it takes
 the first sentence of the version's CHANGELOG intro, writes it as one line in
-the form of the lines already there (newest on top), commits it on the cut in
-the release worktree and runs the anchor check. It stands before the release
-gate so the gate measures the line; a line under § Shipped and nothing else is
-a release record (`turnaround.release_offending`), so a battery measured on the
-cut still matches the release head.
+the form of the lines already there (newest on top), commits it in the release
+worktree and runs the anchor check.
+
+It stands AFTER the release gate, beside the test count (GH #1533): the gate's
+export audit exports `master` and refuses a receipt on any other tree, so a
+roadmap commit before the gate made the release gate of 0.87.0 red: the receipt
+belonged to the worktree head, the export was master.
+Like the test-count commit, the roadmap commit travels in the release head the
+export takes (`--rev`); a line under § Shipped and nothing else is a release
+record (`turnaround.release_offending`), so the release receipt on `master` and
+a battery measured on the cut both cover the release head.
 
 The integration cases reuse the throw-away world of `test_release_script.py`
 (stubs for every outside tool, no network) and add a ROADMAP.md and the real
@@ -19,6 +25,7 @@ anchor check to its cut.
 
 Run: `python3 -m unittest scripts.tests.test_release_roadmap`.
 """
+import json
 import os
 import pathlib
 import shutil
@@ -86,6 +93,32 @@ def shipped_bullets(text):
     return [line for line in section.splitlines() if line.startswith("- v")]
 
 
+def roadmap_world(tmp, roadmap=ROADMAP, changelog=CHANGELOG):
+    """The release world with a roadmap and the real anchor check on its cut
+    (also the world of the export-audit pin in the export's drift-gate
+    selftest, GH #1533)."""
+    w = World(tmp)
+    # the anchor check never asks the tracker here: no network in a kit test
+    w.env["MECLAW_ROADMAP_GATE_OFFLINE"] = "1"
+    (w.root / "scripts").mkdir(exist_ok=True)
+    shutil.copy(CHECK, w.root / "scripts" / "check_roadmap_anchors.py")
+    (w.root / "ROADMAP.md").write_text(roadmap)
+    (w.root / "CHANGELOG.md").write_text(changelog)
+    git(w.root, "add", "-A")
+    git(w.root, "commit", "-q", "-m", "Release 0.0.2 with a roadmap")
+    return w
+
+
+def state_data(w):
+    return release.State(w.root / "plans" / WDIR / f"release-{VERSION}.state").data()
+
+
+def gate_receipt(w):
+    """The receipt the (stub) release gate wrote, as JSON."""
+    path = w.root / "plans" / WDIR / "receipts" / STRAND / "latest" / "receipt.json"
+    return json.loads(path.read_text())
+
+
 class Case(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -100,20 +133,10 @@ class Case(unittest.TestCase):
         self._tmp.cleanup()
 
     def world(self, roadmap=ROADMAP, changelog=CHANGELOG):
-        """The release world with a roadmap and the real anchor check on its cut."""
-        w = World(self.tmp)
-        # the anchor check never asks the tracker here: no network in a kit test
-        w.env["MECLAW_ROADMAP_GATE_OFFLINE"] = "1"
-        (w.root / "scripts").mkdir(exist_ok=True)
-        shutil.copy(CHECK, w.root / "scripts" / "check_roadmap_anchors.py")
-        (w.root / "ROADMAP.md").write_text(roadmap)
-        (w.root / "CHANGELOG.md").write_text(changelog)
-        git(w.root, "add", "-A")
-        git(w.root, "commit", "-q", "-m", "Release 0.0.2 with a roadmap")
-        return w
+        return roadmap_world(self.tmp, roadmap, changelog)
 
     def data(self, w):
-        return release.State(w.root / "plans" / WDIR / f"release-{VERSION}.state").data()
+        return state_data(w)
 
 
 class Prepare(Case):
@@ -133,38 +156,63 @@ class Prepare(Case):
         self.assertEqual(text.count("- v0.0.2:"), 1)
         # nothing else of the file moved
         self.assertEqual(text.replace(LINE + "\n", ""), ROADMAP)
-        # cut -> roadmap commit -> test-count commit; the roadmap commit carries ROADMAP.md alone
+        # cut -> test-count commit -> roadmap commit (GH #1533: both after the
+        # gate); the roadmap commit carries ROADMAP.md alone and is the release head
         self.assertEqual(git(wt, "rev-parse", "HEAD~2"), cut)
-        self.assertEqual(git(wt, "diff", "--name-only", "HEAD~2", "HEAD~1"), "ROADMAP.md")
+        self.assertEqual(git(wt, "diff", "--name-only", "HEAD~2", "HEAD~1"), "docs/status.en.md")
+        self.assertEqual(git(wt, "diff", "--name-only", "HEAD~1", "HEAD"), "ROADMAP.md")
+        self.assertEqual(self.data(w)["release_head"], git(wt, "rev-parse", "HEAD"))
         # the commit message travels with the public tree: English (review M3)
-        self.assertTrue(git(wt, "log", "-1", "--format=%s", "HEAD~1").endswith(
+        self.assertTrue(git(wt, "log", "-1", "--format=%s", "HEAD").endswith(
             ": ROADMAP § Shipped line for v0.0.2 from its CHANGELOG section"))
 
-    def test_the_step_stands_after_the_cut_and_before_the_gate_and_the_export(self):
+    def test_the_step_stands_after_the_gate_and_the_count_and_before_the_export(self):
+        # GH #1533: before the gate the roadmap commit moved the release
+        # worktree ahead of master, and the gate's export audit (which exports
+        # master) refused the receipt of the worktree head.
         steps = list(release.PREPARE)
         self.assertIn("roadmap", steps)
-        self.assertLess(steps.index("worktree"), steps.index("roadmap"))
-        self.assertLess(steps.index("roadmap"), steps.index("gate"))
+        self.assertLess(steps.index("gate"), steps.index("roadmap"))
+        self.assertLess(steps.index("count"), steps.index("roadmap"))
         self.assertLess(steps.index("roadmap"), steps.index("export"))
 
-    def test_the_release_receipt_and_the_battery_on_the_cut_cover_the_line(self):
-        # The gate measures the line (receipt on the roadmap commit), and a
-        # line under § Shipped alone is a release record
-        # (`turnaround.release_offending`): a battery measured on the cut still
-        # matches the release head (`release_matches_battery.py`).
+    def test_the_gate_measures_master_and_the_line_comes_after_it(self):
+        # GH #1533 pin 1: the gate receipt's rev is master at gate time (the
+        # tree the gate's export audit exports), and the line is written after
+        # the gate, in the order the state file records.
         w = self.world()
         cut = git(w.root, "rev-parse", "master")
         rc, out = w.run("prepare")
         self.assertEqual(rc, 0, out)
-        wt = pathlib.Path(self.data(w)["worktree"])
-        roadmap_commit = git(wt, "rev-parse", "HEAD~1")
-        receipt = w.root / "plans" / WDIR / "receipts" / STRAND / "latest" / "receipt.json"
-        self.assertIn(roadmap_commit, receipt.read_text())
-        self.assertEqual(turnaround.release_offending(str(w.root), roadmap_commit,
-                                                      self.data(w)["release_head"]), {})
-        self.assertEqual(turnaround.release_offending(str(w.root), cut, roadmap_commit), {})
-        self.assertEqual(turnaround.release_offending(str(w.root), cut,
-                                                      self.data(w)["release_head"]), {})
+        self.assertEqual(gate_receipt(w)["rev"], cut)
+        self.assertEqual(git(w.root, "rev-parse", "master"), cut)
+        ends = [e["step"] for e in w.state() if e["event"] == "end" and e["verdict"] == "GREEN"]
+        self.assertEqual(ends, list(release.PREPARE))
+        self.assertLess(ends.index("gate"), ends.index("roadmap"))
+        written = [e for e in w.state() if e["event"] == "end" and e["step"] == "roadmap"]
+        self.assertEqual(written[-1]["data"]["roadmap"], "written")
+
+    def test_the_export_takes_the_release_head_with_the_count_and_the_roadmap_commit(self):
+        # GH #1533 pin 2: `make_export.py --rev` is the release head, and the
+        # release head is master plus the test-count and the roadmap commit --
+        # release records alone (`turnaround.release_offending`), so the
+        # release receipt on master and a battery measured on the cut both
+        # cover it (`release_record_equal`, `release_matches_battery.py`).
+        w = self.world()
+        cut = git(w.root, "rev-parse", "master")
+        rc, out = w.run("prepare")
+        self.assertEqual(rc, 0, out)
+        head = self.data(w)["release_head"]
+        exports = [c for c in w.calls() if c[0] == "make_export.py"]
+        self.assertEqual(len(exports), 1, w.calls())
+        args = exports[0]
+        self.assertEqual(args[args.index("--rev") + 1], head)
+        self.assertEqual(git(w.root, "rev-list", "--count", f"{cut}..{head}"), "2")
+        self.assertEqual(sorted(git(w.root, "diff", "--name-only", cut, head).splitlines()),
+                         ["ROADMAP.md", "docs/status.en.md"])
+        self.assertEqual(turnaround.release_offending(str(w.root), cut, head), {})
+        self.assertEqual(turnaround.release_record_equal(str(w.root), gate_receipt(w)["rev"], head),
+                         (True, {}))
 
     def test_a_second_run_for_the_same_version_adds_nothing(self):
         w = self.world()
@@ -179,6 +227,40 @@ class Prepare(Case):
         self.assertEqual(got.get("roadmap"), "present")
         self.assertEqual(git(wt, "rev-parse", "HEAD"), head)
         self.assertEqual((wt / "ROADMAP.md").read_text(), text)
+
+    def test_a_half_run_of_the_step_is_red_on_the_rerun_never_present(self):
+        # Review R1 M1 (GH #1533): the roadmap commit fails once (a pre-commit
+        # hook), so the line stands uncommitted in the release worktree. The
+        # step decides "line already there" at HEAD, never at the dirty file:
+        # the rerun with --reason is red and names ROADMAP.md, and no export
+        # takes a release head without the line. Before the step ran after the
+        # gate, the gate's dirty receipt caught this; now nothing else would.
+        w = self.world()
+        marker = self.tmp / "fail-roadmap-commit"
+        marker.write_text("")
+        hook = w.root / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\n"
+                        f"if [ -e {marker} ] && git diff --cached --name-only | grep -qx ROADMAP.md; then\n"
+                        f"  rm -f {marker}; echo hook-red; exit 1\nfi\nexit 0\n")
+        hook.chmod(0o755)
+        rc, out = w.run("prepare")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("release: roadmap RED", out)
+        rc, out = w.run("prepare", "--reason", "rerun after the hook")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("uncommitted", out)
+        self.assertNotIn("make_export.py", w.names())
+        ends = [(e["step"], e["verdict"]) for e in w.state() if e["event"] == "end"]
+        self.assertEqual(ends[-1], ("roadmap", "RED"))
+        # the way out the message names: restore the file, run again -- the line lands
+        wt = pathlib.Path(self.data(w)["worktree"])
+        git(wt, "reset", "-q", "--", "ROADMAP.md")
+        git(wt, "checkout", "-q", "--", "ROADMAP.md")
+        rc, out = w.run("prepare", "--reason", "restored")
+        self.assertEqual(rc, 0, out)
+        head = self.data(w)["release_head"]
+        self.assertEqual(git(w.root, "show", f"{head}:ROADMAP.md").count("- v0.0.2:"), 1)
+        self.assertEqual(git(wt, "status", "--porcelain", "--untracked-files=no"), "")
 
     def test_a_cut_that_already_names_the_version_gets_no_second_line(self):
         hand = ROADMAP.replace("- v0.0.1:", "- v0.0.2: written by hand.\n- v0.0.1:")
@@ -213,13 +295,13 @@ class Prepare(Case):
                               capture_output=True, text=True, env=w.env)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
-    def test_a_red_anchor_check_stops_the_release_before_the_gate(self):
+    def test_a_red_anchor_check_stops_the_release_before_the_export(self):
         stray = ROADMAP.replace("## Next\n\n", "## Next\n\nA paragraph that orders nothing.\n\n")
         w = self.world(roadmap=stray)
         rc, out = w.run("prepare")
         self.assertEqual(rc, 1, out)
         self.assertIn("release: roadmap RED", out)
-        self.assertNotIn("strand.sh", w.names())
+        self.assertNotIn("make_export.py", w.names())
         ends = [(e["step"], e["verdict"]) for e in w.state() if e["event"] == "end"]
         self.assertEqual(ends[-1], ("roadmap", "RED"))
 
@@ -230,8 +312,11 @@ class Prepare(Case):
         rc, out = w.run("prepare")
         self.assertEqual(rc, 1, out)
         self.assertIn("no intro paragraph", out)
+        self.assertNotIn("make_export.py", w.names())
         wt = pathlib.Path(self.data(w)["worktree"])
-        self.assertEqual(git(wt, "rev-parse", "HEAD"), cut)
+        # only the test-count commit of the step before it sits on the cut
+        self.assertEqual(git(wt, "rev-parse", "HEAD~1"), cut)
+        self.assertEqual(git(wt, "diff", "--name-only", "HEAD~1", "HEAD"), "docs/status.en.md")
         self.assertEqual((wt / "ROADMAP.md").read_text(), ROADMAP)
 
 

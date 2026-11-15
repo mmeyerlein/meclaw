@@ -52,7 +52,7 @@ fn gh_d58_feed_an_order_with_once_is_sent_once_per_turn() {
     );
     assert!(
         row.get("session").is_none() && row.get("hop").is_none(),
-        "a claim is no parked turn (`brain_busy` reads `session`): {row}"
+        "a claim is no parked turn (`target_busy` reads `session`): {row}"
     );
 
     // The same key in the same turn: nothing more, no second mark.

@@ -3,6 +3,8 @@
 //! bytes as master before GH #1436, and an unnamed topic still carries as
 //! before.
 //!
+//! T2, OR-583-79
+//!
 //! WHY this file exists: the aging is a set's switch; until a set turns it
 //! on, no colony may see a byte of it.
 
@@ -59,7 +61,23 @@ fn bytes(run: &Run) -> Vec<(Value, Value)> {
 /// the renewed start window of its own call -- the seed's read of `notes` names one column more
 /// again; the only moved bytes: the shipped history without that column gives the digest before,
 /// old `2cee5b217179ebed444ea1b8f7b11e9b568a6ee25bb6581adc47f30dc6b9cbd3`.
-const MASTER_OFF_DIGEST: &str = "5e3c3e0b44993c24c03105c1a0a33f6338a5da76eb97e96ad78d3c22317ddf0c";
+/// Re-blessed for GH #1526 (d58-3 grenzen, N6): a view is sized by a share of its target's window
+/// -- the first round of a view reads that window (`v-limits`: the row `limits:<target>`, and the
+/// ledger's `input_soft`/`chars_per_token` when the ask names none), the share rides in
+/// `cur_reason` instead of the asker's `budget_tokens`, and a view sized by a known window says
+/// its `budget_tokens`; the digest is the one this test printed on the N6 head `8386bcb666`, the
+/// shipped history before N6 gives the digest before, old
+/// `5e3c3e0b44993c24c03105c1a0a33f6338a5da76eb97e96ad78d3c22317ddf0c`.
+/// Re-blessed on the d58-3 stack (GH #1524 kern N14 beside GH #1526 grenzen N6): an empty place
+/// writes no `place:` line into the `frame` leaf of history's reads -- a wanted change of kern; the
+/// digest above was measured on the grenzen head without it. The digest is the one this test
+/// printed on the stack; the stack with only kern's `place` change of `frame_leaf` taken back gives
+/// the digest before, old `709b9115b447fb4edcdae4a5b44af7cf0783304af3316a8a7a7929ac9ad01d6b`.
+/// Re-blessed for GH #1524 (d58-3 treue T2, OR-583-79): history's context reads carry one read more,
+/// `j-withdrawn` (the `withdrawn` marks of the scope, so a withdrawn own answer is no said line);
+/// the only moved bytes: the stack with that read taken back gives the digest before, old
+/// `16c8c9454b3b2990a955547d36f5c6f1d1fc948eb53e11f49263c335267038e0`.
+const MASTER_OFF_DIGEST: &str = "6527ae6f6f23c18efba607d50c9c6ec388632e1747a3ce15a43ba976e925e9c9";
 
 fn digest(runs: &[&Run]) -> String {
     let all: Vec<Value> = runs

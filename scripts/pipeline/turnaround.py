@@ -722,8 +722,10 @@ def merge_gate_base(repo, master, tip, receipt_doc):
 #     refused now, fail closed on purpose;
 #   * ROADMAP.md (station `roadmap-anchors`), modified, 100644, only when the
 #     change adds release lines under `## Shipped` and nothing else
-#     (`shipped_only`): `release.sh prepare` writes the release's line there on
-#     the cut (GH #1518), after the battery measured it. An added line is a
+#     (`shipped_only`): `release.sh prepare` writes the release's line there
+#     (GH #1518) after the release gate, on top of the test-count commit
+#     (GH #1533), so the release receipt on master and a battery measured on
+#     the cut both cover it. An added line is a
 #     bullet `- vX.Y.Z: ...` (or the indented continuation of one it adds) whose
 #     version is not under § Shipped before and stands there once after. A line
 #     above or below § Shipped, prose, a heading, a twin or copy of a version, a

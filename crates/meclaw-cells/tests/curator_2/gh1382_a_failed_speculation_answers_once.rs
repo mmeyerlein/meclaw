@@ -11,7 +11,7 @@
 //! failing (a spec timeout is that `error`, `error_code timeout`), and the
 //! stored quick call failing late, after the session's next turn built its
 //! call. Pin E holds the same late error for a plain quick call with
-//! `quick_speculative` "0".
+//! `spec_ahead` "0".
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -25,7 +25,7 @@ use meclaw_core::serde_json::{self as sj, Value, json};
 
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!("")),
     ])
     .reporting_composite("talky");
@@ -366,7 +366,7 @@ fn gh1382_d_a_stored_calls_late_timeout_still_escalates_once() {
 }
 
 /// Pin E (review I1): the `tap` switch of #1382 asks no speculation -- it is
-/// the one effect of this fix while a set runs with `quick_speculative` "0".
+/// the one effect of this fix while a set runs with `spec_ahead` "0".
 /// A plain quick call whose projection fell (here: the session's next turn
 /// built its call, `f-est-old`) and that then ends in an `error` goes to the
 /// brain once, from its `-esc` copy; before #1382 `tap` read no way and the
@@ -380,8 +380,7 @@ fn gh1382_e_a_plain_quick_call_whose_projection_fell_still_escalates_once() {
         ("error", sj::from_str::<Value>(TIMEOUT).unwrap(), None),
         ("stop", json!({}), Some("Who should I call?")),
     ] {
-        let mut h =
-            Hive::with(&[("lead", "quick_speculative", json!("0"))]).reporting_composite("talky");
+        let mut h = Hive::with(&[("lead", "spec_ahead", json!("0"))]).reporting_composite("talky");
         h.check_emits = true;
         seam(&mut h, "t1", "simple", "please call my daughter");
         let quick = h.routed("quick");

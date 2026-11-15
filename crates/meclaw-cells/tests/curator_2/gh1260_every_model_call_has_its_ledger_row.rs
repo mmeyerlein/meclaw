@@ -65,8 +65,8 @@ fn every_model_call_has_its_ledger_row() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("lead", "consult_pending_ms", json!(86_400_000))])
-        .reporting_composite("talky");
+    let mut h =
+        Hive::with(&[("lead", "ask_pending_ms", json!(86_400_000))]).reporting_composite("talky");
     turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
 
     // (turn, iter, path, the ways that leave, the way of the window)
@@ -75,7 +75,7 @@ fn every_model_call_has_its_ledger_row() {
         ("t2", "0", "simple", vec!["quick"], "quick"),
         ("t3", "0", "complex", vec!["consult", "quick"], "consult"),
         ("t4", "0", "research", vec!["research", "quick"], "research"),
-        // Past `quick_max_iter` the quick voice gives the turn to the brain.
+        // Past `fast_max_iter` the quick voice gives the turn to the brain.
         ("t5", "3", "simple", vec!["brain"], "brain"),
     ];
     let mut bridge = None;

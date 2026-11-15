@@ -71,6 +71,6 @@
     ]
   },
   "description": {
-    "purpose": "The own store of `./lead` (GH #1447; `./state` of the hive `lead` since GH #1474): its rows `escalated:<session>`, `consult_pending:<session>`, the speculation rows `spec:`/`spec_held:`/`spec_fb:`/`spec_shown:<session>#<turn>`, `spec_called:<session>` (the session's last decided turns), `delta:<turn>` and `delta_fb:<session>#<turn>`, and the last verdict per session. The unique index on `state.key` makes an insert-if-absent a compare-and-set. Only the lead speaks to it."
+    "purpose": "The own store of `./lead` (GH #1447; `./state` of the hive `lead` since GH #1474): its rows `escalated:<session>`, `ask_pending:<session>`, the speculation rows `spec:`/`spec_held:`/`spec_fb:`/`spec_shown:<session>#<turn>`, `spec_called:<session>` (the session's last decided turns), `delta:<turn>` and `delta_fb:<session>#<turn>`, and the last verdict per session. The unique index on `state.key` makes an insert-if-absent a compare-and-set. Only the lead speaks to it."
   }
 }

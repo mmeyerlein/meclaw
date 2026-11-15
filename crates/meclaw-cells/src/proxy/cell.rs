@@ -39,7 +39,7 @@ pub struct ProxyCell {
     /// `handle_event` starts one, `handle` stops it once the answer is out.
     /// This is the only place that sees both ends of a turn — the I/O sub-task
     /// sees the poll and could never stop anything.
-    pub(crate) typing: TypingKeepers,
+    pub(crate) typing: TypingKeepers<i64>,
     /// Initial I/O config, consumed exactly once by `split_io`.
     pub(crate) initial_io_cfg: Option<RunIoConfig>,
     /// GH #907: the colony blob store a fetched document is committed to
@@ -626,7 +626,7 @@ impl LongRunningCell for ProxyCell {
                 if is_partial {
                     return;
                 }
-                self.typing.stop(chat_id);
+                self.typing.stop(&chat_id);
                 crate::proxy::emit::emit_inbound_error(sink, &msg, "send_failed", &detail).await;
                 return;
             }
@@ -667,9 +667,9 @@ impl LongRunningCell for ProxyCell {
             // message arrived. The ceiling (`typing_max_ms`) still ends a
             // keeper whose answer never comes.
             if hop_str("interim") == Some("1") {
-                self.typing.show_again(chat_id);
+                self.typing.show_again(&chat_id);
             } else {
-                self.typing.stop(chat_id);
+                self.typing.stop(&chat_id);
             }
             let failure = sent.err().map(|e| format!("{e:?}"));
             // GH #1043 review: book the answer, so a replay answers like this.
@@ -806,9 +806,12 @@ impl LongRunningCell for ProxyCell {
             // send only its rest; an answer that never comes is ended by the
             // next final answer of the chat, which then goes whole.
             self.typing.start(
-                &self.client,
                 chat_id,
-                std::time::Duration::from_millis(self.send_timeout_ms),
+                crate::proxy::telegram::TelegramTyping {
+                    client: self.client.clone(),
+                    chat_id,
+                    timeout: std::time::Duration::from_millis(self.send_timeout_ms),
+                },
             );
 
             // 1. State before emit (phase-5 canon): persist the cursor BEFORE emitting.

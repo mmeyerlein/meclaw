@@ -213,10 +213,11 @@ fn world_params(world: &Value) -> Value {
 /// The cells of the figure's simple-agent@2 that may spend a grant (the
 /// agent's README, "The colony's lanes"): none is born with one, the embedder
 /// names it at birth.
-const MODEL_CELLS: [&str; 9] = [
+const MODEL_CELLS: [&str; 10] = [
     "brain",
     "strong",
     "curator/summarizer",
+    "curator/relevance",
     "memory-hive/closer",
     "memory-hive/dialectic",
     "memory-hive/dreamer",

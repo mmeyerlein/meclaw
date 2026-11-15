@@ -63,3 +63,9 @@ wellbeing
 # section is one a composition registers on `in_section`; the curator passes
 # it on unnamed (until curator 1.25 it was the curator's own).
 things
+# d58-3 namen (GH #1525, R-583-1 form B): the needs a composition recalls or
+# states by are its own; the curator and the lead read them from a param
+# (`recall_needs`, `state_needs`). From this strand on the lock also reads
+# the lead hive and the params of both hives.
+memory
+orga

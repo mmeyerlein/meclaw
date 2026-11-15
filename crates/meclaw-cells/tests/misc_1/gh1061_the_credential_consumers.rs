@@ -269,9 +269,12 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
         "channels/display/judge",
         "assistants/scribe/talky/brain",
         "assistants/scribe/talky/curator/summarizer",
+        // GH #1528: the curator's ballast judge takes its grant like the summarizer.
+        "assistants/scribe/talky/curator/relevance",
         "assistants/scribe/talky/decide",
         "assistants/scribe/talky-chat/brain",
         "assistants/scribe/talky-chat/curator/summarizer",
+        "assistants/scribe/talky-chat/curator/relevance",
         "assistants/scribe/talky-chat/decide",
         // GH #1248 (T4-09): the quick voice of each talky takes its grant.
         "assistants/scribe/talky/quick",
@@ -289,6 +292,7 @@ fn gh1061_every_credential_consumer_of_a_member_is_granted() {
         "assistants/scribe/talky-chat/second_judge",
         "assistants/scribe/cogny/brain",
         "assistants/scribe/cogny/curator/summarizer",
+        "assistants/scribe/cogny/curator/relevance",
         "apps/presenter/decide",
     ]
     .iter()
@@ -909,7 +913,7 @@ fn gh1273_a_member_grown_from_a_derived_class_is_granted() {
     // Whatever else a renderer raises on the grow path is a refusal with an
     // error_code, never a traceback without an answer.
     let broken = with_screen(
-        "display@2.13.0",
+        "display@2.14.0",
         json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
                "template": "member", "credential": "not-an-object"}),
     );

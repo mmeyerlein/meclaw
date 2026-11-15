@@ -833,10 +833,21 @@ fn a_view_without_a_target_reads_as_the_turns_ask_did() {
             .collect()
     };
     assert_eq!(text(&plain), text(&off), "an empty target is none");
-    // The reads and the answer of GH #1304, nothing beside them.
+    // The reads and the answer of GH #1304, nothing beside them -- but the
+    // window the view is sized by (GH #1526, OR-583.grenzen.6): an ask
+    // without a target and without a window of its own reads the window the
+    // ledger keeps for this cell's reads, as `history_read` does
+    // (`READ_SHARE`), in the same first round -- a second leg, no second round.
     assert_eq!(plain.store.len(), 2, "rows, then blocks");
     let first = plain.store[0].messages();
-    assert_eq!(first.len(), 1, "one read: {first:?}");
+    assert_eq!(first.len(), 2, "the rows and the window: {first:?}");
+    assert_eq!(first[1]["id"], "v-limits");
+    let window: Value = sj::from_str(first[1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        window,
+        json!({"operation": "select", "table": "state", "columns": ["key", "value"],
+               "where": {"key": {"in": ["input_soft", "chars_per_token"]}}})
+    );
     assert_eq!(first[0]["id"], "t-rows");
     let op: Value = sj::from_str(first[0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(
@@ -849,7 +860,8 @@ fn a_view_without_a_target_reads_as_the_turns_ask_did() {
     );
     assert_eq!(
         plain.store[0].hop["cur_reason"],
-        json!(r#"{"budget": 1500, "limit": 8, "n": 2}"#)
+        // GH #1526: the share rides to the second round, no budget of the asker.
+        json!(r#"{"limit": 8, "n": 2, "share": 0.1875}"#)
     );
     let a = the_answer(&plain, "view");
     let mut keys: Vec<&String> = a.body.keys().collect();

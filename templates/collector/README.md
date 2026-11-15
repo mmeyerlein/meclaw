@@ -1,4 +1,4 @@
-# `collector@6.1.0`
+# `collector@7.0.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
 `assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
@@ -218,9 +218,10 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `fold_families` | `["file_ws"]` | family names longer than the first name segment; every other tool folds by its first segment, so a new hive folds without an entry. |
 | `route_wait_ms` | `0` | how long the first assembly of a turn waits for its route stamp on `in_route`, in ms ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)). `0` = no route leg. A notice on `in_route` (`hop.wait_ms`, [#1506](https://github.com/mmeyerlein/meclaw/issues/1506)) holds a turn for its stamp that long from `hop.wait_from` (else from the notice on), whatever the age of its window leg; after it this bound decides again. |
 | `route_no_recall` | `["simple"]` | the stamped paths whose turn does not wait for the memory leg; read only while `route_wait_ms` is above 0. |
-| `needs_wait_recall` | `"0"` | `"1"` or true: a turn whose route stamp names `memory` in `needs` waits for the memory leg even on a path listed in `route_no_recall` ([#1435](https://github.com/mmeyerlein/meclaw/issues/1435)); read only while `route_wait_ms` is above 0. `"0"` = the fan-in of before. |
-| `needs_no_recall` | `"0"` | `"1"` or true: a turn whose route stamp does not name `memory` in `needs` stops waiting for the memory leg on any path; a stamp that names `memory` and a fallback stamp (its `hop.fallback`: no judgement of the needs) wait as before, and the seam of a fallback stamp carries `hop.fallback` ([#1441](https://github.com/mmeyerlein/meclaw/issues/1441)); read only while `route_wait_ms` is above 0. `"0"` = the fan-in and the seam of before. |
-| `quick_speculative` | `"0"` | `"1"` or true sends one speculative `curate` of a turn before its route stamp (`hop.spec` `"1"`, empty path); read only while `route_wait_ms` is above 0. See "The speculative curate" below. |
+| `needs_wait_recall` | `"0"` | `"1"` or true: a turn whose route stamp names a need of `recall_needs` waits for the memory leg even on a path listed in `route_no_recall` ([#1435](https://github.com/mmeyerlein/meclaw/issues/1435)); read only while `route_wait_ms` is above 0. `"0"` = the fan-in of before. |
+| `needs_no_recall` | `"0"` | `"1"` or true: a turn whose route stamp names no need of `recall_needs` stops waiting for the memory leg on any path; a stamp that names `memory` and a fallback stamp (its `hop.fallback`: no judgement of the needs) wait as before, and the seam of a fallback stamp carries `hop.fallback` ([#1441](https://github.com/mmeyerlein/meclaw/issues/1441)); read only while `route_wait_ms` is above 0. `"0"` = the fan-in and the seam of before. |
+| `recall_needs` | `[]` | d58-3 namen (GH #1525, O6): the needs of the route stamp that call for the recall -- the names `needs_wait_recall` and `needs_no_recall` look for in `needs`; `[]` = no need calls for it (`needs_wait_recall` keeps no turn waiting, `needs_no_recall` ends no wait), the composition sets its names |
+| `spec_ahead` | `"0"` | Named `quick_speculative` before GH #1529. `"1"` or true sends one speculative `curate` of a turn before its route stamp (`hop.spec` `"1"`, empty path); read only while `route_wait_ms` is above 0. See "The speculative curate" below. |
 | `delegation_answer_mode` | `"fact"` | how the advise mode asks the brain to answer a delegation: `"fact"` the rule of before, `"context"` a `context` section under the delegation's id. See "The advise mode". |
 | `delegation_rule` | `""` | the rule of `delegation_answer_mode` `"context"` as text, replacing the built-in one word for word; `""` = the built-in rule. Ignored in `"fact"`. See "The advise mode". |
 | `delegation_inherits_stamp` | `"0"` | `"1"` or true lets a delegation round take the route stamp of the turn it belongs to; read only while `route_wait_ms` is above 0. See "A delegation round takes its turn's stamp". |
@@ -255,7 +256,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@6.1.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@7.0.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -491,7 +492,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@6.1.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@7.0.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -537,7 +538,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@6.1.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@7.0.0` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -622,9 +623,9 @@ hop's, else the stamp's); `hop.path` is the same value and stands in for a stamp
 the stamp is a leg of the turn, parked beside the window, memory and brief legs, and it narrows the fan-in:
 
 - a path listed in `route_no_recall` (shipped `["simple"]`) does not wait for the memory leg -- unless
-  `needs_wait_recall` is on and the stamp names `memory` in `needs` (#1435). The recall wait
+  `needs_wait_recall` is on and the stamp names a need of `recall_needs` (#1435). The recall wait
   point sits in this cell, the one place a turn's legs meet.
-- with `needs_no_recall` on, a stamp whose `needs` do not name `memory` does not wait for the memory leg
+- with `needs_no_recall` on, a stamp whose `needs` name no need of `recall_needs` does not wait for the memory leg
   on any path; a fallback stamp waits, and its fallback rides the seam as `hop.fallback` (absent for a
   judged stamp), so the curator can fold the recall of an unsure `talk` turn (#1441).
 - a stamp that carries `needs_yes` (the route cell's `stamp_needs_yes`,
@@ -638,6 +639,14 @@ the stamp is a leg of the turn, parked beside the window, memory and brief legs,
   only when the parked field is there. This cell reads neither: the curator's `class_notes` may key a turn
   note on class and move, and its `route` mark takes the trail. No knob of this cell: without the fields
   the seam is the one of before, byte for byte.
+- a stamp that carries `choices` (the route cell's product choices, the enum values its model judged,
+  [#1538](https://github.com/mmeyerlein/meclaw/issues/1538)) has them parked with the leg, and the seam
+  carries them as `hop.choices`: the JSON text of the object, keys sorted, only when the parked field is a
+  non-empty object. The curator hands them to the lead, whose gate `listen_sections` reads them. Once a set
+  declares `choices` on its route cell, `hop.choices` rides on the model call the curator sends for the turn
+  and on that call's follow-up hops, the reused delta's call included (the curator's `delta_hop` takes them
+  from the delta's stamp like its `move`). No knob
+  of this cell: without the field the seam is the one of before, byte for byte.
 - no stamp yet, and the window leg is older than `route_wait_ms`: the turn stops waiting for it. The check
   runs when a leg lands, so the route cell answers every turn (`talk` when unsure, failed or late) and its
   stamp is the occasion that ends a longer wait.
@@ -674,7 +683,7 @@ spoken turns are answered in the order they came; each round ends with its own a
 key). The cell says it on stderr: `collector: delegation_round_opened <key> beside <open keys> for session
 <id>`. With the knob shipped (`"0"`) a delegation behind an open round is deferred like any turn.
 
-**The speculative curate** (`quick_speculative` `"1"`). A turn that waits for its stamp waits for a
+**The speculative curate** (`spec_ahead` `"1"`). A turn that waits for its stamp waits for a
 decision, not for anything the curate needs. With the knob on, the fan-in runs ahead: once every expected
 leg but the stamp and the memory stands, the cell sends ONE extra `curate` of the turn, built exactly like
 the seam (the window, the memory and brief pairs that are in), with `hop.spec` `"1"` and an empty path.

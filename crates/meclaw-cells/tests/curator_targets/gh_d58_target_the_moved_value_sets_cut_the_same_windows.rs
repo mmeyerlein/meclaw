@@ -54,6 +54,32 @@ use curator_profiles::{VALUE_SETS, call_values, value_set};
 use curator_target::*;
 use meclaw_core::serde_json::{self as sj, Value, json};
 
+/// GH #1526 (d58-3 grenzen, OR-583.grenzen.12): the form a shipped profile
+/// carries `set` in -- its two token numbers as the shares of luna's window
+/// (250000, the reference the shipped shares are taken at) that give them:
+/// `keep_recent_tokens` 80000 = `keep_recent_share` 0.32, `window_target`
+/// 100000 = `window_target_share` 0.4. A null stays null.
+fn shipped_form(set: Value) -> Value {
+    let mut out = meclaw_core::serde_json::Map::new();
+    for (k, v) in set.as_object().cloned().unwrap_or_default() {
+        let share = match k.as_str() {
+            "keep_recent_tokens" => "keep_recent_share",
+            "window_target" => "window_target_share",
+            _ => {
+                out.insert(k, v);
+                continue;
+            }
+        };
+        let v = match v.as_f64() {
+            Some(0.0) => json!(0),
+            Some(n) => json!(n / 250000.0),
+            None => v,
+        };
+        out.insert(share.to_string(), v);
+    }
+    Value::Object(out)
+}
+
 const FIXTURES: &str = "crates/meclaw-cells/tests/fixtures/d58_target";
 const BLESS: &str = "MECLAW_D38_C0_BLESS";
 
@@ -238,7 +264,11 @@ fn composition_findings() -> Vec<String> {
     };
     for (cell, set) in MAIN_TARGETS {
         let got = profile_of(cell);
-        for (k, v) in value_set(set).as_object().cloned().unwrap_or_default() {
+        for (k, v) in shipped_form(value_set(set))
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+        {
             if !v.is_null() && got[&k] != v {
                 out.push(format!(
                     "{cell}: `{k}` is {} in its profile, the set {set} says {v}",
@@ -249,7 +279,7 @@ fn composition_findings() -> Vec<String> {
     }
     for cell in FAST_TARGETS {
         let got = profile_of(cell);
-        for (k, v) in fast_profile("talky")
+        for (k, v) in shipped_form(fast_profile("talky"))
             .as_object()
             .cloned()
             .unwrap_or_default()

@@ -5,7 +5,7 @@
 //! running turn (`text_of`). With `context_turns` above 0 it now asks the
 //! curator on the internal lane `in_turns_ask` and gets exactly one `turns`
 //! back. Since D58 GH #1480 that is a VIEW without a target: the lane
-//! `in_view_ask` (`view_ask: {turns, budget_tokens}`) answered by one `view`
+//! `in_view_ask` (`view_ask: {turns, share?}`) answered by one `view`
 //! whose `messages` are the person's words in the universal form
 //! `{origin: "user", type: "text", text}` and which carries no system part. The source is the curator's own wall -- no second copy of the text in
 //! `route` -- under the round rule of `history_read` (GH #925): only rows the
@@ -15,10 +15,13 @@
 //! What is handed on is the PERSON's words alone: no assistant turn, no
 //! advice, delegation, peer, app, timer or tool row; never the running turn
 //! (`context.turn_id` -- whether it already stands on the wall is a race);
-//! oldest first; within `budget_tokens` by the one token estimate of the
+//! oldest first; within the view's budget by the one token estimate of the
 //! templates (`token-estimate v1`), the oldest turns dropped first and
-//! `truncated` said. The budget is at most 4000 tokens (the decide model's
-//! window is small), and a budget at or below 0, or none, is 1500.
+//! `truncated` said. GH #1526: the budget is a share of a window (`share`,
+//! out of (0, 1] the history's `view_share`, 0.1875), no longer at most 4000
+//! tokens and 1500 by default; a window the ask names itself
+//! (`hop.input_soft`, here the test key `window`) sizes a view without a
+//! target, and without any window the turns asked come whole.
 //!
 //! The history cell runs here the way `gh1225_kh_history_reads_the_whole_wall`
 //! runs it: the shipped script, its store messages answered by the store
@@ -155,8 +158,14 @@ impl Answer {
 /// One question on `in_view_ask` during turn `t-now` of session `s-now`, in
 /// the round `round` (`None`: the context names none), asking `ask` (the
 /// body's `view_ask`, no target). With `refuse_store`, every ledger read is
-/// refused.
+/// refused. GH #1526: the test key `window` of `ask` is not asked -- it rides
+/// as the ask's own window, `hop.input_soft`.
 fn ask(h: &Hive, round: Option<&str>, ask: Value, refuse_store: bool) -> Answer {
+    let mut ask = ask;
+    let mut hop = json!({"route": "in_view_ask"});
+    if let Some(w) = ask.as_object_mut().and_then(|a| a.remove("window")) {
+        hop["input_soft"] = w;
+    }
     let cfg = cell_config("history");
     let script = cfg["params"]["script_inline"]
         .as_str()
@@ -171,7 +180,7 @@ fn ask(h: &Hive, round: Option<&str>, ask: Value, refuse_store: bool) -> Answer 
     }
     let first = Msg {
         context: obj(context),
-        hop: obj(json!({"route": "in_view_ask"})),
+        hop: obj(hop),
         body: obj(json!({"messages": [], "view_ask": ask})),
         reply_to: String::new(),
     };
@@ -369,7 +378,7 @@ fn gh1304_context_turns_feed_only_the_persons_words() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"turns": 2, "budget_tokens": 2500}),
+        json!({"turns": 2, "share": 1, "window": 2500}),
         false,
     );
     assert_eq!(a.hop["route"], "view");
@@ -392,7 +401,7 @@ fn gh1304_context_turns_feed_only_the_persons_words() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"turns": 10, "budget_tokens": 2500}),
+        json!({"turns": 10, "share": 1, "window": 2500}),
         false,
     );
     assert_eq!(names(&a), ["person-4", "person-5"], "{:?}", a.body);
@@ -400,30 +409,45 @@ fn gh1304_context_turns_feed_only_the_persons_words() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"turns": 10, "budget_tokens": 5000}),
+        json!({"turns": 10, "share": 1, "window": 5000}),
         false,
     );
     assert_eq!(
         names(&a),
-        ["person-2", "person-3", "person-4", "person-5"],
+        ["person-1", "person-2", "person-3", "person-4", "person-5"],
         "{:?}",
         a.body
     );
-    assert!(a.truncated(), "a budget over 4000 is 4000: {:?}", a.body);
+    assert!(
+        !a.truncated(),
+        "GH #1526: a budget over 4000 is no longer cut to 4000: {:?}",
+        a.body
+    );
+    // A share out of (0, 1], or none, is the history's `view_share`: 0.1875
+    // of a window of 8000 is the 1500 the default was.
     for b in [json!(0), json!(-3), Value::Null] {
-        let mut q = json!({"turns": 10});
+        let mut q = json!({"turns": 10, "window": 8000});
         if !b.is_null() {
-            q["budget_tokens"] = b.clone();
+            q["share"] = b.clone();
         }
         let a = ask(&h, Some(ROUND_E), q, false);
-        assert_eq!(names(&a), ["person-5"], "budget {b} is 1500: {:?}", a.body);
+        assert_eq!(
+            names(&a),
+            ["person-5"],
+            "share {b} is view_share: {:?}",
+            a.body
+        );
         assert!(a.truncated(), "{:?}", a.body);
     }
+    // Without any window the turns asked come whole (R-IG-1).
+    let a = ask(&h, Some(ROUND_E), json!({"turns": 10}), false);
+    assert_eq!(names(&a).len(), 5, "{:?}", a.body);
+    assert!(!a.truncated(), "{:?}", a.body);
     // Everything fits: every turn of the person, the running one never.
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"turns": 3, "budget_tokens": 4000}),
+        json!({"turns": 3, "share": 1, "window": 4000}),
         false,
     );
     assert_eq!(names(&a), ["person-3", "person-4", "person-5"]);
@@ -438,7 +462,7 @@ fn gh1304_context_turns_feed_only_the_persons_words() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"turns": 1, "budget_tokens": 100}),
+        json!({"turns": 1, "share": 1, "window": 100}),
         false,
     );
     assert_eq!(a.turns(), ["first line\nsecond line".to_string()]);
@@ -447,7 +471,7 @@ fn gh1304_context_turns_feed_only_the_persons_words() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"turns": 3, "budget_tokens": 100}),
+        json!({"turns": 3, "share": 1, "window": 100}),
         false,
     );
     assert!(a.turns().is_empty() && !a.truncated(), "{:?}", a.body);
@@ -508,7 +532,7 @@ fn gh1304_context_turns_respect_the_round() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"turns": 10, "budget_tokens": 4000}),
+        json!({"turns": 10, "share": 1, "window": 4000}),
         false,
     );
     assert_eq!(
@@ -521,7 +545,7 @@ fn gh1304_context_turns_respect_the_round() {
     let a = ask(
         &h,
         Some(other),
-        json!({"turns": 10, "budget_tokens": 4000}),
+        json!({"turns": 10, "share": 1, "window": 4000}),
         false,
     );
     assert_eq!(
@@ -530,7 +554,12 @@ fn gh1304_context_turns_respect_the_round() {
     );
 
     // Without a round nothing is read: an empty answer, refused, never silence.
-    let a = ask(&h, None, json!({"turns": 10, "budget_tokens": 4000}), false);
+    let a = ask(
+        &h,
+        None,
+        json!({"turns": 10, "share": 1, "window": 4000}),
+        false,
+    );
     assert_eq!(a.hop["route"], "view");
     assert_eq!(a.hop["refused"], "no_round", "{:?}", a.hop);
     assert!(a.turns().is_empty() && !a.truncated(), "{:?}", a.body);
@@ -538,7 +567,7 @@ fn gh1304_context_turns_respect_the_round() {
     let a = ask(
         &h,
         Some(""),
-        json!({"turns": 10, "budget_tokens": 4000}),
+        json!({"turns": 10, "share": 1, "window": 4000}),
         false,
     );
     assert_eq!(a.hop["refused"], "no_round", "an empty round is none");
@@ -548,7 +577,7 @@ fn gh1304_context_turns_respect_the_round() {
     let a = ask(
         &h,
         Some(ROUND_E),
-        json!({"turns": 10, "budget_tokens": 4000}),
+        json!({"turns": 10, "share": 1, "window": 4000}),
         true,
     );
     assert_eq!(a.hop["route"], "view");

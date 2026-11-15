@@ -14,6 +14,8 @@ pub mod collector_window;
 pub mod compaction_lane;
 pub mod cron_parse_smoke;
 pub mod curator_history;
+#[path = "../support/curator_llm.rs"]
+pub mod curator_llm;
 pub mod d53_x3b_a_set_can_switch_streaming_on;
 pub mod doc_comment_audit;
 pub mod doc_comment_audit_phase_10b;
@@ -63,6 +65,7 @@ pub mod gh1102_a_channel_credential_road_commits;
 pub mod gh1103_a_brokered_channel_takes_its_hive_s_handles;
 pub mod gh116_orphan_reap;
 pub mod gh506_an_unreadable_rule_row_does_not_close_the_lane;
+pub mod gh_d583_raten_fallback_one_window_without_a_catalog_row;
 #[path = "../mock_mcp.rs"]
 pub mod mock_mcp;
 #[path = "../mock_openai.rs"]

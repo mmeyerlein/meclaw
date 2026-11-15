@@ -204,9 +204,13 @@ fn one_list_of_words_that_are_never_a_name() {
             "{cell}: the declared default is the param"
         );
     }
-    // the curator push asks with the same words (GH #1089, KP)
-    let push = config(PUSH)["params"]["entity_stop_lang"].clone();
-    assert_eq!(push, recall, "the push and the memory hive drifted");
+    // GH #1523: the curator push holds no list any more -- it asks with the
+    // names the model named (`gh_d583_wort_push_holds_no_word_list`), so
+    // there is no copy of this list to drift from.
+    assert!(
+        config(PUSH)["params"].get("entity_stop_lang").is_none(),
+        "the push carries no copy of the list"
+    );
     // the German list is the fixture, word for word, in its order
     let path = format!("{}/{FIXTURE}", env!("CARGO_MANIFEST_DIR"));
     let raw = std::fs::read_to_string(&path)

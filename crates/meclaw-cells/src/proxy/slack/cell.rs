@@ -19,16 +19,21 @@
 //! does not jump into conversations it was not invited to.
 
 use super::client::SlackClient;
-use super::db::{claim_thread, mark_envelope_seen, owns_thread};
-use super::emit::{build_user_turn_content, split_chat_id};
+use super::db::{
+    RememberedReaction, claim_thread, forget_reaction, mark_envelope_seen, owns_thread,
+    remember_reaction, remembered_reactions,
+};
+use super::emit::{build_user_turn_content, composite_chat_id, split_chat_id};
 use super::io::{
     SlackEvent, SlackInbound, SlackIoConfig, SlackReconfig, SlackTokenSlot, SlackTokenWait,
     run_slack_io_into, wait_for_slack_tokens,
 };
 use super::params::SlackParams;
+use super::reaction::{RemoveRetry, SlackReaction, remove_until_confirmed};
 use super::wire::SlackEventKind;
 use crate::credential::CredentialSlots;
 use crate::proxy::io::CredentialWait;
+use crate::proxy::typing::{TypingCadence, TypingKeepers};
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::{Message, OriginSink, OutputSink, Path};
 use std::future::Future;
@@ -51,6 +56,38 @@ pub struct SlackCell {
     /// GH #1059: a token (or both) comes sealed from the vault. `None` = both
     /// tokens are literals (the one-release transition, OR-VG-4).
     credential: Option<SlackCredential>,
+    /// GH #1530: the emoji of the running turn's reaction (`params
+    /// .typing_reaction`); `None` = off, no reaction call at all.
+    typing_reaction: Option<String>,
+    /// GH #1530: the keepers of the running turns' reactions, one per chat
+    /// (`context.chat_id`). `handle_event` starts one, `handle` ends it with
+    /// the first answer without `interim`, the ceiling ends it otherwise.
+    typing: TypingKeepers<String>,
+    /// GH #1530: whether the reactions a previous run left standing were
+    /// taken away already (once per start, as soon as the bot token is
+    /// there).
+    left_behind_cleared: bool,
+    /// GH #1530: the task taking them away; aborted when the cell goes, like
+    /// the held keepers. Its rows stay until a removal is confirmed, so an
+    /// abort costs nothing but the next start's try.
+    left_behind: Option<tokio::task::JoinHandle<()>>,
+    /// OR-d54g.acktyp.2: how a failed `reactions.remove` is tried again.
+    remove_retry: RemoveRetry,
+    /// OR-d54g.acktyp.2: the keepers' end of the report lane -- each confirmed
+    /// removal is reported here, and the handler forgets its row.
+    reaction_reports: mpsc::UnboundedSender<SlackEvent>,
+    /// OR-d54g.acktyp.2: the other end, until the I/O half takes it in
+    /// `split_io` and hands each report on as an event. The state stays in
+    /// the tasks: no mutex, no atomics, only the handler touches the `cell.db`.
+    reaction_reports_rx: Option<mpsc::UnboundedReceiver<SlackEvent>>,
+}
+
+impl Drop for SlackCell {
+    fn drop(&mut self) {
+        if let Some(task) = self.left_behind.take() {
+            task.abort();
+        }
+    }
 }
 
 /// GH #1059: the grants of a Slack connector whose tokens the vault delivers.
@@ -106,12 +143,36 @@ pub struct SlackIo {
     cfg: SlackIoConfig,
     /// GH #1059: `Some` = sleep until the vault's tokens arrived.
     wait: Option<SlackTokenWait>,
+    /// OR-d54g.acktyp.2: the report lane, handed on to the handler.
+    reports: Option<mpsc::UnboundedReceiver<SlackEvent>>,
+}
+
+/// OR-d54g.acktyp.2: hands every report of a confirmed removal on to the
+/// handler, as an event like any other of the I/O half. Ends only when the
+/// handler is gone; with no lane (a test plays the I/O half) it never ends.
+async fn hand_on_reports(
+    reports: Option<mpsc::UnboundedReceiver<SlackEvent>>,
+    events_tx: mpsc::Sender<SlackEvent>,
+) {
+    let Some(mut reports) = reports else {
+        return std::future::pending().await;
+    };
+    while let Some(report) = reports.recv().await {
+        if events_tx.send(report).await.is_err() {
+            return; // handler gone → the cell tears down
+        }
+    }
+    // Every sender gone: the cell itself is gone.
+    std::future::pending().await
 }
 
 impl SlackCell {
     /// Builds the cell from validated params plus the client the factory made.
     pub fn new(params: &SlackParams, client: SlackClient) -> Self {
         let io_client = client.clone();
+        // OR-d54g.acktyp.2: unbounded, because a report must never wait on a
+        // full lane -- it is at most one per reaction the connector set.
+        let (reports_tx, reports_rx) = mpsc::unbounded_channel();
         Self {
             client,
             emit_to: params.emit_to.clone(),
@@ -126,7 +187,107 @@ impl SlackCell {
                 liveness: meclaw_colony::IoLivenessMark::disabled(),
             }),
             credential: None,
+            typing_reaction: params.typing_reaction.clone(),
+            typing: TypingKeepers::new(TypingCadence::for_connector(params.typing_max_ms, None)),
+            left_behind_cleared: false,
+            left_behind: None,
+            remove_retry: RemoveRetry {
+                retries: params.typing_remove_retries,
+                gap: std::time::Duration::from_millis(params.typing_remove_retry_ms),
+            },
+            reaction_reports: reports_tx,
+            reaction_reports_rx: Some(reports_rx),
         }
+    }
+
+    /// OR-d54g.acktyp.2: the far end of the report lane. The I/O half takes it
+    /// in `split_io`; a test that drives the handler alone takes it here and
+    /// hands each report to `handle_event` itself, as the I/O half would.
+    pub fn take_reaction_reports(&mut self) -> Option<mpsc::UnboundedReceiver<SlackEvent>> {
+        self.reaction_reports_rx.take()
+    }
+
+    /// GH #1530: takes away every reaction a previous run of this cell left
+    /// standing -- set, and then the cell went down before the turn's end
+    /// (the keeper and its ceiling died with it), or its removal failed after
+    /// all its tries. Runs once per start, as soon as the bot token is there
+    /// (`on_start`, else the delivery of the sealed token). The calls run in a
+    /// task of their own, each under the client's `send_timeout`, so neither
+    /// the start nor any answer waits on Slack. Reading forgets nothing
+    /// (OR-d54g.acktyp.2): a confirmed removal is reported on the lane and
+    /// forgets its row there; a failed one keeps it for the next start.
+    /// Independent of `typing_reaction`: a set that switched it off since
+    /// still takes away what the earlier run left.
+    async fn take_away_left_behind(&mut self, db: &mut DbConn) {
+        if self.left_behind_cleared
+            || self
+                .credential
+                .as_ref()
+                .is_some_and(SlackCredential::bot_pending)
+        {
+            return;
+        }
+        self.left_behind_cleared = true;
+        let rows = match db.call_with_timeout(|c| remembered_reactions(c)).await {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "slack proxy: reading the reactions left behind failed");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "slack proxy: reading the reactions left behind timed out");
+                return;
+            }
+        };
+        if rows.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        let retry = self.remove_retry;
+        let reports = self.reaction_reports.clone();
+        self.left_behind = Some(tokio::spawn(async move {
+            for r in rows {
+                match remove_until_confirmed(&client, &r, retry, &reports).await {
+                    Ok(()) => tracing::info!(
+                        channel = %r.channel,
+                        "slack proxy: took away a reaction a previous run left standing"
+                    ),
+                    Err(e) => tracing::warn!(
+                        channel = %r.channel,
+                        error = %e,
+                        "slack proxy: taking away a reaction a previous run left standing \
+                         failed -- the next start tries again"
+                    ),
+                }
+            }
+        }));
+    }
+
+    /// OR-d54g.acktyp.2: Slack confirmed the removal of `reaction` (the
+    /// keeper's report, or the start's) -- the `cell.db` forgets it. Only
+    /// here: a row whose removal was not confirmed is what the next start
+    /// takes away. A failed write is logged; the row then costs the next
+    /// start one removal of nothing, which is no failure.
+    async fn forget_removed(&self, db: &mut DbConn, reaction: RememberedReaction) {
+        match db
+            .call_with_timeout(move |c| forget_reaction(c, &reaction))
+            .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "slack proxy: forgetting a removed reaction failed")
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "slack proxy: forgetting a removed reaction timed out")
+            }
+        }
+    }
+
+    /// GH #1530: the cadence of the reaction keeper. The factory sets the
+    /// production one (ceiling = `typing_max_ms`, else the backstop the colony
+    /// resolved for this cell, GH #1099); a running keeper keeps its own.
+    pub fn set_typing_cadence(&mut self, cadence: TypingCadence) {
+        self.typing.set_cadence(cadence);
     }
 
     /// GH #1059: the app token, the bot token or both come from the vault,
@@ -318,6 +479,7 @@ impl LongRunningCell for SlackCell {
                 need_app: c.app_grant.is_some(),
                 need_bot: c.bot_grant.is_some(),
             }),
+            reports: self.reaction_reports_rx.take(),
         }
     }
 
@@ -338,15 +500,28 @@ impl LongRunningCell for SlackCell {
         reconfig_rx: mpsc::Receiver<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send {
         async move {
-            let SlackIo { mut cfg, wait } = io;
+            let SlackIo {
+                mut cfg,
+                wait,
+                reports,
+            } = io;
             let mut reconfig_rx = reconfig_rx;
-            // GH #1059: a grant's connector connects nowhere before its tokens.
-            if let Some(wait) = wait
-                && !wait_for_slack_tokens(&mut cfg, wait, &events_tx, &mut reconfig_rx).await
-            {
-                return; // handler gone → the cell tears down
+            // OR-d54g.acktyp.2: the reports of confirmed removals reach the
+            // handler beside the socket, also while it waits for its tokens.
+            let reports = hand_on_reports(reports, events_tx.clone());
+            let socket = async move {
+                // GH #1059: a grant's connector connects nowhere before its tokens.
+                if let Some(wait) = wait
+                    && !wait_for_slack_tokens(&mut cfg, wait, &events_tx, &mut reconfig_rx).await
+                {
+                    return; // handler gone → the cell tears down
+                }
+                run_slack_io_into(cfg, events_tx, reconfig_rx).await;
+            };
+            tokio::select! {
+                () = socket => {}
+                () = reports => {}
             }
-            run_slack_io_into(cfg, events_tx, reconfig_rx).await;
         }
     }
 
@@ -357,7 +532,7 @@ impl LongRunningCell for SlackCell {
     fn on_start<'a>(
         &'a mut self,
         sink: &'a OriginSink,
-        _db: &'a mut DbConn,
+        db: &'a mut DbConn,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
             let grants = self
@@ -368,6 +543,9 @@ impl LongRunningCell for SlackCell {
             for grant in grants {
                 self.ask_for_token(sink, &grant).await;
             }
+            // GH #1530: what a previous run left standing goes now -- or,
+            // with a vaulted bot token, once it arrived.
+            self.take_away_left_behind(db).await;
         }
     }
 
@@ -402,6 +580,8 @@ impl LongRunningCell for SlackCell {
             // answered with an emission.
             if body_val.get("sealed").is_some() {
                 self.accept_token(&body_val, reconfig_tx).await;
+                // GH #1530: the bot token may be what the start waited for.
+                self.take_away_left_behind(db).await;
                 return;
             }
             // GH #1059: no bot token yet → nothing to post with. Answered at
@@ -492,6 +672,10 @@ impl LongRunningCell for SlackCell {
                 Err(e) => Some(format!("cell.db consumed record failed, not sent: {e}")),
             };
             if let Some(detail) = replay_detail {
+                // GH #1530: a replayed answer is the end of its turn, as for
+                // Telegram's status (GH #515). The row goes with the confirmed
+                // removal (OR-d54g.acktyp.2), not here.
+                self.typing.stop(&chat_id);
                 crate::proxy::emit::emit_inbound_error(sink, &msg, "send_failed", &detail).await;
                 return;
             }
@@ -515,6 +699,17 @@ impl LongRunningCell for SlackCell {
                     .err()
                     .map(|e| format!("{e}"))
             };
+            // GH #1530: the answer is posted (or definitively failed, or a
+            // repeat that posts nothing) -- the reaction of the turn goes.
+            // After the post, not before: it stands while the post runs. An
+            // interim is not the answer and leaves it standing; the ceiling
+            // still ends a turn whose answer never comes. `stop` only hands
+            // the end to the keeper's task, so the removal never holds the
+            // answer up. The row in the `cell.db` goes only once the keeper
+            // reports the removal confirmed (OR-d54g.acktyp.2).
+            if msg.headers.hop.get("interim").and_then(|v| v.as_str()) != Some("1") {
+                self.typing.stop(&chat_id);
+            }
             // GH #1043 review: book the answer, so a replay answers like this.
             // A booking that fails leaves the row unconfirmed, and its replay
             // reports `unconfirmed` -- the honest answer without a record.
@@ -578,6 +773,11 @@ impl LongRunningCell for SlackCell {
                     }
                     return;
                 }
+                // OR-d54g.acktyp.2: a removal Slack confirmed -- forget its row.
+                SlackEvent::ReactionRemoved(reaction) => {
+                    self.forget_removed(db, reaction).await;
+                    return;
+                }
             };
             let now = now_unix_seconds();
 
@@ -608,6 +808,49 @@ impl LongRunningCell for SlackCell {
                 let _ = db
                     .call_with_timeout(move |c| claim_thread(c, &channel, &t, now))
                     .await;
+            }
+
+            // GH #1530: the sign of the running turn goes up before the
+            // emission, so the person sees it in the first moment. `start`
+            // only spawns the keeper's task; nothing here waits on Slack.
+            // Without the bot token there is nothing to call with.
+            if let Some(name) = self.typing_reaction.clone()
+                && !self
+                    .credential
+                    .as_ref()
+                    .is_some_and(SlackCredential::bot_pending)
+            {
+                // GH #1530: remembered before the add goes out, and forgotten
+                // only once its removal is confirmed (OR-d54g.acktyp.2), so a
+                // restart before the turn's end, a removal that failed, or an
+                // add that failed at its timeout and still went through leaves
+                // a row the next start takes away. A failed write costs the
+                // sign nothing.
+                let chat = composite_chat_id(&event.channel, thread_ts.as_deref());
+                let remembered = RememberedReaction {
+                    channel: event.channel.clone(),
+                    ts: event.ts.clone(),
+                    name,
+                };
+                let key = chat.clone();
+                let row = remembered.clone();
+                if let Err(e) = db
+                    .call_with_timeout(move |c| remember_reaction(c, &key, &row, now))
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+                {
+                    tracing::warn!(error = %e, "slack proxy: remembering the turn's reaction failed");
+                }
+                self.typing.start(
+                    chat,
+                    SlackReaction {
+                        client: self.client.clone(),
+                        reaction: remembered,
+                        retry: self.remove_retry,
+                        reports: self.reaction_reports.clone(),
+                    },
+                );
             }
 
             // 4. Emit through the OriginSink (parent=None, fresh trace).

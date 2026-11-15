@@ -29,7 +29,15 @@ const HARD: i64 = 8_000;
 /// One rebuild after two rounds of tool work; `row` the brain's catalogue
 /// row (none when `None`), `tap_rate` the rate the tap reports.
 fn rebuilt(row: Option<f64>, tap_rate: f64) -> Value {
-    let mut h = Hive::with(&[("policy", "gc", json!("0"))]).reporting_composite("talky");
+    // GH #1526 (d58-3 grenzen, OR-583.grenzen.12): talky's profile names shares of the
+    // target's window since; this case was measured with its former token
+    // numbers, which the override (token value beside the share) keeps.
+    let mut h = Hive::with(&[
+        ("policy", "gc", json!("0")),
+        ("policy", "keep_recent_tokens", json!(80000)),
+        ("policy", "window_target", json!(100000)),
+    ])
+    .reporting_composite("talky");
     if let Some(rate) = row {
         // D58 target (contract point 13): the row with the profile beside it.
         h.report_row(

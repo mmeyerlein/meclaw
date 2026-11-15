@@ -39,7 +39,7 @@ const BASE: &str = "/t";
 
 fn spec_hive(spec_tools: &str) -> Hive {
     let mut h = Hive::with(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!(spec_tools)),
     ])
     .reporting_composite("talky");
@@ -409,13 +409,34 @@ const CALL_END: &str = "has(hop.route) && hop.route == 'in_call_end'";
 /// `route_first` and `route_second_at` every exit drops (`delete_context`) -- a
 /// wanted edge change, measured on the strand's tree (9fdd650fd3), old
 /// `e997157d9589c7fc5a0ae5a1f1c2a1f3dbcf08c79c15a5f405ff48e900457fd4`.
+/// Re-blessed for d58-3 raten (GH #1532, OR-583.stapel.6): the eight model call
+/// edges of the curator (`./curator -> ./brain`, `./quick`, `./quick_spec`,
+/// `./quick_bridge`, two each) lift `tokens_per_image` beside the rate
+/// (`set_context`, the image cost of the target's row) -- the only moved bytes,
+/// measured edge by edge against the tree of 2a6c35a038, old
+/// `192ac63655b39559c7a2b62c3521341de5ea9cf2147c1b835c9c244a84789891`.
+/// Re-blessed for the merge of D54g listennote (GH #1538) into d58-3 stapel:
+/// the guard `!(has(context.call_kind) && context.call_kind == 'sections')` on
+/// the silent sections call's ways out (`./brain -> .`, `./quick -> .`,
+/// `./splitter -> ./dispatcher`, `./splitter -> .` sidecar and answer_check,
+/// `./splitter -> ./curator` in_answer_check, `./brain -> ./errors`,
+/// `./curator -> .` answer_check, `./splitter -> ./curator` in_section for every
+/// section but `memory`) -- the only moved bytes, checked edge by edge against
+/// the tree of 0042befacd, old
+/// `0fd9233e88deac23349116a24ceb03e1960e820a826216bd872edb1c5f7f90db`.
 const EDGES_6_13_1_SHA256: &str =
-    "192ac63655b39559c7a2b62c3521341de5ea9cf2147c1b835c9c244a84789891";
+    "f0fe426fea4dac9949830aab8ce59b0b39e08e3ff16cb39219a9cc9671e36df5";
 
 /// The guard #1398 adds to the brain's model door and to `./curator -> ./quick`.
 const DOOR_GUARD: &str =
     " || hop.subscriber.endsWith('/quick_spec') || hop.subscriber.endsWith('/quick_bridge')";
 const QUICK_GUARD: &str = " && !(has(hop.spec) && (hop.spec == '1' || hop.spec == 'bridge'))";
+/// The guard D58-3 limits (GH #1526) adds to the edges `./decide -> ./route`.
+const PACKAGE_GUARD: &str = " && !(has(hop.route) && hop.route == 'package')";
+
+/// GH #1528: the clause the brain's model door gained for the curator's
+/// ballast judge (`./curator/relevance`), which has a door of its own.
+const JUDGE_CLAUSE: &str = " || hop.subscriber.endsWith('/curator/relevance')";
 
 fn canonical(v: &Value) -> Value {
     match v {
@@ -433,7 +454,7 @@ fn canonical(v: &Value) -> Value {
     }
 }
 
-/// Pin 4: with `quick_speculative` "0" (shipped) not one call reaches a
+/// Pin 4: with `spec_ahead` "0" (shipped) not one call reaches a
 /// sibling -- the tool round, its bridge and a complex turn's bridge all land
 /// on `./quick` and carry no `hop.spec` -- and the edges without the new
 /// cells' are 6.13.1's byte for byte, but for the one guard each on the
@@ -518,6 +539,38 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
                 .any(|s| e["from"] == *s || e["to"] == *s)
     };
     let mut old: Vec<Value> = edges.iter().filter(|e| !sibling(e)).cloned().collect();
+    // GH #1528 (d58-3 ballast) came after this golden too: the curator's
+    // ballast judge (`./curator/relevance`) gets its model door through the
+    // curator (`. -> ./curator` on `in_model` for that subscriber), and the
+    // brain's model door excludes that subscriber like the summarizer's. Both
+    // are the judge's, not this pin's; without them the edges are the ones of
+    // the golden, byte for byte.
+    let judge_door = |e: &Value| {
+        e["from"] == "."
+            && e["to"] == "./curator"
+            && e["condition"]
+                == "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && \
+                    hop.subscriber.endsWith('/curator/relevance')"
+    };
+    assert_eq!(
+        old.iter().filter(|e| judge_door(e)).count(),
+        1,
+        "talky's one model door for the ballast judge"
+    );
+    old.retain(|e| !judge_door(e));
+    let mut judge_clause = 0;
+    for e in old.iter_mut() {
+        let c = e["condition"].as_str().unwrap_or_default();
+        if e["to"] == "./brain" && c.contains(JUDGE_CLAUSE) {
+            let bare = c.replacen(JUDGE_CLAUSE, "", 1);
+            e["condition"] = json!(bare);
+            judge_clause += 1;
+        }
+    }
+    assert_eq!(
+        judge_clause, 1,
+        "the brain's model door excludes the ballast judge"
+    );
     // D58 lead (GH #1474, contract point 5): the lead leaves the target to the
     // curate, so talky's curate edge names its main model (`hop.target`
     // `'brain'`). That one key is the lead's, not the siblings'; without it
@@ -546,6 +599,37 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
         curate_target, 1,
         "talky's curate edge names `hop.target` 'brain'"
     );
+    // D54g b3err (GH #1536): every model edge into `./errors` stamps the name
+    // of the cell that failed (`hop.failed_cell`), which the drain reports as
+    // `error_source`. That one key is the drain's, not the siblings'; without
+    // it the brain's and the quick voice's edges are the edges of 6.13.1.
+    let mut stamped = 0;
+    for e in old.iter_mut() {
+        if e["to"] != "./errors" {
+            continue;
+        }
+        let name = format!(
+            "'{}'",
+            e["from"].as_str().unwrap_or("").trim_start_matches("./")
+        );
+        let Some(modifier) = e.get_mut("modifier").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let Some(set_hop) = modifier.get_mut("set_hop").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if set_hop.remove("failed_cell") != Some(json!(name)) {
+            continue;
+        }
+        stamped += 1;
+        if set_hop.is_empty() {
+            modifier.remove("set_hop");
+        }
+        if modifier.is_empty() {
+            e.as_object_mut().expect("an edge").remove("modifier");
+        }
+    }
+    assert_eq!(stamped, 2, "the brain's and the quick voice's drain edges");
     // GH #1497 (review I2 of the prefix strand): the model call edges lift
     // the curator's refusal (`hop.tools_refused`) into the context for the
     // dispatcher; that one key is the refusal's, not this pin's.
@@ -596,6 +680,41 @@ fn gh1275_speculation_off_sends_nothing_to_the_siblings() {
     // their cell by `hop.target`, so they carry the guard against a spec or a
     // bridge no more; only the brain's model door keeps its guard.
     assert_eq!(guarded, 1, "the brain's door");
+    // D58-3 limits (GH #1526): the judge's package line leaves `./decide` on
+    // its own lane `in_limits_row` (filtered above as a package line), so the
+    // two edges `./decide -> ./route` carry a guard against it -- the line's,
+    // not the siblings'; without it they are the edges of before.
+    let mut kept_off = 0;
+    for e in old.iter_mut() {
+        let c = e["condition"].as_str().unwrap_or_default().to_string();
+        if e["from"] == "./decide" && e["to"] == "./route" && c.ends_with(PACKAGE_GUARD) {
+            e["condition"] = json!(c[..c.len() - PACKAGE_GUARD.len()].to_string());
+            kept_off += 1;
+        }
+    }
+    assert_eq!(
+        kept_off, 2,
+        "the edges `./decide -> ./route` keep the package line off"
+    );
+    // GH #1526 (d58-3 grenzen, oc1 ruling on the rate of intake and brief):
+    // every model call edge lifts the rate of the window's target beside
+    // `recall_input_soft` (`chars_per_token`, from the same head). That key
+    // is the rate's, not this pin's; every other byte stays locked.
+    let rate_lift = "has(hop.chars_per_token) ? hop.chars_per_token : ''";
+    let mut rate_lifted = 0;
+    for e in old.iter_mut() {
+        if let Some(sc) = e
+            .pointer_mut("/modifier/set_context")
+            .and_then(Value::as_object_mut)
+            && sc.get("chars_per_token") == Some(&json!(rate_lift))
+        {
+            sc.remove("chars_per_token");
+            rate_lifted += 1;
+        }
+    }
+    // The four model call edges this pin keeps (the siblings' are taken out
+    // above), the same four that lift the refusal.
+    assert_eq!(rate_lifted, 4, "the model call edges that lift the rate");
     let text = sj::to_string(&canonical(&Value::Array(old))).expect("JSON");
     let got = format!("{:x}", Sha256::digest(text.as_bytes()));
     assert_eq!(

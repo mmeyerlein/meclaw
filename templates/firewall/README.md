@@ -1,4 +1,4 @@
-# `firewall@2.5.3`
+# `firewall@2.5.4`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -83,7 +83,7 @@ screen's own `hold` route and by `in_release` / `in_sweep`.
 | # | rule | driven by | `reject_reason` | `rule_id` |
 |---|---|---|---|---|
 | H | **the hardline** | this template's code | `hardline_blocked` | `hardline:<name>` |
-| 1 | **size cap** | a quarter of the receiving model's window (`input_soft` on the turn, else `./screen`'s `input_soft_fallback`), or `./screen`'s `firewall_max_chars` | `oversize` | `size-cap` |
+| 1 | **size cap** | a quarter of the receiving model's window (`input_soft` on the turn; without one no cap below the carrier, GH #1532), or `./screen`'s `firewall_max_chars` | `oversize` | `size-cap` |
 | 2 | **unreadable rule row** | the `rules` table itself | — (the row is skipped; a receipt names it) | the offending row |
 | 3 | **sender blocklist** | `kind=sender, action=reject` | `sender_denied` | that row |
 | 4 | **sender allowlist** | `kind=sender, action=allow` | `sender_not_allowed` | `allowlist:<field>` |
@@ -441,9 +441,7 @@ other.
 
 | param | default | effect |
 |---|---|---|
-| `firewall_max_chars` | unset | an owner's size cap of one inbound turn (total characters over `messages[].text`); unset, the cap is a quarter of the receiving model's window -- `input_soft` on the turn, else the param below -- at three characters a token (GH #1085). A turn over it is refused with `reject_detail` `too_long: <n> > <max> chars`, never cut |
-| `input_soft_fallback` | catalogue row | the receiving model's window in tokens when none rides on the turn, the `input_soft` of the catalog row of the model talky's brain is born on (GH #1085, OR-IG-9): a birth token (`model_surface`), and the llm-registry's tier for a talky-class model is `light`, `openai/gpt-6-luna`. `0`: no window, no cap below the hardline |
-| `input_soft_fallback_row` | `openai/gpt-6-luna` | the catalog row `input_soft_fallback` is; the script does not read it, the drift lock `gh1085_fallback_windows_match_the_catalog` holds the two together. A screen in front of a voice born on another model sets both |
+| `firewall_max_chars` | unset | an owner's size cap of one inbound turn (total characters over `messages[].text`); unset, the cap is a quarter of the receiving model's window -- `input_soft` on the turn -- at the rate beside that window, three characters a token without one (GH #1085, GH #1532); without a window on the turn no cap below the hardline's carrier ceiling. A turn over it is refused with `reject_detail` `too_long: <n> > <max> chars`, never cut |
 | `firewall_rate_max` | `30` | turns one channel may pass per window; `0` closes the channel |
 | `firewall_rate_window_ms` | `60000` | width of the rate window in milliseconds |
 

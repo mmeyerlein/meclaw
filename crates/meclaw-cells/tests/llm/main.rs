@@ -2,6 +2,8 @@
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
 pub mod a_shipped_llm_backstop_outlasts_its_own_call;
+#[path = "../support/curator_llm.rs"]
+pub mod curator_llm;
 pub mod gh1058_the_llm_cell_on_the_shared_module;
 pub mod gh1225_every_llm_request_names_its_app;
 pub mod gh1260_the_llm_reads_a_leaked_harmony_call;

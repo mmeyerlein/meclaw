@@ -1,6 +1,8 @@
 //! Test harness `misc_4` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/curator_llm.rs"]
+pub mod curator_llm;
 pub mod gh453_the_seeded_subscription_pushes_after_subscribe;
 pub mod gh454_two_assistants_one_channel;
 pub mod gh455_a_screen_holds_two_owners;

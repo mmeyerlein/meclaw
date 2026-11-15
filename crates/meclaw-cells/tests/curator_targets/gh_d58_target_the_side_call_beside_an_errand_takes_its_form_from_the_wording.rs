@@ -39,9 +39,9 @@ fn side_of(over: Value, path: &str) -> (Vec<(Value, Value, Value)>, Value) {
         params[k] = v;
     }
     let head = json!({"channel": "text", "live": "", "session": "s1", "turn": "t1",
-                      "iter": 0, "consult_id": "", "consult_class": "", "spec": "",
+                      "iter": 0, "ask_id": "", "ask_class": "", "spec": "",
                       "escalate": ""});
-    let state = json!({"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}});
+    let state = json!({"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}});
     let stamp = json!({"path": path, "needs": [], "families": []});
     let (got, err) = cell_scope(
         "lead",

@@ -3,7 +3,7 @@
 //! WHY this file exists: the `open` part of the state block lists what the
 //! companion still waits for -- a delegation of the session
 //! (`pending:delegation:<session>#<turn>`, GH #1407) and a consult of the
-//! session (`consult_pending:<session>`, GH #1280) -- each while its row
+//! session (`ask_pending:<session>`, GH #1280) -- each while its row
 //! stands and its `until` lies ahead. A row the closing path took down, a row
 //! whose `until` passed and a row of another session are never listed: a
 //! state block that keeps a done errand open makes the model wait for an
@@ -170,7 +170,7 @@ fn an_answered_consult_leaves_the_open_list() {
     let now = chrono::Utc::now();
     put_lead_state(
         &h,
-        "consult_pending:s1",
+        "ask_pending:s1",
         &canonical(
             &json!({"consult_id": "c-1", "at": iso(backdated(5)), "wait_ms": 120000,
                            "until": iso(now + chrono::Duration::hours(1))}),
@@ -185,7 +185,7 @@ fn an_answered_consult_leaves_the_open_list() {
         h.stderr
     );
     h.tap(&c, "stop", json!({}), json!([said("One moment.")]));
-    drop_lead_state(&h, "consult_pending:s1");
+    drop_lead_state(&h, "ask_pending:s1");
     let c = h.curate("s1", "t3", 0, json!([user("Well?")]), mode("Be brief."));
     assert!(!state_line(&c).contains("open:"), "{:?}", texts(&c));
 }

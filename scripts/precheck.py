@@ -118,6 +118,18 @@ station would grade it anyway:
                     tests were red only between 22:00 and 04:00 UTC
                     (K-UHREN); the testing bans see test code only. Stock
                     lines are not graded. NOTE `no merge base` without one.
+    fixed-caps      a fixed window, budget or rate value in product code
+                    (`templates/**` configs, scripts and every
+                    `script_inline`, `crates/*/src/**`, `examples/**`) that
+                    no rule of `scripts/fixed_caps_rules.json` justifies and
+                    the baseline `scripts/fixed_caps_baseline.json` does not
+                    hold (`scripts/fixed_caps.py`, GH #1532): the model's
+                    catalog row sizes the window, a fixed number outlives
+                    every model change. A rule is a structure condition with
+                    its reason (a marked block, a function it calls, a key the
+                    cell reads), never a list of paths. A diff that touches
+                    the check, its rules or its baseline grades the whole
+                    scope; a baseline entry the tree lost is then a NOTE.
 
 NOTE -- read, do not stop. These are the review findings that repeat, and a
 note before the review is a fix round saved:
@@ -891,6 +903,14 @@ def check_wall_clock(files, repo):
     yield from wall_clock.scan(files, repo, base=_base(repo))
 
 
+def check_fixed_caps(files, repo):
+    """A new fixed window, budget or rate value without a rule that says why
+    (`scripts/fixed_caps.py`, GH #1532)."""
+    import fixed_caps
+    for f in fixed_caps.scan(files, repo, base=_base(repo)):
+        yield Finding(f.level, f.check, f.message)
+
+
 def check_kdf_off_worker(files, repo):
     """A vault key derivation put back onto a runtime worker (GH #1216)."""
     for path in files:
@@ -1090,7 +1110,8 @@ NATIVE_CHECKS = (check_fmt, check_sheet_cap, check_adr_pinned_by, check_root_fil
                  check_testing_rules, check_changelog_mark,
                  check_since_sentence, check_since_doc, check_run_artefact,
                  check_plan_cap, check_name_pattern, check_kdf_off_worker,
-                 check_recheck_mode, check_wave_name, check_wall_clock)
+                 check_recheck_mode, check_wave_name, check_wall_clock,
+                 check_fixed_caps)
 
 
 def _lock_check(name, fn):

@@ -42,7 +42,7 @@ const S2: &str = "For four people you need about 300 grams of rice. Rinse it fir
 
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!("web,weather")),
     ])
     .reporting_composite("talky");

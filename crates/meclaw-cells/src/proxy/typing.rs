@@ -26,11 +26,19 @@
 //! keeper standing; and because Telegram clients drop the status when a
 //! message of the bot arrives, the keeper is asked to show it again at once
 //! ([`TypingKeepers::show_again`]) instead of at its next regular tick.
+//!
+//! GH #1530: the keeper is shared by every platform that shows a running turn;
+//! what a platform does on the wire is its hook ([`TypingSign`]). A sign that
+//! decays (Telegram's status) is shown again every interval and ending the
+//! keeper aborts it; a sign that stays until it is taken away (a Slack
+//! reaction) is shown once, and the keeper's own task takes it away at the
+//! answer, at a repeat or at the ceiling. Either way the state lives in the
+//! keeper's task -- no mutex, no atomics -- and the cell never waits on it.
 
-use crate::proxy::telegram::TelegramClient;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -92,34 +100,85 @@ impl Default for TypingCadence {
     }
 }
 
-/// One chat's keeper: its task, and the lane that asks it for a tick now.
+/// GH #1530: one platform's hook into the keeper -- how the sign of a running
+/// turn is shown, and whether it has to be taken away again.
+///
+/// The keeper below holds what every platform shares (one task per chat, the
+/// ceiling, the answer ends it, a failed call is logged and nothing else);
+/// what a call looks like on the wire lives only in the implementations of
+/// this trait. Each call carries its own operation timeout (hard rule 12):
+/// the implementation wraps it, the keeper never waits on a call without one.
+pub trait TypingSign: Send + Sync + 'static {
+    /// The word the keeper's log lines carry as `chat_action`.
+    fn kind(&self) -> &'static str;
+
+    /// Whether the sign decays on its own and has to be shown again every
+    /// [`TypingCadence::interval`]. A sign that does not decay is shown once.
+    fn decays(&self) -> bool;
+
+    /// Whether the sign stays until it is taken away ([`Self::take_away`]).
+    /// `false`: the sign decays, ending the keeper is aborting its task.
+    fn needs_take_away(&self) -> bool;
+
+    /// Shows the sign once, under its own operation timeout.
+    fn show(&self) -> impl std::future::Future<Output = Result<(), String>> + Send;
+
+    /// Takes the sign away; every platform call it makes carries its own
+    /// operation timeout, and it may try again a bounded number of times
+    /// (Slack, OR-d54g.acktyp.2). Only called when [`Self::needs_take_away`]
+    /// says so.
+    fn take_away(&self) -> impl std::future::Future<Output = Result<(), String>> + Send;
+}
+
+/// One chat's keeper: its task, the lane that asks it for a tick now, and,
+/// for a sign that has to be taken away, the lane that ends it.
 struct Keeper {
     task: JoinHandle<()>,
     /// GH #1504: capacity 1 -- one pending request is all a keeper can use,
     /// a second one before its next tick says nothing new.
     again: mpsc::Sender<()>,
+    /// GH #1530: `Some` for a sign that stays until it is taken away. Ending
+    /// the keeper sends here (or drops it) and the task takes the sign away
+    /// itself, after the call in flight -- an abort would leave the sign
+    /// standing. `None`: the sign decays, ending is aborting.
+    end: Option<oneshot::Sender<()>>,
+}
+
+impl Keeper {
+    /// Ends the keeper: a sign that decays by aborting the task, a sign that
+    /// stays by asking the task to take it away. Never waits.
+    fn end(self) {
+        match self.end {
+            Some(end) => {
+                let _ = end.send(());
+            }
+            None => self.task.abort(),
+        }
+    }
 }
 
 /// The live keepers, one per chat at most.
 ///
-/// Keyed by `chat_id`, so a second incoming turn in the same chat REPLACES its
-/// predecessor's keeper instead of stacking a second repeater on the same chat.
-/// Growth is bounded twice over: an entry exists only while a chat has a turn in
-/// flight, every keeper self-terminates at `max_total`, and finished handles are
-/// pruned on each start. `Drop` aborts what is left — a dropped cell must not
-/// leave detached tasks calling the Bot API.
-pub struct TypingKeepers {
-    live: HashMap<i64, Keeper>,
+/// Keyed by the platform's chat address, so a second incoming turn in the same
+/// chat REPLACES its predecessor's keeper instead of stacking a second sign on
+/// the same chat (the predecessor is ended like an answered turn). Growth is
+/// bounded twice over: an entry exists only while a chat has a turn in flight,
+/// every keeper self-terminates at `max_total`, and finished handles are pruned
+/// on each start. `Drop` aborts every keeper still held. A keeper already
+/// ended (answer, replacement) is no longer held: it finishes taking its sign
+/// away on its own, bounded by the timeouts and tries of that call.
+pub struct TypingKeepers<K> {
+    live: HashMap<K, Keeper>,
     cadence: TypingCadence,
 }
 
-impl Default for TypingKeepers {
+impl<K> Default for TypingKeepers<K> {
     fn default() -> Self {
         Self::new(TypingCadence::default())
     }
 }
 
-impl TypingKeepers {
+impl<K> TypingKeepers<K> {
     /// Builds an empty registry with the given cadence.
     pub fn new(cadence: TypingCadence) -> Self {
         Self {
@@ -148,41 +207,54 @@ impl TypingKeepers {
     pub fn is_empty(&self) -> bool {
         self.live.is_empty()
     }
+}
 
-    /// Starts (or restarts) the keeper for `chat_id`.
+impl<K> TypingKeepers<K>
+where
+    // `tracing::Value`: the log lines carry the key as the platform's own
+    // type (Telegram's `chat_id` stays a number, as before GH #1530).
+    K: Eq + Hash + Clone + tracing::Value + Send + 'static,
+{
+    /// Starts (or restarts) the keeper for `chat`, showing `sign`.
     ///
     /// Called from `handle_event`, i.e. the moment an incoming turn is accepted
     /// — before the emission, because the point of the whole mechanism is that
     /// the user sees something within the first moment rather than after the
-    /// topology has had its say.
-    pub fn start(&mut self, client: &TelegramClient, chat_id: i64, request_timeout: Duration) {
+    /// topology has had its say. Only spawns a task: nothing here waits on the
+    /// platform.
+    pub fn start<S: TypingSign>(&mut self, chat: K, sign: S) {
         self.prune();
         let cadence = self.cadence;
-        let client = client.clone();
         let (again, mut asked_again) = mpsc::channel::<()>(1);
+        let (end, mut ended) = if sign.needs_take_away() {
+            let (tx, rx) = oneshot::channel::<()>();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let key = chat.clone();
         let task = tokio::spawn(async move {
+            let chat_id = key;
+            let chat_action = sign.kind();
             let started = Instant::now();
             let mut ticks: u32 = 0;
             loop {
-                match client
-                    .send_chat_action(chat_id, "typing", request_timeout)
-                    .await
-                {
+                match sign.show().await {
                     Ok(()) => {
                         if ticks == 0 {
                             // GH #515: the greppable proof that a turn showed a
                             // sign of life. INFO once per turn; the refreshes
                             // that follow are DEBUG, so a busy colony does not
-                            // pay a log line every four seconds per chat.
+                            // pay a log line every interval per chat.
                             tracing::info!(
-                                chat_action = "typing",
+                                chat_action,
                                 chat_id,
                                 interval_ms = cadence.interval.as_millis() as u64,
                                 max_total_ms = cadence.max_total.as_millis() as u64,
                                 "typing indicator started for a running turn"
                             );
                         } else {
-                            tracing::debug!(chat_action = "typing", chat_id, ticks, "refreshed");
+                            tracing::debug!(chat_action, chat_id, ticks, "refreshed");
                         }
                     }
                     Err(e) => {
@@ -191,62 +263,125 @@ impl TypingKeepers {
                         // emission, no failure code, and the next tick tries
                         // again. The turn's own deadline ends it either way.
                         tracing::warn!(
-                            chat_action = "typing",
+                            chat_action,
                             chat_id,
-                            error = format!("{e:?}"),
+                            error = e,
                             "typing indicator failed (the turn is unaffected)"
                         );
                     }
                 }
                 ticks += 1;
-                if started.elapsed().saturating_add(cadence.interval) > cadence.max_total {
+                // GH #1530: a sign that does not decay is not shown again;
+                // it stands until the answer or the ceiling, whichever first,
+                // so no further interval is booked against the ceiling.
+                let next = if sign.decays() {
+                    cadence.interval
+                } else {
+                    Duration::ZERO
+                };
+                // GH #1530: an answer that came while the call was in flight
+                // ends the keeper before the ceiling is judged, so the log
+                // never calls an answered turn unanswered.
+                let answered = match ended.as_mut() {
+                    Some(rx) => !matches!(rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+                    None => false,
+                };
+                if answered {
+                    break;
+                }
+                if started.elapsed().saturating_add(next) > cadence.max_total {
                     tracing::debug!(
-                        chat_action = "typing",
+                        chat_action,
                         chat_id,
                         ticks,
                         "typing indicator stopped - no answer within max_total"
                     );
-                    return;
+                    break;
                 }
                 // GH #1504: the next tick is due after one interval, or at
                 // once when the cell asks for it (`show_again`). Either way
                 // the ceiling check above ran first, so a request never
                 // carries the keeper past `max_total`. A closed lane (`None`)
                 // only disables its branch; the interval still runs.
+                // GH #1530: for a sign that does not decay the wait runs to
+                // the ceiling, and the end lane (the answer) cuts it short.
+                let wait = if sign.decays() {
+                    cadence.interval
+                } else {
+                    cadence.max_total.saturating_sub(started.elapsed())
+                };
+                let end_lane = async {
+                    match ended.as_mut() {
+                        Some(rx) => {
+                            let _ = rx.await;
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                };
                 tokio::select! {
-                    () = tokio::time::sleep(cadence.interval) => {}
-                    Some(()) = asked_again.recv() => {}
+                    biased;
+                    () = end_lane => break,
+                    () = tokio::time::sleep(wait) => {
+                        if !sign.decays() {
+                            tracing::debug!(
+                                chat_action,
+                                chat_id,
+                                ticks,
+                                "typing indicator stopped - no answer within max_total"
+                            );
+                            break;
+                        }
+                    }
+                    Some(()) = asked_again.recv(), if sign.decays() => {}
+                }
+            }
+            if sign.needs_take_away() {
+                // GH #1530: the sign stays until it is taken away, so the end
+                // of the keeper is one more call. Logged like the showing;
+                // nothing waits on it, and a refusal costs the turn nothing.
+                match sign.take_away().await {
+                    Ok(()) => {
+                        tracing::debug!(chat_action, chat_id, "typing indicator taken away")
+                    }
+                    Err(e) => tracing::warn!(
+                        chat_action,
+                        chat_id,
+                        error = e,
+                        "taking the typing indicator away failed (the turn is unaffected)"
+                    ),
                 }
             }
         });
-        if let Some(previous) = self.live.insert(chat_id, Keeper { task, again }) {
-            previous.task.abort();
+        if let Some(previous) = self.live.insert(chat, Keeper { task, again, end }) {
+            previous.end();
         }
     }
 
-    /// GH #1504: asks the keeper of `chat_id` to show the status again now
+    /// GH #1504: asks the keeper of `chat` to show the status again now
     /// rather than at its next regular tick.
     ///
     /// Called from `handle` after an interim message went out: the turn is
-    /// still running, but the client dropped "typing…" the moment the message
-    /// arrived, and the regular tick may be a whole interval away. Without a
-    /// standing keeper (none started, or it ran out its ceiling) this does
-    /// nothing -- the ceiling stays the ceiling. Never waits: the request is
-    /// handed over or, with one already pending, dropped.
-    pub fn show_again(&self, chat_id: i64) {
-        if let Some(keeper) = self.live.get(&chat_id) {
+    /// still running, but the client may drop a decaying status the moment
+    /// the message arrived, and the regular tick may be a whole interval away.
+    /// Without a standing keeper (none started, or it ran out its ceiling) this
+    /// does nothing -- the ceiling stays the ceiling. A sign that does not
+    /// decay ignores the request. Never waits: the request is handed over or,
+    /// with one already pending, dropped.
+    pub fn show_again(&self, chat: &K) {
+        if let Some(keeper) = self.live.get(chat) {
             let _ = keeper.again.try_send(());
         }
     }
 
-    /// Stops the keeper for `chat_id` if one is running.
+    /// Ends the keeper for `chat` if one is running.
     ///
-    /// Called from `handle` once the `sendMessage` attempt for that chat has
-    /// completed — after, not before: the status should stand until the answer
-    /// is actually on the wire.
-    pub fn stop(&mut self, chat_id: i64) {
-        if let Some(keeper) = self.live.remove(&chat_id) {
-            keeper.task.abort();
+    /// Called from `handle` once the send of the turn's answer has completed —
+    /// after, not before: the status should stand until the answer is actually
+    /// on the wire. Never waits: a sign that has to be taken away is taken
+    /// away by the keeper's own task.
+    pub fn stop(&mut self, chat: &K) {
+        if let Some(keeper) = self.live.remove(chat) {
+            keeper.end();
         }
         self.prune();
     }
@@ -259,7 +394,7 @@ impl TypingKeepers {
     }
 }
 
-impl Drop for TypingKeepers {
+impl<K> Drop for TypingKeepers<K> {
     fn drop(&mut self) {
         for (_, keeper) in self.live.drain() {
             keeper.task.abort();
@@ -323,6 +458,11 @@ mod tests {
             &["cogny/brain/config.json", "talky/brain/config.json"],
         ),
         ("egon/proxy/config.json", &["egon/worker/config.json"]),
+        // GH #1530: the Slack connector's reaction keeper, same ceiling rule.
+        (
+            "slack-agent/proxy/config.json",
+            &["slack-agent/worker/config.json"],
+        ),
     ];
 
     /// The ceiling lock runs in every tree that ships the templates, public

@@ -51,7 +51,7 @@ fn shows_note(call: &Msg) -> bool {
 fn fresh(spec_target: &str) -> Hive {
     let mut h = Hive::with(&[
         ("policy", "notes_share", json!(0.04)),
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!("")),
         ("lead", "spec_target", json!(spec_target)),
     ]);

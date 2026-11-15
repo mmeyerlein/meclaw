@@ -297,6 +297,20 @@ fn word(n: usize) -> &'static str {
         // one hundred and forty-nine, seventy-seven of round, the boundary
         // seventy-two (thirty-one doors, forty-one leaving).
         (149, "one hundred and forty-nine"),
+        // GH #1526 (d58-3 grenzen, OR-583.grenzen.15): the package line of
+        // `./decide` into `./curator` on `in_limits_row` and the curator's two
+        // asks for it `./curator -> ./decide` on `catalog_ask` (named and
+        // without a handle) -- one hundred and fifty-two, eighty of round, the
+        // boundary unchanged.
+        (80, "eighty"),
+        (152, "one hundred and fifty-two"),
+        // D54g b3err (GH #1536), merged in d58-3 stapel: the failed bridge
+        // call of a delegated turn `./quick_bridge -> ./errors` -- one
+        // hundred and fifty-four with GH #1528's model door of the ballast
+        // judge, eighty-one of round, the boundary seventy-three (thirty-two
+        // doors, forty-one leaving).
+        (81, "eighty-one"),
+        (154, "one hundred and fifty-four"),
     ]
     .into_iter()
     .collect();

@@ -50,7 +50,7 @@
 #                        organism (default meclaw-os with a key, hard-shell
 #                        without; organism asks no key, see above)
 #   MECLAW_MODEL         the model the assistant answers with
-#                        (default openai/gpt-5.6-luna, any OpenRouter slug)
+#                        (default openai/gpt-6-luna, any OpenRouter slug)
 #   MECLAW_VERSION       install this version instead of the latest (e.g. 0.33.0)
 #   MECLAW_INSTALL_DIR   binary goes here instead of ~/.local/bin
 #   MECLAW_HOME          templates, examples and colonies go here
@@ -69,7 +69,7 @@ REPO="${MECLAW_REPO:-mmeyerlein/meclaw}"
 INSTALL_DIR="${MECLAW_INSTALL_DIR:-$HOME/.local/bin}"
 MECLAW_HOME="${MECLAW_HOME:-$HOME/.local/share/meclaw}"
 PORT_START="${MECLAW_PORT:-7777}"
-MODEL="${MECLAW_MODEL:-openai/gpt-5.6-luna}"
+MODEL="${MECLAW_MODEL:-openai/gpt-6-luna}"
 KEY="${OPENROUTER_API_KEY:-}"
 # The key lives on in KEY, a shell variable nothing inherits; the exported
 # name goes now, before any child runs, so the daemon (and its

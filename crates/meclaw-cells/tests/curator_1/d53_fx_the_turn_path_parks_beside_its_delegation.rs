@@ -212,7 +212,7 @@ fn a_parked_turn_ends_its_speculation() {
         return;
     }
     let mut h = Hive::with(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!("")),
     ])
     .reporting_composite("talky");

@@ -84,8 +84,8 @@ tokens:
 
 ```
 MECLAW_VAULT_KEY_FILE=/home/you/.local/share/meclaw/colonies/meclaw-os-<stamp>.vault-key
-MODEL_BRAIN=openai/gpt-5.6-luna
-MODEL_CORE=openai/gpt-5.6-luna
+MODEL_BRAIN=openai/gpt-6-luna
+MODEL_CORE=openai/gpt-6-luna
 ...
 ```
 
@@ -166,7 +166,7 @@ takes it apart.
 |---|---|---|
 | `OPENROUTER_API_KEY` | set, the run grows the assistant and asks nothing | unset, the run asks on a terminal and otherwise boots the keyless colony |
 | `MECLAW_EXAMPLE` | which colony to grow: `hard-shell`, `meclaw-os` or `organism` (asks no key; the key goes in later with `deposit-key.sh`, #801) | `meclaw-os` with a key, `hard-shell` without |
-| `MECLAW_MODEL` | the slug written to every `MODEL_*` token in the colony's `.env` | `openai/gpt-5.6-luna` |
+| `MECLAW_MODEL` | the slug written to every `MODEL_*` token in the colony's `.env` | `openai/gpt-6-luna` |
 | `MECLAW_VERSION` | install this version; `v1.2.3` and `1.2.3` mean the same | latest |
 | `MECLAW_INSTALL_DIR` | where the binary goes | `~/.local/bin` |
 | `MECLAW_HOME` | where templates, examples and colonies go | `~/.local/share/meclaw` |

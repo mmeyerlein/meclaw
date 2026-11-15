@@ -69,6 +69,85 @@ mod tests {
         );
     }
 
+    /// GH #1531: the object form -- a JSON-path column and a tokenizer out of
+    /// the closed set -- parses, round-trips through `Serialize` unchanged,
+    /// and refuses what it cannot turn into DDL.
+    #[test]
+    fn parses_the_object_form_of_an_fts_declaration() {
+        let decl = json!({
+            "schema": {"blocks": {"hash":"text","body":"text"}},
+            "fts": {"blocks": {"columns": [{"col":"text","from":"body","path":"$.text"}],
+                               "tokenize": "trigram"}}
+        });
+        let p = StoreParams::parse(&decl).unwrap();
+        let idx = &p.fts["blocks"];
+        assert_eq!(idx.names(), vec!["text".to_string()]);
+        assert_eq!(idx.tokenize.as_deref(), Some("trigram"));
+        assert_eq!(
+            idx.columns[0].source,
+            Some(FtsSource {
+                column: "body".into(),
+                path: "$.text".into()
+            })
+        );
+        let back = meclaw_core::serde_json::to_value(&p).unwrap();
+        assert_eq!(back["fts"], decl["fts"], "the object form round-trips");
+        let plain = StoreParams::parse(&json!({
+            "schema": {"t": {"a":"text"}}, "fts": {"t": ["a"]}
+        }))
+        .unwrap();
+        assert_eq!(
+            meclaw_core::serde_json::to_value(&plain).unwrap()["fts"],
+            json!({"t": ["a"]}),
+            "the array form stays an array"
+        );
+        let bad = |fts: Value| {
+            StoreParams::parse(&json!({"schema": {"blocks": {"hash":"text","body":"text",
+                                                            "n":"int"}}, "fts": fts}))
+            .is_err()
+        };
+        // a tokenizer outside the closed set
+        assert!(bad(
+            json!({"blocks": {"columns": ["body"], "tokenize": "porter"}})
+        ));
+        // a path outside the grammar (the quote would close the SQL literal)
+        assert!(bad(
+            json!({"blocks": {"columns": [{"col":"text","from":"body","path":"$.a'"}]}})
+        ));
+        // a source column that cannot be indexed, or does not exist
+        assert!(bad(
+            json!({"blocks": {"columns": [{"col":"text","from":"n","path":"$.a"}]}})
+        ));
+        assert!(bad(
+            json!({"blocks": {"columns": [{"col":"text","from":"x","path":"$.a"}]}})
+        ));
+        // a JSON-path column named like a column of the table
+        assert!(bad(
+            json!({"blocks": {"columns": [{"col":"hash","from":"body","path":"$.a"}]}})
+        ));
+        // a JSON-path column named `rank`, the search op's own column (M-2)
+        assert!(bad(
+            json!({"blocks": {"columns": [{"col":"rank","from":"body","path":"$.a"}]}})
+        ));
+        // a declared table named like the source view, for either form (M-1)
+        for fts in [json!({"t": ["a"]}), json!({"t": {"columns": ["a"]}})] {
+            assert!(
+                StoreParams::parse(&json!({
+                    "schema": {"t": {"a":"text"}, "t_fts_src": {"x":"text"}}, "fts": fts
+                }))
+                .is_err()
+            );
+        }
+        // an unknown key, a column named twice, no columns
+        assert!(bad(json!({"blocks": {"columns": ["body"], "stem": true}})));
+        assert!(bad(json!({"blocks": {"columns": ["body", "body"]}})));
+        assert!(bad(json!({"blocks": {"columns": []}})));
+        // a JSON-path column only in the object form
+        assert!(bad(
+            json!({"blocks": [{"col":"text","from":"body","path":"$.a"}]})
+        ));
+    }
+
     #[test]
     fn parses_and_validates_fts_declaration() {
         let p = StoreParams::parse(&json!({
@@ -681,7 +760,12 @@ pub struct StoreParams {
     /// Known limit: only tables declared in `schema` can carry an index —
     /// tables created at runtime via the `create_table` op cannot (the FTS DDL
     /// is bootstrap work of the factory, not a message effect).
-    pub fts: BTreeMap<String, Vec<String>>,
+    ///
+    /// GH #1531: a table entry may also be an object `{ "columns": [...],
+    /// "tokenize": "trigram" }` whose columns are names or JSON-path columns
+    /// `{ "col", "from", "path" }` ([`FtsIndex`]); the array form is the
+    /// plain index and serializes back as an array.
+    pub fts: BTreeMap<String, FtsIndex>,
     /// GH #132 — **opt-in** writer boundary: who may change this store's data.
     ///
     /// [`WriteSurface::Open`] (the default, and what an absent key means) is the
@@ -723,6 +807,129 @@ pub struct IndexSpec {
     /// `unique_violation` with the index name.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unique: bool,
+}
+
+/// The tokenizers a full-text index may declare besides the store's own
+/// stemming one (GH #1531). A closed set: each name is formatted into DDL.
+/// `trigram` is SQLite's built-in substring tokenizer — every three-character
+/// sequence is a term, case-folded — for text where a word is found inside
+/// another (a compound) and stemming would only get in the way.
+pub const FTS_TOKENIZERS: &[&str] = &["trigram"];
+
+/// One `params.fts` table entry (P3; JSON-path columns and the tokenizer
+/// choice GH #1531).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FtsIndex {
+    /// The index columns, in index order.
+    pub columns: Vec<FtsColumn>,
+    /// A tokenizer out of [`FTS_TOKENIZERS`]; `None` is the store's stemming
+    /// tokenizer, as every index declared before GH #1531.
+    pub tokenize: Option<String>,
+}
+
+/// One column of an [`FtsIndex`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsColumn {
+    /// The column name inside the index (and the name `search` sees).
+    pub name: String,
+    /// Where its text comes from when it is not the base column of the same
+    /// name: the value at a JSON path of a base column (GH #1531). The index
+    /// then reads it through a view `<table>_fts_src`.
+    pub source: Option<FtsSource>,
+}
+
+/// The JSON-path source of an [`FtsColumn`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsSource {
+    /// The base column holding the JSON document (`text`/`json`).
+    pub column: String,
+    /// A path out of the grammar of [`crate::store::query::parse::parse_json_path`]
+    /// — the grammar admits no quote, so it can be formatted into DDL.
+    pub path: String,
+}
+
+impl FtsIndex {
+    /// The plain form: these base columns, the stemming tokenizer.
+    pub fn plain(cols: &[String]) -> Self {
+        FtsIndex {
+            columns: cols
+                .iter()
+                .map(|c| FtsColumn {
+                    name: c.clone(),
+                    source: None,
+                })
+                .collect(),
+            tokenize: None,
+        }
+    }
+
+    /// The column names inside the index, in order.
+    pub fn names(&self) -> Vec<String> {
+        self.columns.iter().map(|c| c.name.clone()).collect()
+    }
+
+    /// Whether any column reads a JSON path (and so the index reads a view).
+    pub fn has_sources(&self) -> bool {
+        self.columns.iter().any(|c| c.source.is_some())
+    }
+
+    /// Whether this is the array form (plain columns, stemming tokenizer).
+    pub fn is_plain(&self) -> bool {
+        self.tokenize.is_none() && !self.has_sources()
+    }
+}
+
+/// The array form compares equal to its column list — the shape every
+/// declaration had before GH #1531.
+impl PartialEq<Vec<String>> for FtsIndex {
+    fn eq(&self, other: &Vec<String>) -> bool {
+        self.is_plain() && self.names() == *other
+    }
+}
+
+/// What [`crate::store::ddl::apply_fts_ddl`] accepts as one table's
+/// declaration: a parsed [`FtsIndex`] or a bare column list (the plain form).
+pub trait FtsDeclaration {
+    /// The declaration as an [`FtsIndex`].
+    fn fts_index(&self) -> std::borrow::Cow<'_, FtsIndex>;
+}
+
+impl FtsDeclaration for FtsIndex {
+    fn fts_index(&self) -> std::borrow::Cow<'_, FtsIndex> {
+        std::borrow::Cow::Borrowed(self)
+    }
+}
+
+impl FtsDeclaration for Vec<String> {
+    fn fts_index(&self) -> std::borrow::Cow<'_, FtsIndex> {
+        std::borrow::Cow::Owned(FtsIndex::plain(self))
+    }
+}
+
+/// The JSON form `parse` reads back: an array for the plain form, the object
+/// form otherwise — so the β overlay round trip keeps every declaration.
+impl Serialize for FtsIndex {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.is_plain() {
+            return self.names().serialize(s);
+        }
+        let cols: Vec<Value> = self
+            .columns
+            .iter()
+            .map(|c| match &c.source {
+                None => Value::from(c.name.clone()),
+                Some(src) => meclaw_core::serde_json::json!({
+                    "col": c.name, "from": src.column, "path": src.path
+                }),
+            })
+            .collect();
+        let mut m = meclaw_core::serde_json::Map::new();
+        m.insert("columns".into(), Value::Array(cols));
+        if let Some(t) = &self.tokenize {
+            m.insert("tokenize".into(), Value::from(t.clone()));
+        }
+        Value::Object(m).serialize(s)
+    }
 }
 
 /// GH #132 — how a `store`'s write surface is bounded.
@@ -1197,13 +1404,13 @@ fn parse_canonical(
 fn parse_fts(
     raw: Option<&Value>,
     schema: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Result<BTreeMap<String, Vec<String>>, String> {
+) -> Result<BTreeMap<String, FtsIndex>, String> {
     let Some(raw) = raw else {
         return Ok(BTreeMap::new());
     };
     let obj = raw.as_object().ok_or("params.fts must be an object")?;
     let mut out = BTreeMap::new();
-    for (table, cols_v) in obj {
+    for (table, decl) in obj {
         let declared = schema
             .get(table)
             .ok_or_else(|| format!("params.fts.{table}: not declared in params.schema"))?;
@@ -1213,33 +1420,135 @@ fn parse_fts(
                  bm25 result column of the search op"
             ));
         }
-        let arr = cols_v
-            .as_array()
-            .ok_or_else(|| format!("params.fts.{table} must be an array of column names"))?;
+        // The array form (P3) or the object form (GH #1531).
+        let (arr, tokenize) = match decl {
+            Value::Array(a) => (a, None),
+            Value::Object(o) => {
+                if let Some(k) = o.keys().find(|k| *k != "columns" && *k != "tokenize") {
+                    return Err(format!(
+                        "params.fts.{table}: unknown key {k:?} (columns, tokenize)"
+                    ));
+                }
+                let a = o.get("columns").and_then(Value::as_array).ok_or_else(|| {
+                    format!("params.fts.{table}.columns must be an array of columns")
+                })?;
+                let t = match o.get("tokenize") {
+                    None => None,
+                    Some(v) => {
+                        let t = v
+                            .as_str()
+                            .filter(|t| FTS_TOKENIZERS.contains(t))
+                            .ok_or_else(|| {
+                                format!(
+                                    "params.fts.{table}.tokenize must be one of {FTS_TOKENIZERS:?}"
+                                )
+                            })?;
+                        Some(t.to_string())
+                    }
+                };
+                (a, t)
+            }
+            _ => {
+                return Err(format!(
+                    "params.fts.{table} must be an array of column names or an object with columns"
+                ));
+            }
+        };
         if arr.is_empty() {
             return Err(format!("params.fts.{table} must name at least one column"));
         }
-        let mut cols = Vec::with_capacity(arr.len());
-        for c in arr {
-            let col = c
-                .as_str()
-                .ok_or_else(|| format!("params.fts.{table}: column names must be strings"))?;
+        let indexable = |col: &str| -> Result<(), String> {
             match declared.get(col).map(String::as_str) {
-                Some("text") | Some("json") => {}
-                Some(other) => {
-                    return Err(format!(
-                        "params.fts.{table}.{col}: type {other:?} cannot be indexed (text/json only)"
-                    ));
-                }
-                None => {
-                    return Err(format!(
-                        "params.fts.{table}.{col}: not a column of that table"
-                    ));
-                }
+                Some("text") | Some("json") => Ok(()),
+                Some(other) => Err(format!(
+                    "params.fts.{table}.{col}: type {other:?} cannot be indexed (text/json only)"
+                )),
+                None => Err(format!(
+                    "params.fts.{table}.{col}: not a column of that table"
+                )),
             }
-            cols.push(col.to_string());
+        };
+        let mut cols: Vec<FtsColumn> = Vec::with_capacity(arr.len());
+        for c in arr {
+            let column = match c {
+                Value::String(col) => {
+                    indexable(col)?;
+                    FtsColumn {
+                        name: col.clone(),
+                        source: None,
+                    }
+                }
+                Value::Object(o) if decl.is_object() => {
+                    if let Some(k) = o
+                        .keys()
+                        .find(|k| !["col", "from", "path"].contains(&k.as_str()))
+                    {
+                        return Err(format!(
+                            "params.fts.{table}: unknown key {k:?} in a column (col, from, path)"
+                        ));
+                    }
+                    let field = |k: &str| {
+                        o.get(k).and_then(Value::as_str).ok_or_else(|| {
+                            format!(
+                                "params.fts.{table}: a JSON-path column names {k:?} as a string"
+                            )
+                        })
+                    };
+                    let (name, from, path) = (field("col")?, field("from")?, field("path")?);
+                    crate::store::ddl::check_new_identifier(
+                        &format!("params.fts.{table} column"),
+                        name,
+                    )?;
+                    if declared.contains_key(name) {
+                        return Err(format!(
+                            "params.fts.{table}.{name}: a JSON-path column must not share the name \
+                             of a column of the table"
+                        ));
+                    }
+                    // FTS5 keeps `rank` for itself and the search op answers
+                    // a `rank` column: refused here, not at the wake's
+                    // `CREATE VIRTUAL TABLE` (GH #1531 review M-2).
+                    if name == "rank" {
+                        return Err(format!(
+                            "params.fts.{table}: a JSON-path column named \"rank\" collides with \
+                             the bm25 result column of the search op"
+                        ));
+                    }
+                    indexable(from)?;
+                    crate::store::query::parse::parse_json_path(path)
+                        .map_err(|e| format!("params.fts.{table}.{name}: {e}"))?;
+                    FtsColumn {
+                        name: name.to_string(),
+                        source: Some(FtsSource {
+                            column: from.to_string(),
+                            path: path.to_string(),
+                        }),
+                    }
+                }
+                _ => {
+                    return Err(format!("params.fts.{table}: column names must be strings"));
+                }
+            };
+            if cols.iter().any(|c| c.name == column.name) {
+                return Err(format!("params.fts.{table}.{}: named twice", column.name));
+            }
+            cols.push(column);
         }
-        out.insert(table.clone(), cols);
+        let index = FtsIndex {
+            columns: cols,
+            tokenize,
+        };
+        // Refused for every index, not only one with a JSON-path column: the
+        // wake (re)writes a view of that name whenever a declaration gains a
+        // JSON-path column, and a declared table there would fail it (GH #1531
+        // review M-1).
+        if schema.contains_key(&format!("{table}_fts_src")) {
+            return Err(format!(
+                "params.fts.{table}: the name {table}_fts_src is kept for the view a JSON-path \
+                 column reads through and collides with a declared table"
+            ));
+        }
+        out.insert(table.clone(), index);
     }
     Ok(out)
 }

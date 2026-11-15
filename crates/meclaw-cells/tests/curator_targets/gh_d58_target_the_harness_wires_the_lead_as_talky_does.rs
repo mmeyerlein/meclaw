@@ -46,8 +46,20 @@ fn gh_d58_target_the_harness_wires_the_lead_as_talky_does() {
             ));
         }
     }
+    // d58-3 namen (GH #1525): the knobs whose default lost talky's name are
+    // wired by the harness through `namen_wiring`; they are held to talky's
+    // values the same way.
+    let namen_lead = namen_wired("lead");
+    for (key, want) in &namen_lead {
+        if lead[key.as_str()] != *want {
+            failures.push(format!(
+                "lead {key}: the harness wires {want}, talky {}",
+                lead[key.as_str()]
+            ));
+        }
+    }
     for key in &talky_keys {
-        if !LEAD_WIRING.iter().any(|(k, _)| k == key) {
+        if !LEAD_WIRING.iter().any(|(k, _)| k == key) && !namen_lead.contains_key(key.as_str()) {
             failures.push(format!("lead {key}: talky sets it, the harness does not"));
         }
     }
@@ -58,6 +70,14 @@ fn gh_d58_target_the_harness_wires_the_lead_as_talky_does() {
             failures.push(format!(
                 "intake {key}: the harness wires {value}, talky {}",
                 intake[key]
+            ));
+        }
+    }
+    for (key, want) in namen_wired("intake") {
+        if intake[key.as_str()] != want {
+            failures.push(format!(
+                "intake {key}: the harness wires {want}, talky {}",
+                intake[key.as_str()]
             ));
         }
     }

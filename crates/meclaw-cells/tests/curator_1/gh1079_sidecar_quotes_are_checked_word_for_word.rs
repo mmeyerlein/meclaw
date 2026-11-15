@@ -334,7 +334,9 @@ fn sidecar_verify_does_not_touch_answer_path() {
     );
     let cut = split("length", &turns, Some(knob));
     assert_eq!(cut[0], split("length", &turns, None)[0]);
-    // The talky's answer edge did not move, and the answer half takes it alone.
+    // The talky's answer edge did not move for the knob, and the answer half
+    // takes it alone. GH #1538 added the one guard that keeps the answer of a
+    // silent sections call from the dispatcher; nothing else of the edge moved.
     assert_eq!(
         condition(
             "templates/talky/config.json",
@@ -342,7 +344,8 @@ fn sidecar_verify_does_not_touch_answer_path() {
             "./dispatcher",
             "finish_reason"
         ),
-        "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+        "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls') \
+         && !(has(context.call_kind) && context.call_kind == 'sections')"
     );
     let t = table("/t", "templates/talky/config.json");
     assert_eq!(

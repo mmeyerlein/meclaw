@@ -536,7 +536,9 @@ pub struct LlmParams {
     /// GH #1350 (I1): the measured slow floor of the model's output rate,
     /// tokens per second, as the registry pushes it from the catalogue row
     /// (`output_tps`; a row without a measurement brings the slowest measured
-    /// row's rate). 0 (the default) = not stated. A package key. In a cell
+    /// row's rate, at most 42 tokens a second (`UNMEASURED_OUTPUT_TPS` of the
+    /// registry's hand, GH #1525)). 0 (the default) = not stated. A package
+    /// key. In a cell
     /// that opts in ([`Self::external_timeout_from_chain`]), a params update
     /// that carries it and names no `external_timeout_ms` of its own sets the
     /// operation timeout by the timeout chain over the MERGED params

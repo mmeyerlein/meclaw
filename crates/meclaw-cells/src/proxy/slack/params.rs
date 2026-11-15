@@ -7,7 +7,8 @@
 //!
 //! Timeout discipline (hard rule 12): every external op carries its own
 //! A-timeout. `connect_timeout_ms` wraps `apps.connections.open` and the
-//! WebSocket connect; `send_timeout_ms` wraps `chat.postMessage`;
+//! WebSocket connect; `send_timeout_ms` wraps `chat.postMessage` and each
+//! reaction call of the running turn's sign (GH #1530);
 //! `query_timeout_ms` wraps `cell.db` ops via `DbConn`. The Socket Mode read
 //! loop has no operation boundary to wrap, so it carries the one deadline that
 //! fits a stream instead: `idle_timeout_ms`, reset by every arriving frame.
@@ -89,6 +90,23 @@ pub struct SlackParams {
     /// defensive self-filter R4; own messages already carry `bot_id` and are
     /// dropped by R1, so this is belt-and-braces, not a requirement (D-3).
     pub bot_user_id: Option<String>,
+    /// GH #1530: the emoji name (without colons) the connector puts on the
+    /// person's message while a turn runs, and takes away once it is
+    /// answered. Needs the scope `reactions:write`. Absent or `""` = off, the
+    /// shipped value: no reaction call at all.
+    pub typing_reaction: Option<String>,
+    /// GH #1530: how long one turn's reaction may stand without an answer, in
+    /// ms -- the same knob as Telegram's (GH #1099): the backstop of the cell
+    /// that answers. Absent → the backstop this colony hands a cell that
+    /// declares none.
+    pub typing_max_ms: Option<u64>,
+    /// OR-d54g.acktyp.2: how many more times a failed `reactions.remove` is
+    /// tried, at the turn's end and at the start, before its row waits for
+    /// the next start. Default 3.
+    pub typing_remove_retries: u32,
+    /// OR-d54g.acktyp.2: the wait before such a try, in ms, unless Slack's
+    /// rate limit named a `Retry-After` (that wins). Default 2000.
+    pub typing_remove_retry_ms: u64,
 }
 
 /// Hand-written so neither token can reach a log line or a panic message.
@@ -110,6 +128,10 @@ impl std::fmt::Debug for SlackParams {
             .field("envelope_dedup_secs", &self.envelope_dedup_secs)
             .field("thread_follow", &self.thread_follow)
             .field("bot_user_id", &self.bot_user_id)
+            .field("typing_reaction", &self.typing_reaction)
+            .field("typing_max_ms", &self.typing_max_ms)
+            .field("typing_remove_retries", &self.typing_remove_retries)
+            .field("typing_remove_retry_ms", &self.typing_remove_retry_ms)
             .finish()
     }
 }
@@ -212,6 +234,39 @@ impl SlackParams {
             .get("bot_user_id")
             .and_then(|x| x.as_str())
             .map(|s| s.to_string());
+        // GH #1530: a wrong type is refused by name, not taken as "off".
+        let typing_reaction = match obj.get("typing_reaction") {
+            None => None,
+            Some(v) => {
+                let name = v
+                    .as_str()
+                    .ok_or("typing_reaction: a string (an emoji name, \"\" = off)")?;
+                (!name.is_empty()).then(|| name.to_string())
+            }
+        };
+        let typing_max_ms = match obj.get("typing_max_ms") {
+            None => None,
+            Some(v) => Some(
+                v.as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or("typing_max_ms: a positive integer (ms)")?,
+            ),
+        };
+        // OR-d54g.acktyp.2: the retries of a failed removal; a wrong type is
+        // refused by name, like the two params above.
+        let typing_remove_retries = match obj.get("typing_remove_retries") {
+            None => 3,
+            Some(v) => v
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or("typing_remove_retries: a non-negative integer")?,
+        };
+        let typing_remove_retry_ms = match obj.get("typing_remove_retry_ms") {
+            None => 2000,
+            Some(v) => v
+                .as_u64()
+                .ok_or("typing_remove_retry_ms: a non-negative integer (ms)")?,
+        };
 
         Ok(Self {
             app_token,
@@ -229,6 +284,10 @@ impl SlackParams {
             envelope_dedup_secs,
             thread_follow,
             bot_user_id,
+            typing_reaction,
+            typing_max_ms,
+            typing_remove_retries,
+            typing_remove_retry_ms,
         })
     }
 }

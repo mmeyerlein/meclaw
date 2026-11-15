@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.88.0: this release finishes the curator's new form: bounds, budgets and rates come from the target's catalog
+  row instead of fixed numbers, no shipped default names a composition, product or model, and the window keeps what
+  a conversation needs without word lists:
 - v0.87.0: this release makes a live voice session one target of the curator like any other and tightens what a
   conversation hears, says and keeps:
 - v0.86.1: in the first turn of a freshly born colony the router's crisis note reaches the model that answers it;

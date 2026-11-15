@@ -38,7 +38,7 @@ const DEFAULT_MS: u64 = 120_000;
 
 fn spec_hive() -> Hive {
     let mut over = horizon_knobs(json!({"weather": DEFAULT_MS}));
-    over.push(("lead", "quick_speculative", json!("1")));
+    over.push(("lead", "spec_ahead", json!("1")));
     over.push(("lead", "spec_tools", json!("weather")));
     moveout_hive(&over)
 }

@@ -30,6 +30,9 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -221,15 +224,21 @@ fn build_tree(td: &tempfile::TempDir, composite: &str, src: &std::path::Path, ba
             v["params"]["model"] = json!("gpt-4o-mock");
         });
     }
+    // GH #1528: every `llm` cell of the curator -- the summarizer (GH #889) and
+    // the ballast judge alike -- carries `${ctx.model}`, which a tree booted
+    // from disk cannot resolve; the helper points each at the mock.
+    curator_llm::patch_llm_cells(&root.join(format!("main/{composite}/curator")), |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
 }
 
-/// Every `llm` cell the composite carries: its brain, and since GH #889 the
-/// summarizer of the `./curator` in front of it. Neither is expected to talk on
-/// this lane; both point at the mock so the tree is provider-free by
-/// construction and not by luck.
+/// Every `llm` cell the composite carries outside its `./curator` (whose model
+/// cells the curator helper patches): its brain, and talky's quick voices. None
+/// is expected to talk on this lane; all point at the mock so the tree is
+/// provider-free by construction and not by luck.
 fn llm_cells_of(composite: &str) -> Vec<String> {
     let mut cells: Vec<String> = brains_of(composite).iter().map(|b| b.to_string()).collect();
-    cells.push("curator/summarizer".to_string());
     // GH #1248: talky's quick voice, the second model cell behind its curator.
     if composite == "talky" {
         cells.push("quick".to_string());

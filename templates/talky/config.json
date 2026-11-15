@@ -121,6 +121,7 @@
             "./quick_spec",
             "./quick_bridge",
             "./curator/summarizer",
+            "./curator/relevance",
             "./decide",
             "./screen_model",
             "./second_judge"
@@ -245,6 +246,7 @@
             "./quick_spec",
             "./quick_bridge",
             "./curator/summarizer",
+            "./curator/relevance",
             "./decide",
             "./screen_model",
             "./second_judge"
@@ -357,7 +359,7 @@
         {
           "from": ".",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick') || hop.subscriber.endsWith('/quick_spec') || hop.subscriber.endsWith('/quick_bridge') || hop.subscriber.endsWith('/screen_model') || hop.subscriber.endsWith('/second_judge')))"
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/curator/relevance') || hop.subscriber.endsWith('/decide') || hop.subscriber.endsWith('/quick') || hop.subscriber.endsWith('/quick_spec') || hop.subscriber.endsWith('/quick_bridge') || hop.subscriber.endsWith('/screen_model') || hop.subscriber.endsWith('/second_judge')))"
         },
         {
           "from": ".",
@@ -378,6 +380,11 @@
           "from": ".",
           "to": "./curator",
           "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/curator/summarizer')"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/curator/relevance')"
         },
         {
           "from": ".",
@@ -460,6 +467,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "interim": "''",
               "tools_refused": "has(hop.tools_refused) ? hop.tools_refused : ''",
               "spec": "has(hop.spec) ? hop.spec : ''",
@@ -487,6 +496,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "interim": "''",
               "tools_refused": "has(hop.tools_refused) ? hop.tools_refused : ''",
               "spec": "has(hop.spec) ? hop.spec : ''",
@@ -511,6 +522,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
               "tools_refused": "has(hop.tools_refused) ? hop.tools_refused : ''",
               "spec": "has(hop.spec) ? hop.spec : ''",
@@ -535,6 +548,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
               "tools_refused": "has(hop.tools_refused) ? hop.tools_refused : ''",
               "spec": "has(hop.spec) ? hop.spec : ''",
@@ -556,6 +571,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
               "tools_refused": "has(hop.tools_refused) ? hop.tools_refused : ''",
               "spec": "has(hop.spec) ? hop.spec : ''",
@@ -580,6 +597,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
               "tools_refused": "has(hop.tools_refused) ? hop.tools_refused : ''",
               "spec": "has(hop.spec) ? hop.spec : ''",
@@ -601,6 +620,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
               "tools_refused": "has(hop.tools_refused) ? hop.tools_refused : ''",
               "spec": "has(hop.spec) ? hop.spec : ''",
@@ -625,6 +646,8 @@
               "iter": "hop.iter",
               "episode_turn_id": "has(hop.episode_turn_id) ? hop.episode_turn_id : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "interim": "has(hop.round_open) && hop.round_open == '1' ? '1' : (has(hop.interim) ? hop.interim : '')",
               "tools_refused": "has(hop.tools_refused) ? hop.tools_refused : ''",
               "spec": "has(hop.spec) ? hop.spec : ''",
@@ -757,7 +780,7 @@
         {
           "from": "./brain",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber) && !(has(context.summarize) && context.summarize == '1')",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber) && !(has(context.summarize) && context.summarize == '1') && !(has(context.call_kind) && context.call_kind == 'sections')",
           "modifier": {
             "set_hop": {
               "route": "'partial'"
@@ -792,7 +815,7 @@
         {
           "from": "./quick",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber) && !(has(context.spec) && context.spec == '1')",
+          "condition": "has(hop.route) && hop.route == 'partial' && !has(hop.finish_reason) && !has(hop.refused_subscriber) && !(has(context.call_kind) && context.call_kind == 'sections') && !(has(context.spec) && context.spec == '1')",
           "modifier": {
             "set_hop": {
               "route": "'partial'"
@@ -969,6 +992,16 @@
           }
         },
         {
+          "from": "./decide",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'package' && !has(hop.finish_reason) && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_limits_row'"
+            }
+          }
+        },
+        {
           "from": "./quick",
           "to": "./curator",
           "condition": "has(hop.finish_reason) && !has(hop.refused_subscriber) && has(context.spec) && context.spec == '1'",
@@ -1001,12 +1034,12 @@
         {
           "from": "./splitter",
           "to": "./dispatcher",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls')"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'stop' || hop.finish_reason == 'tool_calls') && !(has(context.call_kind) && context.call_kind == 'sections')"
         },
         {
           "from": "./splitter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'sidecar' && !(has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')) && !(has(hop.sidecar_verify) && hop.sidecar_verify != '')",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && !(has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')) && !(has(hop.sidecar_verify) && hop.sidecar_verify != '') && !(has(context.call_kind) && context.call_kind == 'sections')",
           "modifier": {
             "delete_context": [
               "tool_answerer",
@@ -1038,7 +1071,7 @@
         {
           "from": "./splitter",
           "to": ".",
-          "condition": "has(hop.route) && hop.route == 'answer_check' && !(has(hop.answer_check_sources) && hop.answer_check_sources != '')",
+          "condition": "has(hop.route) && hop.route == 'answer_check' && !(has(hop.answer_check_sources) && hop.answer_check_sources != '') && !(has(context.call_kind) && context.call_kind == 'sections')",
           "modifier": {
             "delete_context": [
               "tool_answerer",
@@ -1070,7 +1103,7 @@
         {
           "from": "./splitter",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'answer_check' && has(hop.answer_check_sources) && hop.answer_check_sources != ''",
+          "condition": "has(hop.route) && hop.route == 'answer_check' && has(hop.answer_check_sources) && hop.answer_check_sources != '' && !(has(context.call_kind) && context.call_kind == 'sections')",
           "modifier": {
             "set_hop": {
               "route": "'in_answer_check'"
@@ -1080,7 +1113,7 @@
         {
           "from": "./splitter",
           "to": "./curator",
-          "condition": "has(hop.route) && hop.route == 'sidecar' && ((has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')) || (has(hop.sidecar_verify) && hop.sidecar_verify != ''))",
+          "condition": "has(hop.route) && hop.route == 'sidecar' && ((has(hop.section) && (hop.section == 'window' || hop.section == 'gap' || hop.section == 'memory' || hop.section == 'things')) || (has(hop.sidecar_verify) && hop.sidecar_verify != '')) && !(has(context.call_kind) && context.call_kind == 'sections' && !(has(hop.section) && hop.section == 'memory'))",
           "modifier": {
             "set_hop": {
               "route": "'in_section'"
@@ -1090,7 +1123,7 @@
         {
           "from": "./splitter",
           "to": "./collector",
-          "condition": "has(hop.finish_reason) && hop.finish_reason == 'length'",
+          "condition": "has(hop.finish_reason) && hop.finish_reason == 'length' && !(has(context.call_kind) && context.call_kind == 'sections')",
           "modifier": {
             "set_hop": {
               "route": "'in_answer'"
@@ -1105,17 +1138,42 @@
         {
           "from": "./brain",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.summarize) && context.summarize == '1')"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.summarize) && context.summarize == '1') && !(has(context.call_kind) && context.call_kind == 'sections')",
+          "modifier": {
+            "set_hop": {
+              "failed_cell": "'brain'"
+            }
+          }
         },
         {
           "from": "./quick",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !(has(context.call_kind) && context.call_kind == 'side')) && !(has(context.spec) && context.spec == '1')"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !(has(context.call_kind) && context.call_kind == 'side')) && !(has(context.spec) && context.spec == '1')",
+          "modifier": {
+            "set_hop": {
+              "failed_cell": "'quick'"
+            }
+          }
         },
         {
           "from": "./quick_bridge",
           "to": "./errors",
-          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !(has(context.call_kind) && context.call_kind == 'side'))"
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && !(has(context.interim) && context.interim == 'tool') && !(has(context.curator_call) && context.curator_call != '' && !(has(context.call_kind) && context.call_kind == 'side'))",
+          "modifier": {
+            "set_hop": {
+              "failed_cell": "'quick_bridge'"
+            }
+          }
+        },
+        {
+          "from": "./quick_bridge",
+          "to": "./errors",
+          "condition": "has(hop.finish_reason) && (hop.finish_reason == 'error' || hop.finish_reason == 'content_filter') && !has(hop.refused_subscriber) && has(context.delegation_id) && context.delegation_id != '' && !(has(context.interim) && context.interim == 'tool') && has(context.curator_call) && context.curator_call != '' && !(has(context.call_kind) && context.call_kind == 'side')",
+          "modifier": {
+            "set_hop": {
+              "failed_cell": "'quick_bridge'"
+            }
+          }
         },
         {
           "from": "./brain",
@@ -1609,7 +1667,7 @@
         {
           "from": "./curator",
           "to": ".",
-          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'answer_check'",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'answer_check' && !(has(context.call_kind) && context.call_kind == 'sections')",
           "modifier": {
             "delete_context": [
               "tool_answerer",
@@ -2075,7 +2133,7 @@
         {
           "from": "./decide",
           "to": "./route",
-          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !(has(context.delta) && context.delta == '1')",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !(has(context.delta) && context.delta == '1') && !(has(hop.route) && hop.route == 'package')",
           "modifier": {
             "set_hop": {
               "route": "'in_decision'",
@@ -2102,7 +2160,7 @@
         {
           "from": "./decide",
           "to": "./route",
-          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && has(context.delta) && context.delta == '1'",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && has(context.delta) && context.delta == '1' && !(has(hop.route) && hop.route == 'package')",
           "modifier": {
             "set_hop": {
               "route": "'in_decision'",
@@ -2721,6 +2779,11 @@
         },
         {
           "from": "./curator",
+          "to": "./decide",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && has(hop.catalog_for) && hop.catalog_for == 'decide'"
+        },
+        {
+          "from": "./curator",
           "to": "./brain",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
         },
@@ -2737,6 +2800,11 @@
         {
           "from": "./curator",
           "to": "./quick_bridge",
+          "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
+        },
+        {
+          "from": "./curator",
+          "to": "./decide",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'catalog_ask' && !has(hop.catalog_for)"
         },
         {

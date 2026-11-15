@@ -11,11 +11,13 @@
 //! over every `model_id` of the seed, and proves the check bites on the
 //! floating form.
 //!
-//! The slug `typesafe/jev-1.13` was checked on 2026-10-03 against the
-//! provider's free, keyless model listing: `GET /api/v1/models/<slug>/endpoints`
-//! answers 200 with the dated endpoint `typesafe/jev-1.13-20260917` and a
-//! context of 32000 tokens. The chat list `GET /api/v1/models` does not list
-//! decisions models, so it is no evidence either way.
+//! The slug `typesafe/jev-1.14` was checked on 2026-11-14 against the
+//! provider's free, keyless decisions listing
+//! (`GET /api/v1/models?output_modalities=decisions`): it names the dated
+//! endpoint `typesafe/jev-1.14-20261014` and a context of 262144 tokens, and
+//! one live decisions call on the slug answered 200 (GH #1525). The chat list
+//! `GET /api/v1/models` does not list decisions models, so it is no evidence
+//! either way.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -141,7 +143,7 @@ fn seed_slug_has_the_model_id_form() {
         !slug.contains('~'),
         "the decisions row is a listed slug, not a floating alias: {slug}"
     );
-    assert_eq!(slug, "typesafe/jev-1.13", "the slug checked on 2026-10-03");
+    assert_eq!(slug, "typesafe/jev-1.14", "the slug checked on 2026-11-14");
 
     // The pin bites: the floating form is refused by the same function.
     assert_eq!(

@@ -22,7 +22,9 @@
 //! * `event_routes` (shipped empty) names the target of an event round by
 //!   its kind (`delegation` today, said by the new head field `event`): the
 //!   round goes there without a stamp, reason `event`, with no side call
-//!   and no waiting-time feed (the session's own model leads the talk);
+//!   and no waiting-time feed (the session's own model leads the talk) --
+//!   since GH #1540 except the advise of a delegation round's first call,
+//!   condition `delegation`, which tells that model how long it waits;
 //!   fallback and escalation hold as for every target. Without an entry
 //!   everything is as before.
 //!
@@ -110,7 +112,7 @@ fn event_head(extra: Value) -> Value {
 
 /// The lead's waiting-time advise on, four seconds for the family `web`.
 fn horizon_on() -> Value {
-    json!({"horizon_advise": "1", "horizon_defaults_ms": "{\"web\": 4000}"})
+    json!({"horizon_feed": "1", "horizon_defaults_ms": "{\"web\": 4000}"})
 }
 
 fn with(mut knobs: Value, extra: Value) -> Value {
@@ -233,7 +235,7 @@ fn gh_d54g_ack_a_live_turn_is_only_heard_when_told_so() {
             ack_knobs(json!({ LIVE_TURN: "listening" })),
             "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
             json!([stamp, live_head(),
-                   {"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}}]),
+                   {"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}}]),
         );
         assert_eq!(odd, base, "{stamp}: an unknown word reads as `call`");
         assert!(
@@ -246,7 +248,7 @@ fn gh_d54g_ack_a_live_turn_is_only_heard_when_told_so() {
                 ack_knobs(json!({ LIVE_TURN: known })),
                 "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
                 json!([stamp, live_head(),
-                       {"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}}]),
+                       {"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}}]),
             );
             assert!(
                 !said.contains("live_turn"),
@@ -267,7 +269,7 @@ fn gh_d54g_ack_a_speculative_ask_of_a_heard_turn_parks() {
     // The control: with speculation on, a called turn's speculative ask is
     // a call on the speculation's target.
     let called = ack_verdict(
-        ack_knobs(json!({"quick_speculative": "1"})),
+        ack_knobs(json!({"spec_ahead": "1"})),
         stamp.clone(),
         spec_head.clone(),
     );
@@ -277,7 +279,7 @@ fn gh_d54g_ack_a_speculative_ask_of_a_heard_turn_parks() {
         "the control speculates: {called}"
     );
 
-    let listen = ack_knobs(json!({"quick_speculative": "1", LIVE_TURN: "listen"}));
+    let listen = ack_knobs(json!({"spec_ahead": "1", LIVE_TURN: "listen"}));
     let v = ack_verdict(listen.clone(), stamp.clone(), spec_head);
     assert_eq!(
         v["spec"],
@@ -314,17 +316,17 @@ fn gh_d54g_ack_a_turn_that_answers_a_consult_is_never_only_heard() {
     // ... the round that answers a consult of the same session never: the
     // advice would stay without an answer.
     for class in ["", "ask"] {
-        let head = ack_head(json!({"live": ACK_LIVE, "consult_id": "k-c-t0",
-                                   "consult_class": class}));
+        let head = ack_head(json!({"live": ACK_LIVE, "ask_id": "k-c-t0",
+                                   "ask_class": class}));
         let v = ack_verdict(listen.clone(), stamp.clone(), head.clone());
-        assert!(!heard(&v), "consult_class {class:?}: never only heard: {v}");
+        assert!(!heard(&v), "ask_class {class:?}: never only heard: {v}");
         assert_eq!(
             (v["target"].clone(), v["reason"].clone()),
             (json!("brain"), json!("answer")),
-            "consult_class {class:?}: the answer round has its target: {v}"
+            "ask_class {class:?}: the answer round has its target: {v}"
         );
         let base = ack_verdict(ack_knobs(json!({})), stamp.clone(), head);
-        assert_eq!(v, base, "consult_class {class:?}: the verdict of before");
+        assert_eq!(v, base, "ask_class {class:?}: the verdict of before");
     }
 }
 
@@ -421,7 +423,7 @@ fn gh_d54g_ack_an_event_round_goes_to_the_target_its_route_names() {
 }
 
 #[test]
-fn gh_d54g_ack_an_event_round_gets_no_side_call_and_no_waiting_feed() {
+fn gh_d54g_ack_an_event_round_gets_no_side_call_and_a_delegation_only_its_own_feed() {
     if !shipped() {
         return;
     }
@@ -440,7 +442,8 @@ fn gh_d54g_ack_an_event_round_gets_no_side_call_and_no_waiting_feed() {
     );
     assert_ne!(turn["feed"], json!([]), "the control: {turn}");
 
-    // The event round on the same fast target, the same needs: neither.
+    // The event round on the same fast target, the same needs: no side
+    // call, and since GH #1540 exactly one `delegation` feed (below).
     let v = ack_verdict(
         knobs.clone(),
         tool_turn(),
@@ -452,16 +455,52 @@ fn gh_d54g_ack_an_event_round_gets_no_side_call_and_no_waiting_feed() {
         json!([]),
         "an event round gets no side call: {v}"
     );
+    // GH #1540 (OR-54g-121): the waiting-time advise of a delegation round,
+    // under its own condition `delegation` -- the voice that started the
+    // delegation waits for it; neither `must_call` nor `external`.
+    let delegation_feed = |v: &Value| {
+        assert_eq!(v["feed"].as_array().map(Vec::len), Some(1), "{v}");
+        assert_eq!(v["feed"][0]["when"], json!("delegation"), "{v}");
+        assert_eq!(v["feed"][0]["section"], json!("horizon"), "{v}");
+        assert_eq!(v["feed"][0]["body"]["way"], json!("quick"), "{v}");
+    };
+    delegation_feed(&v);
+
+    // Nor a side call when its stamp would leave the composition
+    // (`external`); the feed is the delegation's again.
+    let v = ack_verdict(
+        knobs.clone(),
+        errand_turn(),
+        event_head(json!({"live": ACK_LIVE})),
+    );
+    assert_eq!(v["side"], json!([]), "{v}");
+    delegation_feed(&v);
+
+    // A later call of the delegation round gets none: once per delegation.
+    let v = ack_verdict(
+        knobs.clone(),
+        tool_turn(),
+        event_head(json!({"live": ACK_LIVE, "iter": "1"})),
+    );
+    assert_eq!(v["feed"], json!([]), "{v}");
+
+    // An event round of another kind, routed as well: no waiting feed.
+    let other = with(
+        ack_knobs(json!({ EVENT_ROUTES: "delegation:quick,other:quick" })),
+        horizon_on(),
+    );
+    let v = ack_verdict(
+        other,
+        tool_turn(),
+        event_head(json!({"live": ACK_LIVE, "event": "other"})),
+    );
+    assert_eq!(v["target"], json!("quick"), "{v}");
+    assert_eq!(v["side"], json!([]), "{v}");
     assert_eq!(
         v["feed"],
         json!([]),
-        "an event round gets no waiting feed: {v}"
+        "another event gets no waiting feed: {v}"
     );
-
-    // Nor when its stamp would leave the composition (`external`).
-    let v = ack_verdict(knobs, errand_turn(), event_head(json!({"live": ACK_LIVE})));
-    assert_eq!(v["side"], json!([]), "{v}");
-    assert_eq!(v["feed"], json!([]), "{v}");
 }
 
 #[test]
@@ -530,7 +569,7 @@ fn gh_d54g_ack_fresh_knobs_change_nothing() {
         ack_head(json!({})),
         live_head(),
         ack_head(json!({"live": ACK_LIVE, "spec": "1"})),
-        ack_head(json!({"live": ACK_LIVE, "consult_id": "k-c-t0"})),
+        ack_head(json!({"live": ACK_LIVE, "ask_id": "k-c-t0"})),
         event_head(json!({"live": ACK_LIVE})),
         event_head(json!({})),
     ];
@@ -585,13 +624,13 @@ fn gh_d54g_ack_a_round_keyed_as_an_event_is_never_only_heard() {
     // Review 1, I-1 (OR-d54g.ack.13): the question names the kind of an
     // event round only for a delegation, but a round is keyed as an event
     // also when it follows an answered advice. Such a round carries no
-    // `event` and no `consult_id`; only heard, it would stay without an
+    // `event` and no `ask_id`; only heard, it would stay without an
     // answer. The lead reads the form of the key, never the words.
     let listen = ack_knobs(json!({ LIVE_TURN: "listen" }));
     for stamp in [ack_stamp("talk", &[], &[]), tool_turn(), errand_turn()] {
         let keyed = ack_head(json!({"live": ACK_LIVE, "turn": ACK_EVENT_TURN}));
         assert!(
-            keyed.get("event").is_none() && keyed["consult_id"] == json!(""),
+            keyed.get("event").is_none() && keyed["ask_id"] == json!(""),
             "check of the setup: the round names no event and answers no errand: {keyed}"
         );
         let v = ack_verdict(listen.clone(), stamp.clone(), keyed.clone());
@@ -636,7 +675,7 @@ fn verdict_and_said(knobs: Value, stamp: Value, head: Value) -> (Value, String) 
         knobs,
         "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
         json!([stamp, head,
-               {"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}}]),
+               {"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}}]),
     );
     assert!(v.is_object(), "a verdict: {v} {err}");
     (v, err)

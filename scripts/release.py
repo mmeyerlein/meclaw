@@ -18,17 +18,20 @@ coordinator before anything goes public:
 
   prepare  master tip carries the release cut (version x.y.z in Cargo.toml and
            `## [x.y.z]` in CHANGELOG.md, made by `strand.sh merge --release`),
-           else exit 2. A detached worktree on that tip, the release's line
-           under `ROADMAP.md` § Shipped (the first sentence of the CHANGELOG
-           intro, committed on the cut before the gate, then
-           `check_roadmap_anchors.py` green; GH #1518), german_scan in both
-           stages, `strand.sh gate release`, `pipeline.py release count
-           --write` plus its commit, `make_export.py` with the release receipt,
-           the release notes out of the CHANGELOG section, a check that the
-           website already carries the new `Current version:` paragraph.
+           else exit 2. A detached worktree on that tip, german_scan in both
+           stages, `strand.sh gate release` (on master's tip: the gate's
+           export audit exports `master`, GH #1533), `pipeline.py release
+           count --write` plus its commit, the release's line under
+           `ROADMAP.md` § Shipped plus its commit (the first sentence of the
+           CHANGELOG intro, then `check_roadmap_anchors.py` green; GH #1518,
+           after the gate since GH #1533), `make_export.py` on the release
+           head (master plus those two record commits) with the release
+           receipt, the release notes out of the CHANGELOG section, a check
+           that the website already carries the new `Current version:`
+           paragraph.
            Ends with the four-line release request and exit 0.
   publish  master and origin/main unchanged since prepare (else exit 2), push
-           main, `github-main`, master fast-forward to the test-count commit,
+           main, `github-main`, master fast-forward to the release head,
            `tag_release.sh`, `gh run watch` on ci and release (never through a
            pipe, each with a hang mark), `gh release edit --notes-file`, the
            discussion, the website (version, test count, sitemap date), its
@@ -83,7 +86,10 @@ import time
 import tomllib
 from pathlib import Path
 
-PREPARE = ("master", "worktree", "roadmap", "german-scan", "german-strings", "gate", "count",
+# `roadmap` after `gate` and `count` (GH #1533): the gate's export audit
+# exports `master` and refuses a receipt on another tree, so a commit in the
+# release worktree before the gate made the release gate of 0.87.0 red.
+PREPARE = ("master", "worktree", "german-scan", "german-strings", "gate", "count", "roadmap",
            "export", "notes", "website-check")
 PUBLISH = ("verify", "push", "github-main", "master-ff", "tag", "ci", "release-run",
            "release-notes", "discussion", "website", "deploy", "docs", "live-check",
@@ -524,28 +530,54 @@ class Release:
         return {"worktree": str(path), "strand": self.a.strand}
 
     def step_roadmap(self):
-        """The release's line under `ROADMAP.md` § Shipped, committed on the cut,
-        then the anchor check green (GH #1518, development-rules § 1/§ 5b).
+        """The release's line under `ROADMAP.md` § Shipped, committed on top of
+        the test-count commit, then the anchor check green (GH #1518,
+        development-rules § 1/§ 5b). Returns the release head the export takes.
 
-        Before the gate, so the release gate measures the line (anchor check,
-        German scan). A line under § Shipped and nothing else is a release
-        record (`turnaround.release_offending`), so a battery measured on the
-        cut still matches the release head; any other ROADMAP.md change is
-        foreign. A tree without ROADMAP.md writes nothing here; the gate's
-        `roadmap-anchors` station is red on it.
+        After the gate, beside the test count (GH #1533): the release gate's
+        export audit exports `master` and refuses a receipt on any other tree;
+        a roadmap commit before the gate put the release worktree one commit
+        ahead of master, and the release gate of 0.87.0 was red on exactly
+        that. Like the test-count commit, this one travels in the release head
+        (`make_export.py --rev`), and the export's own audit checks the
+        roadmap anchors there (R15). No language scan reads ROADMAP.md (R8 and
+        the German-scan steps cover crates/tests/examples); the line is taken
+        word for word from the English CHANGELOG intro. A line under § Shipped and
+        nothing else is a release record (`turnaround.release_offending`), so
+        the release receipt on master and a battery measured on the cut both
+        cover the release head; any other ROADMAP.md change is foreign. A tree
+        without ROADMAP.md writes nothing here; the gate's `roadmap-anchors`
+        station is red on it.
 
         The line is the first sentence of the version's CHANGELOG intro, word
         for word: that sentence has to say what the release ships, not frame it
         ("a patch on 0.86.0" alone is a label). A line written by hand under
-        § Shipped on the cut wins; the step then adds nothing."""
+        § Shipped on the cut wins; the step then adds nothing.
+
+        "Line already there" is decided at HEAD, never at the file in the
+        worktree, and an uncommitted ROADMAP.md is red (review R1 M1): a run
+        that wrote the line and then failed to commit it (a hook, a kill) left
+        it dirty, and a rerun that read the file called it `present` and handed
+        the export a release head without the line. Behind the gate nothing
+        else catches that (before GH #1533 the gate's dirty receipt did)."""
         roadmap = self.wt() / "ROADMAP.md"
         if not roadmap.is_file():
             print("release: roadmap -- no ROADMAP.md in the release tree, no line to write", flush=True)
-            return {"roadmap": "absent"}
+            return {"roadmap": "absent", "release_head": git(self.wt(), "rev-parse", "HEAD")}
         section, _ = changelog_section((self.wt() / "CHANGELOG.md").read_text(), self.v)
         if section is None:
             raise Red(f"CHANGELOG.md has no `## [{self.v}]`")
-        text = roadmap.read_text()
+        dirty = git(self.wt(), "status", "--porcelain", "--", "ROADMAP.md")
+        if dirty:
+            raise Red(f"ROADMAP.md in the release worktree {self.wt()} has uncommitted changes "
+                      f"({dirty.strip()}), a half run of this step or a hand edit: commit it or "
+                      f"restore it (`git -C <worktree> checkout HEAD -- ROADMAP.md`), then run "
+                      f"again with --reason")
+        shown = subprocess.run(["git", "-C", str(self.wt()), "show", "HEAD:ROADMAP.md"],
+                               capture_output=True, text=True)
+        if shown.returncode != 0:
+            raise Red(f"git show HEAD:ROADMAP.md: exit {shown.returncode}: {shown.stderr.strip()}")
+        text = shown.stdout
         # a line already there (by hand, or a run before) needs no intro and gets no twin
         there = any(row.startswith(f"- v{self.v}:") for row in shipped_rows(text))
         got = text if there else with_shipped_line(text, self.v, shipped_line(section, self.v))
@@ -565,7 +597,7 @@ class Release:
             state = "written"
         run([sys.executable, "-I", self.wt() / "scripts/check_roadmap_anchors.py"],
             what="check_roadmap_anchors")
-        return {"roadmap": state}
+        return {"roadmap": state, "release_head": git(self.wt(), "rev-parse", "HEAD")}
 
     def step_german_scan(self):
         run([sys.executable, self.wt() / "plans/p5.5-fixtures/german_scan.py", "-C", self.wt(), "--strict"],
@@ -706,8 +738,9 @@ class Release:
             what="branch github-main")
 
     def step_master_ff(self):
-        # The test-count commit sits on top of the cut; without it master's
-        # docs/status.en.md would undo the count at the next export.
+        # The test-count and the roadmap commit sit on top of the cut; without
+        # them master's docs/status.en.md would undo the count and ROADMAP.md
+        # would lose the release's § Shipped line at the next export.
         head = self.data["release_head"]
         if git(self.root, "rev-parse", "master") == head:
             return
@@ -895,7 +928,7 @@ def parse(argv):
     ap.add_argument("--decide", action="append", help="passed to `strand.sh gate` as given")
     ap.add_argument("--host", help="the lane of the release gate (prepare; default: the reachable "
                                    "build lane with the most vCPU)")
-    ap.add_argument("--issue", help="issue number for the test-count commit")
+    ap.add_argument("--issue", help="issue number for the test-count and the roadmap commit")
     ap.add_argument("--title", help="discussion title (default: meclaw <x.y.z>)")
     ap.add_argument("--repo", help="the main tree (default: the main tree of this script's repo)")
     ap.add_argument("--config", default=str(DEFAULT_CONFIG))

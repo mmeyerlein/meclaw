@@ -87,8 +87,8 @@ pub struct WebParams {
 ///
 /// Measured on a large page: Slow 3G moves ~50 KB/s, and the client
 /// gives a join 10 s; a 96 KB reply arrives in ~2 s there, the old 0.69 MB
-/// one never did. A display's join is not cut at all, whatever this says:
-/// only a page above [`crate::web::render::CUT_ABOVE_BYTES`] is.
+/// one never did. Only a page above [`crate::web::render::CUT_ABOVE_BYTES`]
+/// is cut, a display's included once its picture grows past it (GH #1541).
 pub const JOIN_CHUNK_DEFAULT: usize = 96 * 1024;
 
 /// The range `join_chunk_bytes` may take: below 16 KB a city would be a

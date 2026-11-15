@@ -1,7 +1,7 @@
 //! #1279 -- the speculation leaves no rows behind and its money is
 //! booked.
 //!
-//! WHY this file exists: with `quick_speculative` on, every turn left its
+//! WHY this file exists: with `spec_ahead` on, every turn left its
 //! row `spec:<session>#<turn>` in the ledger for good -- the bare `normal`
 //! claim of a turn without speculation too -- and a kept answer that settled
 //! an `await` left the stored call's record behind although that call never
@@ -22,7 +22,7 @@ use meclaw_core::serde_json::{self as sj, Value, json};
 
 fn spec_hive() -> Hive {
     let mut h = Hive::with(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!("")),
     ])
     .reporting_composite("talky");

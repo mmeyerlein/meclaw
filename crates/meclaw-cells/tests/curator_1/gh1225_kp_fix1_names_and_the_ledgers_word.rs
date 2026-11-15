@@ -127,6 +127,31 @@ fn mentioned(h: &mut Hive, turn: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// GH #1523: a talky's curator with its `things` registered under the mark
+/// `thing` -- the names `mentioned:` may hold.
+fn named() -> Hive {
+    talky(&[(
+        "intake",
+        "sections",
+        json!({"things": {"lane": "thing_seen", "cap_share": 0.1, "mark": "thing"}}),
+    )])
+}
+
+/// The section `things` of the answer of `turn`: the names the model saw.
+fn things(h: &mut Hive, turn: &str, names: &[&str]) {
+    let items: Vec<Value> = names
+        .iter()
+        .map(|n| json!({"name": n, "kind": "person"}))
+        .collect();
+    h.lane(
+        "in_section",
+        json!({"session_id": "s1", "turn_id": turn, "iter": "0", "curator_call": "c-1",
+               "channel": "test", "audience_set": ROUND_E}),
+        json!({"section": "things"}),
+        json!({"messages": [], "section": "things", "payload": {"items": items}}),
+    );
+}
+
 fn assert_names(got: &[String], names: &[&str], nouns: &[&str]) {
     for name in names {
         assert!(got.iter().any(|g| g == name), "{name} in {got:?}");
@@ -137,13 +162,15 @@ fn assert_names(got: &[String], names: &[&str], nouns: &[&str]) {
 }
 
 /// I1: a capital behind a salutation is a name whatever its form ends in --
-/// "Hartung" (-ung) and "Bader" (Bad + -er) stay names.
+/// "Hartung" (-ung) and "Bader" (Bad + -er) stay names. Since GH #1523 the
+/// model names them (section `things`), no list decides; the salutation and
+/// the noun it does not name stay out.
 #[test]
 fn a_name_behind_a_salutation_beats_its_form() {
     if !push_shipped() {
         return;
     }
-    let mut h = talky(&[]);
+    let mut h = named();
     round(
         &mut h,
         "s1",
@@ -151,19 +178,21 @@ fn a_name_behind_a_salutation_beats_its_form() {
         "Gestern war ich mit Herrn Hartung beim Arzt, und dann kam Frau Bader vorbei.",
         "Wie schön.",
     );
+    things(&mut h, "t1", &["Hartung", "Bader"]);
     let got = mentioned(&mut h, "t2");
     assert_names(&got, &["Hartung", "Bader"], &["Herrn", "Frau", "Arzt"]);
 }
 
 /// I1: German puts an article in front of a first name and a place ("die
 /// Irmgard", "ins Rosengarten") as in front of a noun -- only the list tells
-/// them apart, so the name the base kept is kept.
+/// them apart, so the name the base kept is kept. Since GH #1523 the model
+/// tells them apart (section `things`), not a list.
 #[test]
 fn a_name_behind_an_article_is_kept() {
     if !push_shipped() {
         return;
     }
-    let mut h = talky(&[]);
+    let mut h = named();
     round(
         &mut h,
         "s1",
@@ -171,18 +200,23 @@ fn a_name_behind_an_article_is_kept() {
         "Mit der Irmgard geh ich nicht mehr ins Rosengarten, und hat die Lotte schon angerufen?",
         "Das tut mir leid.",
     );
+    things(&mut h, "t1", &["Irmgard", "Rosengarten", "Lotte"]);
     let got = mentioned(&mut h, "t2");
     assert_names(&got, &["Irmgard", "Rosengarten", "Lotte"], &["der", "die"]);
 }
 
-/// I1 (B4 (a)): a weekday or a month is a date wherever it stands -- behind
-/// "im" and "jeden" too.
+/// I1 (B4 (a)) until GH #1523: a weekday or a month was a date wherever it
+/// stood, by a list of them. Since GH #1523 no list names a date: a weekday
+/// or a month the model names no thing is no name and is not asked with. The
+/// name the model names in the next round is -- the anchor that the question
+/// was built with `mentioned:` at all, so the absence is not that of a
+/// question sent as it came.
 #[test]
-fn a_weekday_or_a_month_is_a_date_behind_an_article() {
+fn a_weekday_or_a_month_nobody_named_is_no_name() {
     if !push_shipped() {
         return;
     }
-    let mut h = talky(&[]);
+    let mut h = named();
     round(
         &mut h,
         "s1",
@@ -190,8 +224,21 @@ fn a_weekday_or_a_month_is_a_date_behind_an_article() {
         "Wir haben im Mai geheiratet, und jeden Sonntag geh ich zum Friedhof.",
         "Das ist schön.",
     );
-    let got = mentioned(&mut h, "t2");
-    assert_names(&got, &["Mai", "Sonntag"], &[]);
+    round(
+        &mut h,
+        "s1",
+        "t2",
+        "Lotte called this morning.",
+        "Good to hear.",
+    );
+    things(&mut h, "t2", &["Lotte"]);
+    let got = mentioned(&mut h, "t3");
+    assert_names(&got, &["Lotte"], &["Mai", "Sonntag"]);
+    assert_eq!(
+        got,
+        vec!["Lotte".to_string()],
+        "only the named thing: {got:?}"
+    );
 }
 
 /// I2 (A1 `delivered`): two asks in flight that both carry a find, with and

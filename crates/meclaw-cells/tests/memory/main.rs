@@ -34,6 +34,8 @@ pub mod gh_d38_m7d_an_answer_obeys_the_round;
 pub mod gh_d38_m7d_attribute_asserted_switch;
 pub mod gh_d38_m7d_dreamer_refuses_an_unattributed_belief;
 pub mod gh_d38_m7d_said_of_renders_stance;
+pub mod gh_d583_raten_mem_the_rate_and_the_image_cost_come_from_the_row;
+pub mod gh_d583_treue_recall_does_not_return_a_withdrawn_turn;
 pub mod gh_d58_f1_a_fact_carries_the_wellbeing_class;
 #[path = "../support/memory_hive_subject.rs"]
 pub mod support;

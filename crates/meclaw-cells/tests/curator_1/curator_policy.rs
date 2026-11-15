@@ -35,6 +35,32 @@ use curator_hive::*;
 use meclaw_colony::config::{EdgeSpec, HiveParams};
 use meclaw_colony::edge_table::{Edge, EdgeTable, apply_edges};
 use meclaw_core::serde_json::{Map, Value, json};
+
+/// GH #1526 (d58-3 grenzen, OR-583.grenzen.12): the form a shipped profile
+/// carries `set` in -- its two token numbers as the shares of luna's window
+/// (250000, the reference the shipped shares are taken at) that give them:
+/// `keep_recent_tokens` 80000 = `keep_recent_share` 0.32, `window_target`
+/// 100000 = `window_target_share` 0.4. A null stays null.
+fn shipped_form(set: Value) -> Value {
+    let mut out = meclaw_core::serde_json::Map::new();
+    for (k, v) in set.as_object().cloned().unwrap_or_default() {
+        let share = match k.as_str() {
+            "keep_recent_tokens" => "keep_recent_share",
+            "window_target" => "window_target_share",
+            _ => {
+                out.insert(k, v);
+                continue;
+            }
+        };
+        let v = match v.as_f64() {
+            Some(0.0) => json!(0),
+            Some(n) => json!(n / 250000.0),
+            None => v,
+        };
+        out.insert(share.to_string(), v);
+    }
+    Value::Object(out)
+}
 use meclaw_core::{Headers, Path, Uuid};
 
 /// The overrides a composite puts on its curator (`override_params`), as
@@ -204,7 +230,7 @@ fn each_role_has_its_presets() {
         let main = read_json(&repo(&format!("templates/{composite}/brain/config.json")))["params"]
             ["window_profile"]
             .clone();
-        for (k, v) in curator_profiles::value_set(set)
+        for (k, v) in shipped_form(curator_profiles::value_set(set))
             .as_object()
             .cloned()
             .unwrap_or_default()
@@ -1954,6 +1980,8 @@ fn call_id(call: &Msg) -> String {
         .to_string()
 }
 
+/// d58-3 treue T1 (OR-583-79, OR-583.treue.oc4.1): the model's own answer of the
+/// earlier session now opens with its frame; it stays in its place, the rest is unchanged.
 #[test]
 fn a_window_shows_an_earlier_session_only_to_a_round_it_was_present_for() {
     if !shipped() {
@@ -1979,7 +2007,20 @@ fn a_window_shows_an_earlier_session_only_to_a_round_it_was_present_for() {
             && shown[0].ends_with("not said now]\nasked by e, a and b"),
         "{shown:?}"
     );
-    assert_eq!(shown[1], "told e, a and b", "{shown:?}");
+    // d58-3 treue T1: the own answer of the earlier session stays in its
+    // place and opens with the frame of an own answer, since the same start.
+    let since = |t: &str| {
+        t.split("since ")
+            .nth(1)
+            .and_then(|r| r.split(" --").next())
+            .map(str::to_string)
+    };
+    assert!(
+        shown[1].starts_with("[your own answer in an earlier session, since ")
+            && shown[1].ends_with(" -- said then, not now]\ntold e, a and b")
+            && since(&shown[1]) == since(&shown[0]),
+        "{shown:?}"
+    );
     assert!(
         shown[2].starts_with("[this session, since ") && shown[2].ends_with("]\nnow e and a"),
         "{shown:?}"
@@ -2648,6 +2689,9 @@ fn policy_step_as(
         .cloned()
         .unwrap_or_default();
     params.remove("script_inline");
+    // d58-3 namen (GH #1525): the knobs a composition sets since they ship
+    // empty, as the shared harness wires them; `over` wins.
+    params.extend(namen_wired("policy"));
     for (k, v) in over.as_object().cloned().unwrap_or_default() {
         params.insert(k, v);
     }
@@ -2867,7 +2911,7 @@ fn lead_verdict_on(session: &str, hop: &Value) -> String {
     let s = |k: &str| hop[k].as_str().unwrap_or("").to_string();
     let ask = json!({"call": "c1", "session": session, "turn": "t9", "iter": "0",
                      "path": s("path"), "needs": hop["needs"].clone(),
-                     "families": hop["families"].clone(), "consult_id": s("consult_id"),
+                     "families": hop["families"].clone(), "ask_id": s("consult_id"),
                      "spec": s("spec"), "live": s("live"),
                      "at": "2026-09-30T00:00:00.000000Z", "on": ""});
     let mut params = lead_config("lead")["params"]
@@ -2880,6 +2924,7 @@ fn lead_verdict_on(session: &str, hop: &Value) -> String {
             params.insert(key.to_string(), json!(value));
         }
     }
+    params.extend(namen_wired("lead"));
     let doc = json!({
         "envelope": {"header": {"context": {"cur_phase": "ask", "cur_reason": ask.to_string()},
                                 "hop": {"operation": "bundle"}}},

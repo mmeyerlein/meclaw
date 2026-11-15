@@ -111,11 +111,23 @@ fn catalogue() -> Vec<Value> {
         .collect()
 }
 
-/// OR-IG-9: the window a producer falls back on -- the `input_soft` of the
-/// catalogue row its shipped `<key>_row` param names, the model its reader is
-/// born on.
+/// GH #1532 (OR-IG-9): the producer's own fallback window names no row: one
+/// documented window, the same in every core cell.
+const NO_ROW_WINDOW: u64 = 17500;
+
+/// OR-IG-9: the window a producer falls back on -- for its own window
+/// (`input_soft_fallback`) the one window without a catalogue row (GH #1532),
+/// which then names no row; for a second reader's (`embed_…`) the
+/// `input_soft` of the catalogue row its shipped `<key>_row` param names.
 fn named_window(cell: &str, key: &str) -> u64 {
     let cfg = template_config(cell);
+    if key == "input_soft_fallback" {
+        assert!(
+            cfg["params"].get("input_soft_fallback_row").is_none(),
+            "{cell}: the fallback names no row (GH #1532)"
+        );
+        return NO_ROW_WINDOW;
+    }
     let row = cfg["params"][format!("{key}_row")]
         .as_str()
         .unwrap_or_else(|| panic!("{cell}: params.{key}_row names the row"))
@@ -126,21 +138,6 @@ fn named_window(cell: &str, key: &str) -> u64 {
         .unwrap_or_else(|| panic!("{cell}: the catalogue has the row {row}"))["input_soft"]
         .as_u64()
         .expect("input_soft")
-}
-
-/// OR-IG-9: the row a reader born on a birth token (`ctx.model`,
-/// `model_surface`, `MODEL_FILE_SPACE`) is held to -- the llm-registry's
-/// `light` tier, the tier of a talky-class or small, inexpensive model.
-fn light_tier() -> String {
-    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../templates/llm-registry/store/seed/tiers.jsonl");
-    std::fs::read_to_string(&p)
-        .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
-        .lines()
-        .filter_map(|l| sj::from_str::<Value>(l).ok())
-        .find(|r| r["tier"] == "light" && r["active"] == 1)
-        .and_then(|r| r["model_id"].as_str().map(str::to_string))
-        .expect("a light tier")
 }
 
 /// The window of the embedding row of the model the file space embeds with
@@ -522,22 +519,18 @@ fn the_derive_fallbacks_are_rows_of_the_catalogue() {
     for (key, row, want, says) in [
         (
             "input_soft_fallback",
-            light_tier(),
+            Value::Null,
             named_window("file-space/derive", "input_soft_fallback"),
-            "the llm-registry's tier for it is `light`",
+            "the same in every core cell",
         ),
         (
             "embed_input_soft_fallback",
-            embed_model,
+            json!(embed_model),
             embedding_window(),
             "the model `./embed` is born on",
         ),
     ] {
-        assert_eq!(
-            cfg["params"][format!("{key}_row")],
-            row.as_str(),
-            "params.{key}_row"
-        );
+        assert_eq!(cfg["params"][format!("{key}_row")], row, "params.{key}_row");
         assert_eq!(cfg["params"][key], want, "params.{key}");
         assert_eq!(settings[key]["default"], want, "settings.{key}");
         assert!(
@@ -839,17 +832,11 @@ fn the_research_dispatch_hands_its_window_to_every_tool_call() {
         vec![json!(40000), json!(40000)],
         "then the context"
     );
-    let planner = template_config("research-assistant/planner")["params"]["model"].clone();
-    let cfg = template_config("research-assistant/dispatch");
-    assert_eq!(
-        cfg["params"]["input_soft_fallback_row"], planner,
-        "the planner's born row"
-    );
     let soft = named_window("research-assistant/dispatch", "input_soft_fallback");
     assert_eq!(
         windows(json!({}), json!({}), json!({})),
         vec![json!(soft), json!(soft)],
-        "then the row the planner is born on"
+        "then the one fallback window (GH #1532)"
     );
     assert_eq!(
         windows(json!({"input_soft_fallback": 0}), json!({}), json!({})),
@@ -899,14 +886,9 @@ fn the_coder_dispatch_hands_its_window_to_every_tool_call() {
             .all(|m| m["header"]["input_soft"] == 40000),
         "{out:?}"
     );
-    // OR-IG-9: before any stamp the shipped fallback rides on -- the row of
-    // the model the coder is born on (its literal), not a hand number.
-    let coder = template_config("coder-pipeline/coder")["params"]["model"].clone();
+    // GH #1532 (OR-IG-9): before any stamp the shipped fallback rides on --
+    // the one documented window without a catalogue row.
     let cfg = template_config("coder-pipeline/dispatch");
-    assert_eq!(
-        cfg["params"]["input_soft_fallback_row"], coder,
-        "the coder's born row"
-    );
     let soft = named_window("coder-pipeline/dispatch", "input_soft_fallback");
     assert_eq!(cfg["params"]["input_soft_fallback"], soft);
     let setting = &cfg["contract"]["settings"]["input_soft_fallback"];
@@ -914,7 +896,7 @@ fn the_coder_dispatch_hands_its_window_to_every_tool_call() {
     assert!(
         setting["description"]
             .as_str()
-            .is_some_and(|d| d.contains("the model `./coder` is born on")),
+            .is_some_and(|d| d.contains("the same in every core cell")),
         "{setting}"
     );
     let out = run(
@@ -985,7 +967,7 @@ fn a_builder_refusal_reaches_the_model_with_its_whole_reason() {
 // ═══════════════════════════════════════════════════════════ the firewall
 
 /// One turn through the shipped screen, its params as shipped (`over` on
-/// top) -- the fallback window among them.
+/// top).
 fn screen_with(text: &str, over: Value, hop_window: Option<u64>) -> Value {
     let mut hop = json!({"route": "in_turn"});
     if let Some(w) = hop_window {
@@ -1007,27 +989,22 @@ fn screen(text: &str, hop_window: Option<u64>) -> Value {
 }
 
 /// The road a turn takes in a member: the member's firewall is the shipped
-/// template, by reference, and overrides none of its params -- so the
-/// fallback the screen ships is the one a running member screens with.
+/// template, by reference, and overrides none of its params -- so a running
+/// member screens as the template ships: without a fallback window (GH #1532,
+/// OR-583.raten.oc4.1), a turn without a window is bounded by the carrier.
 #[test]
-fn the_member_screens_with_the_catalogue_fallback() {
+fn the_member_screens_without_a_fallback_window() {
     let cfg = template_config("firewall/screen");
-    // OR-IG-9: the row of the model talky's brain is born on -- a birth
-    // token (`model_surface`), so the `light` tier.
-    assert_eq!(
-        cfg["params"]["input_soft_fallback_row"],
-        light_tier().as_str()
-    );
-    let soft = named_window("firewall/screen", "input_soft_fallback");
-    assert_eq!(cfg["params"]["input_soft_fallback"], soft, "the param");
-    let setting = &cfg["contract"]["settings"]["input_soft_fallback"];
-    assert_eq!(setting["default"], soft, "the declared default");
-    // The prose says which row (development-rules § 2d), the value above is it.
     assert!(
-        setting["description"]
-            .as_str()
-            .is_some_and(|d| d.contains("the model talky's brain is born on")),
-        "{setting}"
+        cfg["params"].get("input_soft_fallback").is_none(),
+        "the screen ships no fallback window: {}",
+        cfg["params"]
+    );
+    assert!(
+        cfg["contract"]["settings"]
+            .get("input_soft_fallback")
+            .is_none(),
+        "no setting names one"
     );
     let member = template_config("member/firewall");
     assert_eq!(member["cell"]["type"], "ref", "{member}");
@@ -1040,38 +1017,42 @@ fn the_member_screens_with_the_catalogue_fallback() {
 #[test]
 fn a_50_kb_turn_comes_through_whole() {
     let turn = "a".repeat(50 * 1024);
-    // As shipped, on the member's road: no window on the turn, so the cap is a
-    // quarter of the catalogue fallback -- and a 50 KB turn is inside it.
+    // As shipped, on the member's road: no window on the turn, so no cap
+    // below the carrier (GH #1532) -- and a 50 KB turn is inside it.
     let h = screen(&turn, None);
     assert_eq!(h["route"], "fwstore", "{h}");
     // 120 000 tokens on the turn: a quarter of it is 90 000 characters.
     assert_eq!(screen(&turn, Some(120_000))["route"], "fwstore");
 }
 
+/// GH #1532 (OR-583.raten.oc4.1): without a window on the turn the screen
+/// caps nothing below the carrier; a window on the turn caps at a quarter of
+/// it, and an owner's `firewall_max_chars` caps without one.
 #[test]
-fn without_a_window_the_cap_is_a_quarter_of_the_catalogue_fallback() {
-    let cap = chars_of(named_window("firewall/screen", "input_soft_fallback"), 0.25);
-    // The fallback is in force: one character over its quarter is refused
-    // with the size, the cap itself passes.
-    assert_eq!(screen(&"a".repeat(cap), None)["route"], "fwstore");
-    let h = screen(&"a".repeat(cap + 1), None);
+fn without_a_window_only_the_carrier_bounds_a_turn() {
+    // 17 500 tokens, a quarter at three: 13 125 characters -- the cap a
+    // fallback window used to set, and one character over it.
+    let cap = chars_of(NO_ROW_WINDOW, 0.25);
+    let turn = "a".repeat(cap + 1);
+    assert_eq!(screen(&turn, None)["route"], "fwstore");
+    // A window on the turn caps: its quarter passes, one character over not.
+    assert_eq!(
+        screen(&"a".repeat(cap), Some(NO_ROW_WINDOW))["route"],
+        "fwstore"
+    );
+    let h = screen(&turn, Some(NO_ROW_WINDOW));
     assert_eq!(h["route"], "reject", "{h}");
     assert_eq!(h["rule_id"], "size-cap");
     assert_eq!(
         h["reject_detail"],
         format!("too_long: {} > {cap} chars", cap + 1)
     );
-    // A window on the turn wins over the fallback, a larger one too.
-    let wide = named_window("firewall/screen", "input_soft_fallback") * 2;
-    assert_eq!(screen(&"a".repeat(cap + 1), Some(wide))["route"], "fwstore");
-    // An owner who sets the fallback to 0: no cap below the carrier.
+    // An owner's cap stands without a window.
+    let h = screen_with(&turn, json!({"firewall_max_chars": cap}), None);
+    assert_eq!(h["route"], "reject", "{h}");
     assert_eq!(
-        screen_with(
-            &"a".repeat(cap + 1),
-            json!({"input_soft_fallback": 0}),
-            None
-        )["route"],
-        "fwstore"
+        h["reject_detail"],
+        format!("too_long: {} > {cap} chars", cap + 1)
     );
 }
 
@@ -1087,8 +1068,8 @@ fn a_turn_over_a_quarter_of_the_window_is_refused_with_its_size() {
 #[test]
 fn a_turn_over_the_carrier_ceiling_is_refused_in_bytes() {
     let ceiling = 4096 * 1024;
-    // No window at all (the fallback blanked): only the carrier bounds a turn.
-    let no_window = json!({"input_soft_fallback": 0});
+    // No window at all (none ships, GH #1532): only the carrier bounds a turn.
+    let no_window = json!({});
     let ok = "a".repeat(ceiling);
     assert_eq!(
         screen_with(&ok, no_window.clone(), None)["route"],
@@ -1096,7 +1077,7 @@ fn a_turn_over_the_carrier_ceiling_is_refused_in_bytes() {
         "the ceiling itself passes"
     );
     // One two-byte character over it: the carrier counts bytes. The hardline
-    // runs before the size cap, so the shipped fallback does not change it.
+    // runs before the size cap.
     let over = format!("{}\u{e4}", "a".repeat(ceiling - 1));
     let h = screen_with(&over, no_window, None);
     assert_eq!(

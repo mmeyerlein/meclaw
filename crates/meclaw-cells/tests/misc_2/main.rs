@@ -1,6 +1,8 @@
 //! Test harness `misc_2` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/curator_llm.rs"]
+pub mod curator_llm;
 pub mod gh116_tool_children_are_journalled;
 pub mod gh118_system_gate;
 pub mod gh1199_a_row_is_replaced_in_one_step;

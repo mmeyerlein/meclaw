@@ -1,6 +1,8 @@
 //! Test harness `curator_targets` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
+#[path = "../support/curator_bank.rs"]
+pub mod curator_bank;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
@@ -9,6 +11,35 @@ pub mod curator_profiles;
 pub mod curator_target;
 pub mod d58_target_intake_and_push_take_their_names_from_the_instance;
 pub mod d58_target_the_compositions_deliver_by_target;
+pub mod gh_d583_kern_a_fallback_target_is_its_walls_source;
+pub mod gh_d583_kern_a_first_spec_call_without_a_row_drops_the_reply_leaf;
+pub mod gh_d583_kern_a_json_true_switches_like_one;
+pub mod gh_d583_kern_a_late_sure_no_skips_the_recall;
+pub mod gh_d583_kern_a_neighbours_fallback_slot_leaves_the_family;
+pub mod gh_d583_kern_a_patch_that_misses_its_spot_is_an_error;
+pub mod gh_d583_kern_a_place_at_one_cell_only_is_red;
+pub mod gh_d583_kern_a_reported_profile_beats_the_fallback;
+pub mod gh_d583_kern_a_set_override_of_profile_fallback_is_taken;
+pub mod gh_d583_kern_a_spec_call_before_its_row_drops_the_reply_leaf;
+pub mod gh_d583_kern_an_empty_place_writes_no_line;
+pub mod gh_d583_kern_an_unsure_fallback_keeps_the_recall;
+pub mod gh_d583_kern_the_profile_leaf_is_built_in_sent;
+pub mod gh_d583_namen_a_new_need_that_recalls_costs_no_code;
+pub mod gh_d583_namen_a_set_override_of_the_new_params_passes_the_door;
+pub mod gh_d583_namen_no_need_name_in_curator_or_lead;
+pub mod gh_d583_namen_the_fallback_row_is_the_summarizers_own;
+pub mod gh_d583_namen_the_lock_reads_param_defaults;
+pub mod gh_d583_namen_the_lock_reads_the_lead;
+pub mod gh_d583_namen_the_pending_note_names_no_product;
+pub mod gh_d583_namen_the_shipped_compositions_keep_their_behaviour;
+pub mod gh_d583_namen_the_side_call_id_takes_the_side_slot;
+pub mod gh_d583_treue_a_correction_withdraws_the_own_turn_in_the_wall;
+pub mod gh_d583_treue_a_withdrawn_turn_is_not_said_in_the_next_seed;
+pub mod gh_d583_treue_an_earlier_answer_is_not_taken_back_as_unproven;
+pub mod gh_d583_treue_an_own_answer_of_an_earlier_call_carries_its_frame;
+pub mod gh_d583_treue_the_frame_of_an_earlier_answer_holds_within_the_turn;
+pub mod gh_d583_treue_the_jena_answer_of_an_earlier_session_keeps_its_frame;
+pub mod gh_d583_treue_the_rewrite_mark_of_gh925_stays_as_it_was;
 pub mod gh_d58_target_a_bare_curator_runs_as_before;
 pub mod gh_d58_target_a_bridge_needs_a_side_target;
 pub mod gh_d58_target_a_changed_profile_cuts_the_next_window;

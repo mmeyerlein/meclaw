@@ -45,12 +45,12 @@ pub const CHOICE_KNOBS: [&str; 15] = [
     "spec_target",
     "bridge_target",
     "errand_family",
-    "memory_to_brain",
-    "quick_max_iter",
-    "quick_speculative",
+    "recall_to_fallback",
+    "fast_max_iter",
+    "spec_ahead",
     "spec_tools",
     "spec_called_turns",
-    "consult_pending_ms",
+    "ask_pending_ms",
     "delta_speculation",
     "interrupt_on_delta",
     "interrupt_questions",
@@ -237,7 +237,7 @@ pub fn ack_knobs(extra: Value) -> Value {
 /// no speculation, no event; `extra` on top.
 pub fn ack_head(extra: Value) -> Value {
     let mut h = json!({"channel": "test", "live": "", "session": "s1", "turn": "t1",
-                       "call": "c-t1", "iter": "0", "consult_id": "", "consult_class": "",
+                       "call": "c-t1", "iter": "0", "ask_id": "", "ask_class": "",
                        "spec": "", "escalate": "", "at": "2026-11-12T10:00:00.000000Z"});
     for (k, v) in obj(extra) {
         h[k.as_str()] = v;
@@ -259,7 +259,7 @@ pub fn ack_verdict(knobs: Value, stamp: Value, head: Value) -> Value {
         knobs,
         "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
         json!([stamp, head,
-               {"escalated": "", "consult_pending": {}, "spec": {}, "spec_held": {}}]),
+               {"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}}]),
     );
     assert!(v.is_object(), "a verdict: {v} {err}");
     v

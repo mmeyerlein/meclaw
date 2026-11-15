@@ -371,10 +371,21 @@ async fn run_session(
         .await?;
     }
 
+    // GH #1537: the opening answer ends after the greeting (see
+    // `OpeningGuard`). A renewed session greets nobody and is not guarded.
+    let mut opening = OpeningGuard::new(greet, &params.greeting);
+
     // What arrived while the opening waited for its seed, in its order of
     // arrival (review K2).
     let mut early_end = None;
     for held in waited.held {
+        if let Held::Control(DuplexControl::Append {
+            kind: AppendKind::Commentary,
+            ..
+        }) = &held
+        {
+            opening.end(&session_id, "colony");
+        }
         let frame = match held {
             Held::Audio(bytes) => audio_append_frame(law, &bytes),
             Held::Control(DuplexControl::Append {
@@ -478,6 +489,11 @@ async fn run_session(
 
             command = control.recv(), if control_open => match command {
                 Some(DuplexControl::Append { kind, event_id, delegation_id, content }) => {
+                    // GH #1537: the colony asks the model to speak; what it
+                    // says now is no longer the opening answer.
+                    if matches!(kind, AppendKind::Commentary) {
+                        opening.end(&session_id, "colony");
+                    }
                     let frame = append_frame(kind, &event_id, delegation_id.as_deref(), &content);
                     if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
                         break Ending::SendFailed(e);
@@ -676,7 +692,23 @@ async fn run_session(
                     .as_mut()
                     .reset(tokio::time::Instant::now() + timeouts.idle);
                 liveness.mark_success();
-                match marks.spoken(map_event(&text)) {
+                let guarded = opening.pass(marks.spoken(map_event(&text)), &session_id, |bytes| {
+                    audio_ms(law, format.sample_rate, bytes)
+                });
+                // GH #1537: the opening answer went on past the greeting; the
+                // model is told once to stop and wait for the caller.
+                if guarded.stop {
+                    let frame = append_frame(
+                        AppendKind::Instructions,
+                        OPENING_STOP_EVENT_ID,
+                        None,
+                        OPENING_STOP,
+                    );
+                    if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
+                        break Ending::SendFailed(e);
+                    }
+                }
+                match guarded.mapped {
                     Mapped::Emit(event) => {
                         meter.note(&event);
                         // A15: the provider rejected the session's Responses
@@ -772,6 +804,11 @@ async fn run_session(
                 &mut meter,
                 grace,
                 law,
+                Opening {
+                    guard: &mut opening,
+                    session_id: &session_id,
+                    rate: format.sample_rate,
+                },
             )
             .await;
             (reason, seconds, true)
@@ -790,6 +827,9 @@ async fn run_session(
             ("send_failed".to_string(), meter.usage_seconds, false)
         }
     };
+    // After `finalise`: what the model says while the close is under way is
+    // still the opening's tail where the caller never spoke (GH #1537).
+    opening.end(&session_id, "session_end");
     if report {
         let closed = DuplexEvent::Closed {
             reason: reason.clone(),
@@ -957,13 +997,24 @@ async fn await_started(
     }
 }
 
+/// The opening guard of a session as [`finalise`] carries it on (GH #1537).
+struct Opening<'a> {
+    guard: &'a mut OpeningGuard,
+    session_id: &'a str,
+    /// The session's sample rate, for the length of an audio chunk.
+    rate: u32,
+}
+
 /// Waits out the provider's own close after a `session.close` went out.
 ///
 /// The session keeps running while it waits: a model that was mid-sentence
 /// keeps arriving, and the last of what it said belongs to the caller as much
 /// as the rest. What ends the wait is `session.closed`, a dead socket, or
 /// `close_grace_ms` — and in the last case the meter reading is the last one
-/// that was reported, because no better one is coming.
+/// that was reported, because no better one is coming. The opening guard
+/// still holds while it waits: a caller who hangs up during an invented tail
+/// must not have the rest of it kept (GH #1537); no stop is asked for, the
+/// session is closing anyway.
 async fn finalise(
     read: &mut Reader,
     outlets: Outlets<'_>,
@@ -971,6 +1022,7 @@ async fn finalise(
     meter: &mut SessionMeter,
     grace: Duration,
     law: Option<Law>,
+    opening: Opening<'_>,
 ) -> (String, f64) {
     let Outlets {
         audio_out,
@@ -998,7 +1050,12 @@ async fn finalise(
             }
         };
         liveness.mark_success();
-        match map_event(&text) {
+        let guarded = opening
+            .guard
+            .pass(map_event(&text), opening.session_id, |bytes| {
+                audio_ms(law, opening.rate, bytes)
+            });
+        match guarded.mapped {
             Mapped::Finished {
                 reason,
                 usage_seconds,
@@ -1395,6 +1452,358 @@ impl ControlMarks {
     }
 }
 
+/// The `event_id` of the one instruction that ends the opening answer
+/// (GH #1537), so its acknowledgement reads in a log as what it is.
+const OPENING_STOP_EVENT_ID: &str = "opening_stop";
+
+/// What the model is told when its opening answer goes on past the greeting
+/// (GH #1537). `session.instructions.append` is the channel the provider
+/// names for "direction to stop speaking"; gpt-live-1 has no
+/// `response.cancel` and no truncate.
+const OPENING_STOP: &str = "Stop speaking now. Your greeting is done. Say nothing more until \
+                            the caller speaks, then answer what they say.";
+
+/// The characters that close a quotation or a bracket after a sentence mark:
+/// `"Fine."` ends its sentence after the quote, not before it.
+const SENTENCE_CLOSERS: &[char] = &[
+    '"', '\'', '\u{201C}', '\u{201D}', '\u{2019}', '\u{BB}', ')', ']',
+];
+
+/// Whether `c` ends a sentence (GH #1537): structure only, no word list.
+fn is_sentence_mark(c: char) -> bool {
+    matches!(c, '.' | '!' | '?' | '\u{2026}')
+}
+
+/// The sentence ends in `text`: for each, the char index just past it
+/// (marks and closers included). A run of marks (`?!`, `...`) is one end;
+/// it counts when whitespace or the end of `text` follows, and only after
+/// something that is not whitespace was said since the last end.
+fn sentence_ends(text: &str) -> Vec<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut ends = Vec::new();
+    let mut said = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if is_sentence_mark(c) && said {
+            let mut j = i;
+            while j < chars.len() && is_sentence_mark(chars[j]) {
+                j += 1;
+            }
+            while j < chars.len() && SENTENCE_CLOSERS.contains(&chars[j]) {
+                j += 1;
+            }
+            if j == chars.len() || chars[j].is_whitespace() {
+                ends.push(j);
+                said = false;
+            }
+            i = j;
+            continue;
+        }
+        if !c.is_whitespace() && !is_sentence_mark(c) {
+            said = true;
+        }
+        i += 1;
+    }
+    ends
+}
+
+/// The share of the spoken greeting the opening answer must have said before
+/// the next sentence end closes it (GH #1537).
+///
+/// The model says the greeting "in its own words", so its sentence is
+/// shorter or longer than the quoted one and cannot be compared word for
+/// word. Half of the quote's characters lets a short opener pass ("Hello!"
+/// before the greeting proper is one sentence of its own) and still falls
+/// inside the greeting sentence, so the sentence end that follows is the
+/// greeting's own end and not one of an invented tail.
+const GREETING_SHARE: f64 = 0.5;
+
+/// The share of the spoken greeting at which the opening answer ends even
+/// without a sentence end (GH #1537).
+///
+/// Measured on test colonies: the model ran its invented story on straight
+/// from the greeting sentence, without a mark between them ("..., but
+/// listen, I am out fishing right now ..."); waiting for the next sentence
+/// end would let that story through. A paraphrase of the greeting stays well
+/// within twice the quote's length, so the cut there keeps the greeting and
+/// stops the run-on tail.
+const GREETING_HARD_SHARE: f64 = 2.0;
+
+/// The quotation marks a spoken greeting may stand in: opener and the
+/// closers that end it.
+const GREETING_QUOTES: &[(char, &[char])] = &[
+    ('\u{201E}', &['\u{201C}', '\u{201D}']),
+    ('\u{201C}', &['\u{201D}']),
+    ('"', &['"']),
+    ('\u{AB}', &['\u{BB}']),
+];
+
+/// The spoken part of a greeting append (GH #1537): the text inside the
+/// first pair of quotation marks (`„…“`, `“…”`, `"…"`, `«…»`) -- a deployed
+/// greeting is an instruction that quotes the sentence to say -- or the
+/// whole greeting where it quotes nothing. Structure only, no word list.
+fn spoken_greeting(greeting: &str) -> &str {
+    let opener = greeting
+        .char_indices()
+        .find(|(_, c)| GREETING_QUOTES.iter().any(|(o, _)| o == c));
+    if let Some((at, open)) = opener {
+        let closers = GREETING_QUOTES
+            .iter()
+            .find(|(o, _)| *o == open)
+            .map(|(_, c)| *c)
+            .unwrap_or_default();
+        let inner = &greeting[at + open.len_utf8()..];
+        if let Some(end) = inner.find(|c: char| closers.contains(&c)) {
+            let quoted = inner[..end].trim();
+            if !quoted.is_empty() {
+                return quoted;
+            }
+        }
+    }
+    greeting.trim()
+}
+
+/// How many characters of its transcript the opening answer must have said
+/// before the next sentence end closes it: [`GREETING_SHARE`] of the spoken
+/// greeting, at least one.
+fn greeting_threshold(greeting: &str) -> usize {
+    let chars = spoken_greeting(greeting).chars().count();
+    ((chars as f64 * GREETING_SHARE).ceil() as usize).max(1)
+}
+
+/// How many characters of its transcript the opening answer may say at
+/// most when no sentence end came after [`greeting_threshold`]:
+/// [`GREETING_HARD_SHARE`] of the spoken greeting, at least one.
+fn greeting_hard_limit(greeting: &str) -> usize {
+    let chars = spoken_greeting(greeting).chars().count();
+    ((chars as f64 * GREETING_HARD_SHARE).ceil() as usize).max(1)
+}
+
+/// What [`OpeningGuard::pass`] decided about one mapped frame.
+struct Guarded {
+    /// The frame as it goes on: unchanged, cut at the greeting's end, or
+    /// [`Mapped::Ignore`] for what is dropped.
+    mapped: Mapped,
+    /// Send [`OPENING_STOP`] now: the first part of the tail was dropped.
+    stop: bool,
+}
+
+/// The guard on the opening answer of a greeting session (GH #1537).
+///
+/// Measured on test colonies (0.87.0, 3 of 7 calls on fresh colonies): the
+/// model answered the greeting append with the greeting and went on with up
+/// to about 25 s of an invented first-person story, once naming the caller
+/// with a name nobody had said; it was heard and kept in memory. The source
+/// is the model's output, so the adapter is where it is stopped.
+///
+/// Armed only on a session that greets, from the greeting until the caller
+/// speaks (their first transcript fragment) or the colony asks for speech
+/// itself (a `commentary` append). While armed, the model may speak until
+/// its transcript holds [`GREETING_SHARE`] of the spoken greeting's
+/// characters; the next sentence end after that point closes the greeting
+/// (read off the model's own transcript by its marks); without one, the
+/// greeting is closed hard at [`GREETING_HARD_SHARE`] of the spoken
+/// greeting's characters. From that end on, every
+/// transcript fragment of the model is dropped, and its audio passes only
+/// as far as the greeting's own length on the model's clock (the audio
+/// carries no timing of its own, the transcript does): the chunk in which
+/// that length runs out still passes, so the greeting is never cut, and
+/// what follows it does not. Audio that arrives before its transcript said
+/// where the greeting ends cannot be told apart and passes.
+struct OpeningGuard {
+    /// Whether the guard still watches the session.
+    armed: bool,
+    /// The characters the opening answer must have said before the next
+    /// sentence end closes it.
+    limit: usize,
+    /// The characters after which the opening answer ends even without a
+    /// sentence end.
+    hard: usize,
+    /// The model's transcript of the opening answer passed so far.
+    heard: String,
+    /// Whether the greeting has been said whole.
+    done: bool,
+    /// The model's clock at the first fragment of the opening answer.
+    first_ms: Option<u64>,
+    /// How much audio the greeting may carry, in ms, once its end is known.
+    budget_ms: Option<f64>,
+    /// The audio passed so far, in ms.
+    passed_ms: f64,
+    /// Characters of the model's transcript dropped.
+    dropped_chars: usize,
+    /// Audio dropped, in ms.
+    dropped_ms: f64,
+    /// Whether the model was told to stop.
+    stopped: bool,
+}
+
+impl OpeningGuard {
+    /// A guard for a session that greets with `greeting` where `greets`.
+    fn new(greets: bool, greeting: &str) -> Self {
+        Self {
+            armed: greets && !greeting.is_empty(),
+            limit: greeting_threshold(greeting),
+            hard: greeting_hard_limit(greeting),
+            heard: String::new(),
+            done: false,
+            first_ms: None,
+            budget_ms: None,
+            passed_ms: 0.0,
+            dropped_chars: 0,
+            dropped_ms: 0.0,
+            stopped: false,
+        }
+    }
+
+    /// Whether the greeting has been said whole.
+    fn closed(&self) -> bool {
+        self.done
+    }
+
+    /// The guard ends: the caller spoke, the colony asked for speech, or
+    /// the session is over. One WARN line when anything was dropped.
+    fn end(&mut self, session_id: &str, why: &str) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        if self.dropped_chars > 0 || self.dropped_ms > 0.0 {
+            tracing::warn!(
+                session_id = %session_id,
+                dropped_chars = self.dropped_chars,
+                dropped_audio_ms = self.dropped_ms.round() as u64,
+                ended_by = why,
+                "gpt_live: opening_tail_dropped -- the opening answer went on past its \
+                 greeting and the rest was not passed on"
+            );
+        }
+    }
+
+    /// One mapped frame through the guard. `ms_of` is the length of an
+    /// audio chunk on this session, in ms.
+    fn pass(&mut self, mapped: Mapped, session_id: &str, ms_of: impl Fn(&[u8]) -> f64) -> Guarded {
+        if !self.armed {
+            return Guarded {
+                mapped,
+                stop: false,
+            };
+        }
+        match mapped {
+            Mapped::Emit(DuplexEvent::Transcript {
+                speaker: Speaker::User,
+                ..
+            }) => {
+                self.end(session_id, "caller");
+                Guarded {
+                    mapped,
+                    stop: false,
+                }
+            }
+            Mapped::Emit(DuplexEvent::Transcript {
+                speaker: Speaker::Assistant,
+                delta,
+                start_ms,
+                end_ms,
+            }) => {
+                if self.closed() {
+                    return self.drop_text(&delta);
+                }
+                self.first_ms.get_or_insert(start_ms);
+                // Sentence ends are read off everything heard so far, so a
+                // sentence split across fragments still ends where it ends.
+                let before = self.heard.chars().count();
+                let whole = format!("{}{delta}", self.heard);
+                let limit = self.limit;
+                let hard = self.hard;
+                let after = before + delta.chars().count();
+                let end = sentence_ends(&whole)
+                    .into_iter()
+                    .find(|&e| e > before && e >= limit)
+                    .filter(|&e| e <= hard)
+                    .or((after >= hard).then_some(hard.max(before)));
+                let Some(end) = end else {
+                    self.heard = whole;
+                    return Guarded {
+                        mapped: Mapped::Emit(DuplexEvent::Transcript {
+                            speaker: Speaker::Assistant,
+                            delta,
+                            start_ms,
+                            end_ms,
+                        }),
+                        stop: false,
+                    };
+                };
+                // The greeting ends inside this fragment: what follows the
+                // end is the tail. Where it ends on the model's clock is
+                // estimated by its share of the fragment's characters (the
+                // provider's fragments carry no finer timing).
+                self.done = true;
+                self.heard = whole;
+                let cut = end - before;
+                let total = delta.chars().count();
+                let kept: String = delta.chars().take(cut).collect();
+                let rest: String = delta.chars().skip(cut).collect();
+                let span = end_ms.saturating_sub(start_ms) as f64;
+                let greeting_end = start_ms as f64 + span * cut as f64 / total.max(1) as f64;
+                let first = self.first_ms.unwrap_or(start_ms) as f64;
+                self.budget_ms = Some((greeting_end - first).max(0.0));
+                let stop = if rest.trim().is_empty() {
+                    false
+                } else {
+                    self.drop_text(&rest).stop
+                };
+                Guarded {
+                    mapped: Mapped::Emit(DuplexEvent::Transcript {
+                        speaker: Speaker::Assistant,
+                        delta: kept,
+                        start_ms,
+                        end_ms: greeting_end.round() as u64,
+                    }),
+                    stop,
+                }
+            }
+            Mapped::Audio(bytes) => {
+                let ms = ms_of(&bytes);
+                match self.budget_ms {
+                    Some(budget) if self.passed_ms >= budget => {
+                        self.dropped_ms += ms;
+                        Guarded {
+                            mapped: Mapped::Ignore,
+                            stop: self.first_drop(),
+                        }
+                    }
+                    _ => {
+                        self.passed_ms += ms;
+                        Guarded {
+                            mapped: Mapped::Audio(bytes),
+                            stop: false,
+                        }
+                    }
+                }
+            }
+            other => Guarded {
+                mapped: other,
+                stop: false,
+            },
+        }
+    }
+
+    /// A piece of the model's transcript past the greeting is dropped.
+    fn drop_text(&mut self, text: &str) -> Guarded {
+        self.dropped_chars += text.chars().count();
+        Guarded {
+            mapped: Mapped::Ignore,
+            stop: self.first_drop(),
+        }
+    }
+
+    /// `true` exactly once: the first time anything is dropped.
+    fn first_drop(&mut self) -> bool {
+        !std::mem::replace(&mut self.stopped, true)
+    }
+}
+
 /// The acknowledgement of one append. The identity that matters is the one
 /// this side chose (`client_event_id`); the service's own `event_id` names the
 /// acknowledgement, not the append.
@@ -1595,6 +2004,17 @@ fn audio_append_frame(law: Option<Law>, bytes: &[u8]) -> JsonValue {
     })
 }
 
+/// The length of one chunk of the model's audio as it arrives, in ms: one
+/// byte per sample on a G.711 session, two on PCM16, mono at `rate`.
+fn audio_ms(law: Option<Law>, rate: u32, bytes: &[u8]) -> f64 {
+    let samples = if law.is_some() {
+        bytes.len()
+    } else {
+        bytes.len() / 2
+    };
+    samples as f64 * 1000.0 / f64::from(rate.max(1))
+}
+
 /// The model's audio for the client: G.711 expanded to PCM16, PCM16 as it is.
 fn expand_out(law: Option<Law>, bytes: Vec<u8>) -> Vec<u8> {
     match law {
@@ -1665,15 +2085,26 @@ pub fn start_budget(params: &GptLiveParams) -> u64 {
 /// builds its start window could not know how large it may be. Five neutral
 /// fields: the model, the tokens a start window and one later feed may
 /// carry, the rate this cell estimates with, and `window_profile` as the
-/// param holds it.
+/// param holds it. GH #1532: the window and the image cost of the cell's
+/// catalog row beside them (`input_soft`, `tokens_per_image`), each only when
+/// the block names it.
 pub fn ask_limits(params: &GptLiveParams) -> JsonValue {
-    json!({
+    let mut limits = json!({
         "model": params.model,
         "start_budget": start_budget(params),
         "feed_budget": params.advise_max_tokens,
         "chars_per_token": params.chars_per_token,
         "profile": params.window_profile,
-    })
+    });
+    for (key, value) in [
+        ("input_soft", params.input_soft),
+        ("tokens_per_image", params.tokens_per_image),
+    ] {
+        if let (Some(n), Some(obj)) = (value.filter(|n| *n > 0), limits.as_object_mut()) {
+            obj.insert(key.into(), json!(n));
+        }
+    }
+    limits
 }
 
 /// Cut a seed to `max_messages` and `max_tokens`, estimated at
@@ -2387,6 +2818,158 @@ mod tests {
                 named(json!({"type": "error", "client_event_id": bad, "error": error})),
                 None,
                 "{bad}"
+            );
+        }
+    }
+
+    /// GH #1537: a sentence ends at a run of marks, closers included, when
+    /// whitespace or the end follows; a decimal point or a lone mark does not.
+    #[test]
+    fn gh1537_sentence_ends_are_read_off_the_marks() {
+        assert_eq!(sentence_ends("Hello there. How are you?"), vec![12, 25]);
+        assert_eq!(sentence_ends("It is 3.5 degrees"), Vec::<usize>::new());
+        assert_eq!(sentence_ends("Wait?! Yes..."), vec![6, 13]);
+        assert_eq!(sentence_ends("\u{201E}Hello.\u{201C} Then"), vec![8]);
+        assert_eq!(sentence_ends(" . "), Vec::<usize>::new());
+    }
+
+    /// GH #1537: the spoken greeting is the first quotation, else the whole
+    /// append; the opening answer must say half of it.
+    #[test]
+    fn gh1537_the_spoken_greeting_is_the_quotation() {
+        let q = "Say this one sentence in your own words: \u{201E}Hello, this is your companion.\u{201C} Then listen.";
+        assert_eq!(spoken_greeting(q), "Hello, this is your companion.");
+        assert_eq!(
+            spoken_greeting("Say \u{201C}Hi there.\u{201D} now"),
+            "Hi there."
+        );
+        assert_eq!(spoken_greeting("Say \"Hi.\" now"), "Hi.");
+        assert_eq!(spoken_greeting("Say \u{AB}Salut.\u{BB} now"), "Salut.");
+        assert_eq!(spoken_greeting(" Greet the caller. "), "Greet the caller.");
+        assert_eq!(spoken_greeting("Say \"\" now"), "Say \"\" now");
+        assert_eq!(greeting_threshold(q), 15);
+        assert_eq!(greeting_threshold("Hi."), 2);
+        assert_eq!(greeting_threshold("  "), 1);
+        assert_eq!(greeting_hard_limit(q), 60);
+        assert_eq!(greeting_hard_limit("  "), 1);
+    }
+
+    /// GH #1537: a tail run on without a sentence end is cut at twice the
+    /// spoken greeting; the stop is asked for once.
+    #[test]
+    fn gh1537_a_run_on_tail_is_cut_at_twice_the_greeting() {
+        let said = |delta: &str, start_ms: u64, end_ms: u64| {
+            Mapped::Emit(DuplexEvent::Transcript {
+                speaker: Speaker::Assistant,
+                delta: delta.to_string(),
+                start_ms,
+                end_ms,
+            })
+        };
+        let ms = |b: &[u8]| b.len() as f64;
+        // Spoken greeting "Hi there" (8): half is 4, twice is 16.
+        let mut guard = OpeningGuard::new(true, "Say \"Hi there\" now");
+        let g = guard.pass(said("Hi there, but", 0, 1_300), "s", ms);
+        assert!(!g.stop && matches!(g.mapped, Mapped::Emit(_)));
+        let g = guard.pass(said(" listen, I fish", 1_300, 2_800), "s", ms);
+        assert!(g.stop, "the first dropped piece asks for the stop");
+        match g.mapped {
+            Mapped::Emit(DuplexEvent::Transcript { delta, end_ms, .. }) => {
+                assert_eq!(delta, " li", "cut at sixteen characters");
+                assert_eq!(end_ms, 1_600);
+            }
+            _ => panic!("the part up to the hard cut passes"),
+        }
+        assert!(matches!(
+            guard.pass(said(" today.", 2_800, 3_500), "s", ms).mapped,
+            Mapped::Ignore
+        ));
+    }
+
+    /// GH #1537: the greeting ends inside a fragment -- the fragment is cut
+    /// after the greeting, the stop is asked for once, later text and the
+    /// audio past the greeting's length are dropped, and the caller's first
+    /// words end the guard.
+    #[test]
+    fn gh1537_the_opening_guard_cuts_after_the_greeting() {
+        let said = |delta: &str, start_ms: u64, end_ms: u64| {
+            Mapped::Emit(DuplexEvent::Transcript {
+                speaker: Speaker::Assistant,
+                delta: delta.to_string(),
+                start_ms,
+                end_ms,
+            })
+        };
+        let ms = |b: &[u8]| b.len() as f64;
+        let mut guard = OpeningGuard::new(true, "Say one sentence.");
+        let g = guard.pass(said("Hello", 0, 500), "s", ms);
+        assert!(!g.stop);
+        let g = guard.pass(said(" there. I went", 500, 1_500), "s", ms);
+        assert!(g.stop, "the first dropped piece asks for the stop");
+        match g.mapped {
+            Mapped::Emit(DuplexEvent::Transcript { delta, end_ms, .. }) => {
+                assert_eq!(delta, " there.");
+                assert_eq!(end_ms, 1_000, "seven of fourteen characters");
+            }
+            _ => panic!("the greeting's part passes"),
+        }
+        // The greeting is 1 000 ms long: 600 + 600 passes (the chunk that
+        // runs over is still the greeting's), the next chunk is dropped.
+        assert!(matches!(
+            guard.pass(Mapped::Audio(vec![0; 600]), "s", ms).mapped,
+            Mapped::Audio(_)
+        ));
+        assert!(matches!(
+            guard.pass(Mapped::Audio(vec![0; 600]), "s", ms).mapped,
+            Mapped::Audio(_)
+        ));
+        let g = guard.pass(Mapped::Audio(vec![0; 600]), "s", ms);
+        assert!(matches!(g.mapped, Mapped::Ignore) && !g.stop, "asked once");
+        assert!(matches!(
+            guard.pass(said(" fishing.", 1_500, 2_000), "s", ms).mapped,
+            Mapped::Ignore
+        ));
+        assert_eq!(guard.dropped_chars, " I went".len() + " fishing.".len());
+        let caller = Mapped::Emit(DuplexEvent::Transcript {
+            speaker: Speaker::User,
+            delta: "Hi".to_string(),
+            start_ms: 2_500,
+            end_ms: 2_800,
+        });
+        assert!(matches!(
+            guard.pass(caller, "s", ms).mapped,
+            Mapped::Emit(_)
+        ));
+        assert!(matches!(
+            guard
+                .pass(said("Fine. Really.", 3_000, 4_000), "s", ms)
+                .mapped,
+            Mapped::Emit(_)
+        ));
+        assert!(matches!(
+            guard.pass(Mapped::Audio(vec![0; 600]), "s", ms).mapped,
+            Mapped::Audio(_)
+        ));
+    }
+
+    /// GH #1537: a session that does not greet is never guarded.
+    #[test]
+    fn gh1537_no_greeting_no_guard() {
+        for (greets, greeting) in [(false, "Say hello."), (true, "")] {
+            let mut guard = OpeningGuard::new(greets, greeting);
+            let g = guard.pass(
+                Mapped::Emit(DuplexEvent::Transcript {
+                    speaker: Speaker::Assistant,
+                    delta: "One. Two. Three.".to_string(),
+                    start_ms: 0,
+                    end_ms: 900,
+                }),
+                "s",
+                |b| b.len() as f64,
+            );
+            assert!(!g.stop);
+            assert!(
+                matches!(g.mapped, Mapped::Emit(DuplexEvent::Transcript { ref delta, .. }) if delta == "One. Two. Three.")
             );
         }
     }

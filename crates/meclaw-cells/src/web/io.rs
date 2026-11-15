@@ -367,7 +367,8 @@ pub const PAGE_CACHE_CONTROL: &str = "private, no-cache";
 /// page was 636 KB, the same tree the join carries). The join's pieces fill
 /// the rest. It is a budget, not a threshold: only a page above
 /// [`crate::web::render::CUT_ABOVE_BYTES`] is cut at all, so a display page
-/// (whose screen alone is larger than 48 KB) is served whole as before.
+/// below it (whose screen alone is larger than 48 KB) is served whole; one
+/// above it is cut like any page and its join fills the rest (GH #1541).
 pub const PAGE_INLINE_BYTES: usize = 48 * 1024;
 
 impl WebIo {

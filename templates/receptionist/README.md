@@ -1,4 +1,4 @@
-# `receptionist@2.1.1`
+# `receptionist@2.1.2`
 
 One agent per channel, built the moment a channel first speaks. Two cells under
 one hive: `greet` (a `code` cell) and `ledger` (a `store`). No new cell type, no
@@ -126,7 +126,7 @@ One mutation, `scope` = the hive's parent, `ctx.model` = `RECEPTIONIST_MODEL`
 (the one env knob left):
 
 ```json
-{"scope": "/", "ctx": {"model": "openai/gpt-4o-mini"}, "diff": {
+{"scope": "/", "ctx": {"model": "openai/gpt-6-luna"}, "diff": {
   "add_nodes": [{"name": "talky-<key>", "template": "talky"}],
   "add_edges": [
     {"from": "./reception", "to": "./talky-<key>",
@@ -183,14 +183,14 @@ Two lanes, and the line between them is the ruling of
 knob is a **param** of the cell that reads it; only the provider lane stays in
 `.env`, because a secret in a `config.json` is a secret in the repository.
 
-Since `receptionist@2.1.1` the seven knobs below are params of `./greet`. Two
+Since `receptionist@2.1.2` the seven knobs below are params of `./greet`. Two
 receptions in one colony can therefore build different composites onto different
 lanes -- which an environment they share could not say -- and the manifest that
 grows one sets them with `override_params`, keyed by cell path:
 
 ```json
 {"op": "add_nodes", "scope": "/",
- "nodes": [{"name": "reception", "template": "receptionist@2.1.1",
+ "nodes": [{"name": "reception", "template": "receptionist@2.1.2",
             "override_params": {
               "greet": {"template": "cogny",
                         "reply_to": "./sink",
@@ -228,7 +228,7 @@ The provider lane, in `.env`, and all of it:
 
 | env var | default | meaning |
 |---|---|---|
-| `RECEPTIONIST_MODEL` | `openai/gpt-4o-mini` | the `ctx.model` handed to every instance. A model id belongs to the deployment, so it stays here. Convention K-H2 (Lane B): put the RESOLVED literal in `.env`, never a nested token |
+| `RECEPTIONIST_MODEL` | `openai/gpt-6-luna` | the `ctx.model` handed to every instance. A model id belongs to the deployment, so it stays here. Convention K-H2 (Lane B): put the RESOLVED literal in `.env`, never a nested token |
 
 **Every knob the INSTANCES take is theirs, not the reception's.**
 Since `collector@1.2.0` and since `session-keeper@2.2.0`, `summarizer@2.1.0` and `dispatcher@1.2.0`,

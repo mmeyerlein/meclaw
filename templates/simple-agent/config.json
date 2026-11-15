@@ -69,6 +69,7 @@
             "./brain",
             "./strong",
             "./curator/summarizer",
+            "./curator/relevance",
             "./memory-hive/closer",
             "./memory-hive/dialectic",
             "./memory-hive/dreamer",
@@ -126,6 +127,7 @@
             "./brain",
             "./strong",
             "./curator/summarizer",
+            "./curator/relevance",
             "./memory-hive/closer",
             "./memory-hive/dialectic",
             "./memory-hive/dreamer",
@@ -272,7 +274,7 @@
         {
           "from": ".",
           "to": "./brain",
-          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/strong') || hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.contains('/memory-hive/')))"
+          "condition": "has(hop.route) && hop.route == 'in_model' && !(has(hop.subscriber) && (hop.subscriber.endsWith('/strong') || hop.subscriber.endsWith('/curator/summarizer') || hop.subscriber.endsWith('/curator/relevance') || hop.subscriber.contains('/memory-hive/')))"
         },
         {
           "from": ".",
@@ -283,6 +285,11 @@
           "from": ".",
           "to": "./curator",
           "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/curator/summarizer')"
+        },
+        {
+          "from": ".",
+          "to": "./curator",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/curator/relevance')"
         },
         {
           "from": ".",
@@ -661,6 +668,8 @@
               "session_id": "hop.session_id",
               "iter": "hop.iter",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "curator_target": "has(hop.target) ? hop.target : ''",
               "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
@@ -678,6 +687,8 @@
               "session_id": "hop.session_id",
               "iter": "hop.iter",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "curator_target": "has(hop.target) ? hop.target : ''",
               "call_kind": "has(hop.call_kind) ? hop.call_kind : ''"
             },
@@ -1030,7 +1041,9 @@
               "channel": "has(context.channel) ? context.channel : ''",
               "session_id": "has(context.session_id) ? context.session_id : ''",
               "turn_id": "has(hop.turn_id) ? hop.turn_id : (has(context.turn_id) ? context.turn_id : '')",
-              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''"
+              "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''"
             }
           }
         },
@@ -1130,6 +1143,8 @@
               "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
               "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "audience_now": "has(context.audience_set) ? context.audience_set : ''",
               "channel": "has(context.channel) ? context.channel : ''",
               "turn_id": "has(hop.turn_id) ? hop.turn_id : ''",
@@ -1152,6 +1167,8 @@
               "recall_window_from": "has(hop.recall_window_from) ? hop.recall_window_from : ''",
               "recall_window_to": "has(hop.recall_window_to) ? hop.recall_window_to : ''",
               "recall_input_soft": "has(hop.recall_input_soft) ? hop.recall_input_soft : ''",
+              "chars_per_token": "has(hop.chars_per_token) ? hop.chars_per_token : ''",
+              "tokens_per_image": "has(hop.tokens_per_image) ? hop.tokens_per_image : ''",
               "audience_now": "has(context.audience_set) ? context.audience_set : ''",
               "channel": "has(context.channel) ? context.channel : ''",
               "turn_id": "has(hop.turn_id) ? hop.turn_id : ''",

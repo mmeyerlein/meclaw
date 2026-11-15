@@ -214,6 +214,12 @@
                 "$replace": true,
                 "mode": {
                   "text": "Be brief."
+                },
+                "quick": {
+                  "text": "When you call a tool, say one short sentence beside the call, in your own words, so the person hears you while it runs. Keep answers short. If you are unsure how the person means a request even with the conversation so far, ask one short question about it instead of guessing."
+                },
+                "sidecar": {
+                  "text": "End with a sidecar block."
                 }
               },
               "pinned": {
@@ -257,7 +263,7 @@
           "kind": "curate",
           "session_id": "s1",
           "turn_id": "t2",
-          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":2,\"raw_tokens\":19,\"window_estimate\":68,\"window_tokens\":68}"
+          "value": "{\"cached_tokens\":0,\"call\":\"00064c07-a6f7-4e80-8000-0000000001c0\",\"cost_cents\":null,\"curate_mark\":\"none\",\"input_hard\":200000,\"input_soft\":90000,\"raw_rounds\":2,\"raw_tokens\":19,\"window_estimate\":181,\"window_tokens\":181}"
         }
       ],
       "out": [],

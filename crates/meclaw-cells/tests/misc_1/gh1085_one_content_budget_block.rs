@@ -11,6 +11,13 @@
 //! for byte against [`CANONICAL`], the text of the wave design (section 5).
 //!
 //! It passes with no copy at all and says how many it saw.
+//!
+//! GH #1526 (d58-3 grenzen, N5): a second block, `content-budget v2`, takes
+//! the rate of the target (`budget_chars(input_soft, share, rate=None)`); the
+//! cells that hand a window on with its rate carry it, every other copy
+//! stays v1 (the frozen curator 1.25.0 among them). Each version is one
+//! text, held byte for byte against its canonical form; without a rate v2
+//! counts exactly like v1, at the core's three characters a token.
 
 use meclaw_core::serde_json::{self as sj, Value};
 use std::io::Write;
@@ -19,6 +26,8 @@ use std::process::{Command, Stdio};
 
 const START: &str = "# >>> content-budget v1";
 const END: &str = "# <<< content-budget v1";
+const START_V2: &str = "# >>> content-budget v2";
+const END_V2: &str = "# <<< content-budget v2";
 
 /// The block, from its opening marker line to its closing one, without the
 /// newline after the closing marker.
@@ -51,6 +60,61 @@ def clip(text, limit, hint="budget of the window"):
         limit, len(text), hint)
 # <<< content-budget v1"#;
 
+/// The block that takes the target's rate (GH #1526), from its opening
+/// marker line to its closing one.
+const CANONICAL_V2: &str = r#"# >>> content-budget v2 (R-IG-1, GH #1085; the target's rate, GH #1526)
+CHARS_PER_TOKEN = 3
+
+
+def chars_per_token_or_core(rate):
+    """`rate`, the characters a token of the target's catalog row, when it
+    is a number above zero; else CHARS_PER_TOKEN, the core's estimate."""
+    try:
+        r = float(rate) if rate not in (None, "") and not isinstance(rate, bool) else 0.0
+    except (TypeError, ValueError):
+        r = 0.0
+    return r if 0 < r < float("inf") else CHARS_PER_TOKEN
+
+
+def budget_chars(input_soft, share, rate=None):
+    """Characters a producer may hand a model whose usable window is
+    `input_soft` tokens (the catalog row, cut by the curator), for a section
+    that takes `share` of that window, at `rate` characters a token (the
+    target's row; none known: CHARS_PER_TOKEN). None when no window is known:
+    the producer then delivers its content whole."""
+    try:
+        soft = int(float(input_soft))
+    except (TypeError, ValueError):
+        return None
+    if soft <= 0:
+        return None
+    return int(soft * share * chars_per_token_or_core(rate))
+
+
+def clip(text, limit, hint="budget of the window"):
+    """`text` whole when it fits `limit` (None: no limit); else its head and
+    a mark naming what was shown, the total and how to get the rest."""
+    text = "" if text is None else str(text)
+    if limit is None or len(text) <= limit:
+        return text
+    limit = max(0, int(limit))
+    return text[:limit] + "...[cut: %d of %d chars shown; %s]" % (
+        limit, len(text), hint)
+# <<< content-budget v2"#;
+
+/// The cells that hand a window on with its rate and measure with it: each
+/// carries v2 (GH #1526, contract point 1).
+const V2_CELLS: [&str; 8] = [
+    "curator/policy",
+    "curator/intake",
+    "curator/history",
+    "curator/handover",
+    "curator/push",
+    "curator/reader",
+    "objects/brief",
+    "talky/route",
+];
+
 fn templates_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates")
 }
@@ -79,17 +143,18 @@ fn strings_of(v: &Value, out: &mut Vec<String>) {
     }
 }
 
-/// Every block in `text`: `Ok(copy)` for an opening marker with a closing one
-/// after it, `Err(why)` for a marker without its partner.
-fn blocks_in(text: &str) -> Vec<Result<String, String>> {
+/// Every block in `text` between `start` and `end`: `Ok(copy)` for an
+/// opening marker with a closing one after it, `Err(why)` for a marker
+/// without its partner.
+fn blocks_between(text: &str, start: &str, end: &str) -> Vec<Result<String, String>> {
     let mut out = Vec::new();
     let mut rest = text;
-    while let Some(i) = rest.find(START) {
+    while let Some(i) = rest.find(start) {
         let tail = &rest[i..];
-        match tail.find(END) {
+        match tail.find(end) {
             Some(j) => {
-                out.push(Ok(tail[..j + END.len()].to_string()));
-                rest = &tail[j + END.len()..];
+                out.push(Ok(tail[..j + end.len()].to_string()));
+                rest = &tail[j + end.len()..];
             }
             None => {
                 out.push(Err(
@@ -99,8 +164,8 @@ fn blocks_in(text: &str) -> Vec<Result<String, String>> {
             }
         }
     }
-    let opened = text.matches(START).count();
-    let closed = text.matches(END).count();
+    let opened = text.matches(start).count();
+    let closed = text.matches(end).count();
     if closed > opened {
         out.push(Err(format!(
             "{closed} closing markers for {opened} opening ones"
@@ -112,6 +177,11 @@ fn blocks_in(text: &str) -> Vec<Result<String, String>> {
 /// (canonical copies seen, findings) over every `config.json` string and
 /// every `.py` file under `root`.
 fn sweep(root: &Path) -> (usize, Vec<String>) {
+    sweep_for(root, START, END, CANONICAL)
+}
+
+/// [`sweep`] for one version of the block.
+fn sweep_for(root: &Path, start: &str, end: &str, canonical: &str) -> (usize, Vec<String>) {
     let mut files = Vec::new();
     walk(root, &mut files);
     let (mut copies, mut findings) = (0, Vec::new());
@@ -130,9 +200,9 @@ fn sweep(root: &Path) -> (usize, Vec<String>) {
             continue;
         };
         for t in texts {
-            for b in blocks_in(&t) {
+            for b in blocks_between(&t, start, end) {
                 match b {
-                    Ok(copy) if copy == CANONICAL => copies += 1,
+                    Ok(copy) if copy == canonical => copies += 1,
                     Ok(_) => findings.push(format!(
                         "{}: a copy of the content-budget block differs from the canonical text",
                         f.display()
@@ -187,6 +257,64 @@ fn the_canonical_block_sizes_and_marks_as_designed() {
          assert clip(None, 4) == ''\n\
          assert clip('abcdef', 3) == 'abc...[cut: 3 of 6 chars shown; budget of the window]'\n\
          assert clip('abcdef', 2, 'read with from=9') == 'ab...[cut: 2 of 6 chars shown; read with from=9]'\n\
+         print('ok')\n"
+    );
+    let mut child = Command::new("python3")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python3");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(probe.as_bytes())
+        .expect("write");
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "ok",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// GH #1526: every copy of v2 is its canonical text, and the cells that
+/// measure with the target's rate carry it.
+#[test]
+fn every_copy_of_the_v2_block_is_its_canonical_text() {
+    let (copies, findings) = sweep_for(&templates_root(), START_V2, END_V2, CANONICAL_V2);
+    eprintln!("content-budget v2: {copies} canonical copies under templates/");
+    assert!(findings.is_empty(), "{findings:#?}");
+    for cell in V2_CELLS {
+        let (n, f) = sweep_for(&templates_root().join(cell), START_V2, END_V2, CANONICAL_V2);
+        assert!(f.is_empty(), "{cell}: {f:#?}");
+        assert_eq!(n, 1, "{cell} carries the block that takes a rate");
+    }
+}
+
+/// GH #1526 (lock): without a rate v2 counts exactly like v1 -- the core's
+/// three characters a token (`content_budget.rs`) -- and with one it counts
+/// at that rate; a rate that is no number above zero is none.
+#[test]
+fn the_v2_block_without_a_rate_counts_as_v1() {
+    let probe = format!(
+        "{CANONICAL_V2}\n\
+         assert budget_chars(120000, 0.25) == 90000\n\
+         assert budget_chars('250000', 0.1) == 75000\n\
+         assert budget_chars(None, 0.1) is None\n\
+         assert budget_chars('', 0.1) is None\n\
+         assert budget_chars(0, 0.5) is None\n\
+         assert budget_chars(-5, 0.5) is None\n\
+         assert budget_chars(1000, 0.1, None) == 300\n\
+         assert budget_chars(1000, 0.1, 4) == 400\n\
+         assert budget_chars(1000, 0.1, '4') == 400\n\
+         assert budget_chars(1000, 0.1, 3.5) == 350\n\
+         for bad in (0, -1, '', 'x', True, float('nan'), float('inf'), [4]):\n\
+         \x20   assert budget_chars(1000, 0.1, bad) == 300, bad\n\
+         assert budget_chars(None, 0.1, 4) is None\n\
+         assert clip('abcdef', 3) == 'abc...[cut: 3 of 6 chars shown; budget of the window]'\n\
          print('ok')\n"
     );
     let mut child = Command::new("python3")

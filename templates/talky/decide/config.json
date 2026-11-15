@@ -14,7 +14,8 @@
     "base_url_allow": [],
     "external_timeout_ms": 3000,
     "http_referer": "${OPENROUTER_HTTP_REFERER:-https://meclaw.ai}",
-    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}"
+    "x_title": "${OPENROUTER_X_TITLE:-MeClaw}",
+    "package_line": true
   },
   "contract": {
     "version": "1.0.0",
@@ -73,13 +74,26 @@
         "meta": {
           "type": "object",
           "required": false
+        },
+        "package": {
+          "type": "object",
+          "required": false
+        },
+        "window_profile": {
+          "type": "object",
+          "required": false
+        },
+        "system_order": {
+          "type": "array",
+          "required": false
         }
       },
       "hop": {
         "route": {
           "type": "string",
           "values": [
-            "credential_request"
+            "credential_request",
+            "package"
           ],
           "required": false
         },
@@ -91,7 +105,8 @@
           "type": "string",
           "required": true,
           "optional_on_route": [
-            "credential_request"
+            "credential_request",
+            "package"
           ]
         },
         "tokens_prompt": {
@@ -158,6 +173,14 @@
           "type": "array",
           "required": false
         },
+        "chars_per_token": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_per_image": {
+          "type": "number",
+          "required": false
+        },
         "dropped": {
           "type": "array",
           "required": false
@@ -171,6 +194,10 @@
           "required": false
         },
         "refused_model": {
+          "type": "string",
+          "required": false
+        },
+        "package_of": {
           "type": "string",
           "required": false
         }

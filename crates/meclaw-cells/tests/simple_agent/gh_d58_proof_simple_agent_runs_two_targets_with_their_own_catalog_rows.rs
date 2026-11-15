@@ -205,7 +205,11 @@ async fn gh_d58_proof_simple_agent_runs_two_targets_with_their_own_catalog_rows(
         if cfg["params"]["package_line"] != json!(true) {
             failures.push(format!("{t}: no `package_line`"));
         }
-        if !cfg["params"]["window_profile"]["window_target"].is_number() {
+        // GH #1526 (option B): a composition carries its window bound as a
+        // share of its target's window, `window_target_share`; the token knob
+        // `window_target` stays an override no composition sets
+        // (gh_d58_grenzen_no_set_or_composition_sets_a_token_knob).
+        if !cfg["params"]["window_profile"]["window_target_share"].is_number() {
             failures.push(format!(
                 "{t}: no window bound of its own in its profile: {}",
                 cfg["params"]["window_profile"]
@@ -273,7 +277,8 @@ async fn gh_d58_proof_simple_agent_runs_two_targets_with_their_own_catalog_rows(
             .find(|(hop, _, _)| hop["route"] == "in_catalog")
             .map(|(_, _, b)| b.clone())
             .unwrap_or_default();
-        if !line["window_profile"]["window_target"].is_number() {
+        // The profile's own window bound is its share (GH #1526, option B).
+        if !line["window_profile"]["window_target_share"].is_number() {
             failures.push(format!("{t}: its package line carries no profile: {line}"));
         }
     }

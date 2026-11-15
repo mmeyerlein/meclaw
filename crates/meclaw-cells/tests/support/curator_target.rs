@@ -492,10 +492,12 @@ pub fn lock_findings(
         .unwrap_or_else(|e| panic!("not a list ({e}): {}", String::from_utf8_lossy(&out.stdout)))
 }
 
-/// The script of every cell under `templates/curator/`, `(where, code)`.
+/// The script of every cell under `templates/curator/` and, since d58-3
+/// namen (GH #1525, contract point 6), under `templates/lead/` -- the
+/// switch is held to the same names as the curator -- `(where, code)`.
 pub fn curator_sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let mut stack = vec![repo("templates/curator")];
+    let mut stack = vec![repo("templates/curator"), repo(NAMEN_LEAD_ROOT)];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -535,4 +537,124 @@ pub fn adds_since(h: &Hive, since: usize) -> Vec<Msg> {
 /// rebuild of its own (`curate_mark` "target").
 pub fn wall_usage() -> Value {
     warm_usage()
+}
+
+// namen
+//
+// d58-3 namen (GH #1525, contract point 6, R-583-1 form B): the lock reads
+// the lead's scripts beside the curator's ([`curator_sources`]) and, as its
+// third source, every string and every key of the params of each cell of
+// both hives -- the defaults a bare hive runs on. WHY: the names of a
+// composition hid in knob defaults (`errand_slot` "consult", `side_slot`
+// "bridge") where the script reader never looked, and the policy's own table
+// test had to swap them out (`neutral_params`, gone with this strand).
+
+/// The lead hive, read by the lock beside `templates/curator/`.
+pub const NAMEN_LEAD_ROOT: &str = "templates/lead";
+
+/// The params the lock does not read as knob defaults: the script (read by
+/// the script reader), the contract (its own reader) and the sandbox.
+pub const NAMEN_UNREAD_PARAMS: [&str; 3] = ["script_inline", "contract", "sandbox"];
+
+/// The names of the needs a composition recalls or states by (`memory`,
+/// `orga`); the curator and the lead read them from a param.
+pub const NAMEN_NEED_NAMES: [&str; 2] = ["memory", "orga"];
+
+/// The params reader: every string and key under `params` (the top-level
+/// keys of [`NAMEN_UNREAD_PARAMS`] left out) split into words at
+/// `[^a-z0-9_-]` -- the form of `neutral` in the table test of the target
+/// strand -- and each word read as the script reader reads a literal (a
+/// phase or lane form by its parts as well). Read lower-cased (fix round,
+/// review M6): "Consult ..." at the start of a sentence is the name too.
+const NAMEN_PARAM_READER: &str = r#"
+import json, re, sys
+d = json.load(sys.stdin)
+names = set(d["names"])
+skip = set(d["skip"])
+PHASE = re.compile(r"^[a-z][a-z0-9_]*(?:-[a-z0-9_]+)+$")
+LANE = re.compile(r"^in_[a-z0-9_]+$")
+WORD = re.compile(r"[a-z0-9_-]+")
+def hits_of(s):
+    words = set(re.split(r"[-_]", s)) if PHASE.match(s) or LANE.match(s) else set()
+    return sorted(({s} | words) & names)
+def walk(v, at):
+    if isinstance(v, str):
+        yield at, v
+    elif isinstance(v, list):
+        for i, x in enumerate(v):
+            yield from walk(x, "%s[%d]" % (at, i))
+    elif isinstance(v, dict):
+        for k, x in v.items():
+            yield "%s (key)" % at, k
+            yield from walk(x, "%s.%s" % (at, k))
+out = []
+for src in d["params"]:
+    params = src["params"] if isinstance(src["params"], dict) else {}
+    for k, v in params.items():
+        if k in skip:
+            continue
+        for at, s in walk({k: v}, "params"):
+            for w in WORD.findall(s.lower()):
+                for h in hits_of(w):
+                    out.append("%s %s: %r" % (src["where"], at, h if h == w else "%s in %s" % (h, w)))
+print(json.dumps(out))
+"#;
+
+/// Every name of `names` the lock finds in the params of `params`
+/// (`(where, params)`), read by [`NAMEN_PARAM_READER`].
+pub fn namen_param_findings(names: &[&str], params: &[(String, Value)]) -> Vec<String> {
+    let doc = json!({
+        "names": names,
+        "skip": NAMEN_UNREAD_PARAMS,
+        "params": params.iter().map(|(w, p)| json!({"where": w, "params": p})).collect::<Vec<_>>(),
+    });
+    let out = run_python(NAMEN_PARAM_READER, &sj::to_string(&doc).expect("json"));
+    assert!(
+        out.status.success(),
+        "the lock's params reader runs: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    sj::from_slice::<Vec<String>>(&out.stdout)
+        .unwrap_or_else(|e| panic!("not a list ({e}): {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+/// The params of every `config.json` under `templates/curator/` and
+/// [`NAMEN_LEAD_ROOT`] (the hives' own and each cell's), `(where, params)`.
+pub fn namen_param_sources() -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    let mut stack = vec![repo("templates/curator"), repo(NAMEN_LEAD_ROOT)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n == "config.json") {
+                let rel = p
+                    .strip_prefix(repo(""))
+                    .map(|r| r.display().to_string())
+                    .unwrap_or_else(|_| p.display().to_string());
+                out.push((rel, read_json(&p)["params"].clone()));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// What the whole lock finds in the shipped tree for `names`: the scripts of
+/// both hives ([`curator_sources`]), the edges and the contract of the
+/// curator hive, and the params of both ([`namen_param_sources`]).
+pub fn namen_lock_findings(names: &[&str]) -> Vec<String> {
+    let hive = read_json(&repo("templates/curator/config.json"));
+    let mut found = lock_findings(
+        names,
+        &curator_sources(),
+        &hive["params"]["graph"]["edges"],
+        &hive["params"]["contract"],
+    );
+    found.extend(namen_param_findings(names, &namen_param_sources()));
+    found
 }

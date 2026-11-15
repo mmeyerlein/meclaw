@@ -1,0 +1,54 @@
+{
+  "id": "gen-1794655227-y2X4Ulcn5m6t8n7wHvVB",
+  "object": "chat.completion",
+  "created": 1794655227,
+  "model": "google/gemini-4-hydrogen",
+  "provider": "Google",
+  "system_fingerprint": null,
+  "service_tier": "default",
+  "choices": [
+    {
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "STOP",
+      "message": {
+        "role": "assistant",
+        "content": "OK",
+        "refusal": null,
+        "reasoning": null,
+        "reasoning_details": [
+          {
+            "type": "reasoning.encrypted",
+            "data": "AY89a1/gJuGwYGJIZ6LDbkux9FriWjdofH3OOwjk+YLiSba6HizT6r3SQzch4uq3Jl4rLXgwR5NwcyE0PAEOv7Rg5vUz9ksMxapmmkydHg7UpWpLMyRkUPcSU5ewH1i1jzmwIiS3JUQE51fgQ+uErRuAWRrvHOGYPbK4oq2SAJGePtpEmKz5A7wKI9bafGCwMWdaVfRQeOAipBxCUKFxgKJQEgT0rubWmcTot7L5mZkt6LZ3z6ZJdb6LDi4yaWY5bqcXKxWXo1l6Ysr2jTdh6ZOiazjMDG6Zibr2neCgDkvhSIAbJz29uL/sl6nN7zkklaZEjn0=.eyJlbmRwb2ludF9zbHVnIjoiZ29vZ2xlL2dlbWluaS00LWh5ZHJvZ2VuLTIwMjYxMTEyfGdvb2dsZS12ZXJ0ZXgvZ2xvYmFsIn0",
+            "format": "google-gemini-v1",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 45,
+    "completion_tokens": 33,
+    "total_tokens": 78,
+    "cost": 0.00031185,
+    "is_byok": false,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 0.000315,
+      "upstream_inference_prompt_cost": 6.75e-05,
+      "upstream_inference_completions_cost": 0.0002475
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 28,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  }
+}

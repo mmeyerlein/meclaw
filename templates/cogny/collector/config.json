@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@6.1.0"
+    "template": "collector@7.0.0"
   },
   "override_params": {
     "assemble": {
@@ -12,7 +12,10 @@
       "defer_turns": "0",
       "max_iter": 16,
       "round_idle_ms": 630000,
-      "fold_tools": "1"
+      "fold_tools": "1",
+      "recall_needs": [
+        "memory"
+      ]
     }
   }
 }

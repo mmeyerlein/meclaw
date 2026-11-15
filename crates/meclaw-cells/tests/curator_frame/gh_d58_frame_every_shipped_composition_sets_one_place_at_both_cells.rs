@@ -18,7 +18,9 @@
 //! compositions (plan review R-H3); empty values are not written into the
 //! compositions to make it bite here.
 //!
-//! Reads the shipped templates (`support/curator_hive.rs` for the paths).
+//! Reads the shipped templates (`support/curator_hive.rs` for the paths and
+//! the reader `place_findings`, which the counter-arm
+//! `gh_d583_kern_a_place_at_one_cell_only_is_red` judges too).
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -26,28 +28,6 @@ use crate::curator_hive; // harness_fold: mod curator_hive;
 
 use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
-
-const KNOBS: [&str; 2] = ["place", "timezone"];
-
-/// The value `knob` has at `cell` under the overrides `over` of a curator
-/// node: the override, else the cell's shipped param.
-fn value_at(over: &Value, cell: &str, knob: &str) -> Value {
-    match over.get(cell).and_then(|c| c.get(knob)) {
-        Some(v) if !v.is_null() => v.clone(),
-        _ => cell_config(cell)["params"][knob].clone(),
-    }
-}
-
-/// Every knob of [`KNOBS`] whose value differs between the two cells.
-fn findings(name: &str, over: &Value) -> Vec<String> {
-    KNOBS
-        .iter()
-        .filter_map(|k| {
-            let (p, h) = (value_at(over, "policy", k), value_at(over, "history", k));
-            (p != h).then(|| format!("{name}: `{k}` is {p} at policy and {h} at history"))
-        })
-        .collect()
-}
 
 /// The curator nodes of the shipped compositions: every `config.json`
 /// under `templates/` (outside the curator itself and the pinned copies)
@@ -102,18 +82,18 @@ fn gh_d58_frame_every_shipped_composition_sets_one_place_at_both_cells() {
     );
     let mut failures = Vec::new();
     for (name, over) in &nodes {
-        failures.extend(findings(name, over));
+        failures.extend(place_findings(name, over));
     }
     // The reader trips on a composition that sets the place at one cell.
     let one_sided = json!({"policy": {"place": "Springfield"}});
     assert!(
-        !findings("built here", &one_sided).is_empty(),
+        !place_findings("built here", &one_sided).is_empty(),
         "check of the setup: a place at the policy only is a finding"
     );
     let both = json!({"policy": {"place": "Springfield", "timezone": "Europe/Berlin"},
                       "history": {"place": "Springfield", "timezone": "Europe/Berlin"}});
     assert!(
-        findings("built here", &both).is_empty(),
+        place_findings("built here", &both).is_empty(),
         "check of the setup: the same values at both cells are no finding"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));

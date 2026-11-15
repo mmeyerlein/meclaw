@@ -2,7 +2,7 @@
 //!
 //! WHY this file exists: on the phone the live model keeps the talk going
 //! while a tool round or a delegation runs, and without a sense of time it
-//! fills the wait blindly (plan d53 T2 § V3, R-D53-2). With `horizon_advise`
+//! fills the wait blindly (plan d53 T2 § V3, R-D53-2). With `horizon_feed`
 //! on, a running session's turn (`live`, D58 live) that gets a tool round or a delegation sends ONE
 //! `live_feed` with `hop.section` `horizon` (the voice's
 //! `horizon_text` says it): how many seconds the answer will take -- the
@@ -36,7 +36,7 @@ const ASK: &str = "What is the weather in Berlin?";
 
 fn hive(defaults: Value) -> Hive {
     let mut h = Hive::with(&[
-        ("lead", "horizon_advise", json!("1")),
+        ("lead", "horizon_feed", json!("1")),
         ("lead", "horizon_defaults_ms", json!(defaults.to_string())),
     ])
     .reporting_composite("talky");
@@ -315,7 +315,7 @@ fn the_horizon_body_carries_no_text() {
     assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
 }
 
-/// Default byte-identical: with `horizon_advise` "0" a live tool round
+/// Default byte-identical: with `horizon_feed` "0" a live tool round
 /// sends, writes and reads exactly what it did without the knobs.
 #[test]
 fn horizon_off_moves_no_byte() {
@@ -343,7 +343,7 @@ fn horizon_off_moves_no_byte() {
     };
     let plain = run(&[]);
     let off = run(&[
-        ("lead", "horizon_advise", json!("0")),
+        ("lead", "horizon_feed", json!("0")),
         ("lead", "horizon_defaults_ms", json!("{\"web\": 4000}")),
         ("lead", "horizon_quantile", json!("75")),
     ]);

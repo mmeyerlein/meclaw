@@ -7,10 +7,15 @@
 //! it condenses no longer mentions -- an open promise from three days ago, a
 //! delegation still running, a fact the person set today. Z1 renders that
 //! state deterministically (`state_block`, GH #1439); Z3 hands the same line
-//! to the summarizer behind the transcript, without the running topic (the
+//! to the summarizer ahead of the transcript, without the running topic (the
 //! topic moves, it is no "must stay"), parts `promised`, `open`,
 //! `set_today` only. And the delta merge never drops an old line the model
 //! did not repeat, so a listed promise already in the brief stays.
+//!
+//! d58-3 oc9 (P2R): the state stood behind the transcript until a small
+//! summarizer answered 6 of 6 such requests with stop reason `refusal`; ahead
+//! of the transcript rows (still after the cut, so the cut never meets it) it
+//! answered 11 of 12.
 //!
 //! Depends on Z1's `state_block`/`state_of_rows` (curator/policy). Stub
 //! summarizer (`support/curator_hive.rs` `Hive::answer`).
@@ -110,11 +115,14 @@ fn state_cond_keeps_the_listed_lines() {
     let line = transcript
         .lines()
         .find(|l| l.starts_with("[state -- "))
-        .unwrap_or_else(|| panic!("the state line rides behind the transcript: {transcript}"))
+        .unwrap_or_else(|| panic!("the state line rides with the transcript: {transcript}"))
         .to_string();
+    let at = |p: &dyn Fn(&str) -> bool| transcript.lines().position(p);
+    let state_at = at(&|l: &str| l == line).expect("the state line");
+    let row_at = at(&|l: &str| l.starts_with("[#")).expect("a transcript row");
     assert!(
-        transcript.trim_end().ends_with(&line),
-        "after the transcript, last: {transcript}"
+        state_at < row_at,
+        "the state stands ahead of the transcript rows: {transcript}"
     );
     for part in [
         format!("promised: {PROMISE}"),

@@ -7,6 +7,9 @@ pub mod curator_feed;
 pub mod curator_hive;
 #[path = "../support/curator_live.rs"]
 pub mod curator_live;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
+pub mod gh1540_the_voice_hears_its_delegation;
 pub mod gh_d54g_kprofil_feed;
 pub mod gh_d58_feed_a_fed_note_is_not_announced_again_by_the_next_renewal;
 pub mod gh_d58_feed_a_lost_claim_stays_silent;

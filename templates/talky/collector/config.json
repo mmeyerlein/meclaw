@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "collector@6.1.0"
+    "template": "collector@7.0.0"
   },
   "override_params": {
     "assemble": {
@@ -16,7 +16,10 @@
       "sidecar": "1",
       "fold_tools": "1",
       "hint_own_op": "1",
-      "part_target": "decide"
+      "part_target": "decide",
+      "recall_needs": [
+        "memory"
+      ]
     }
   }
 }

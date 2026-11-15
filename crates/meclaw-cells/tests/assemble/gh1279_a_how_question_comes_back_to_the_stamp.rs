@@ -516,7 +516,7 @@ fn the_route_renders_the_persons_hints() {
 // WHY: the route rendered every hint the brief served (only `hint_rows` of the
 // affinity bounds the count, each answer in full) outside every token budget of
 // the decide window. Now the hints count against the window's own budget
-// (`context_budget_tokens`, the one the wall cut the turns to) beside the turns
+// (the view's `budget_tokens`, the one the wall cut the turns to) beside the turns
 // already in it: the newest hints that fit stay whole, the older ones go whole
 // (never half a sentence), and a cut says so with a mark naming what was shown
 // and the total, like every other curated block (R-IG-1).
@@ -551,16 +551,12 @@ fn judge_with(turns: Value, hints: Value) -> Value {
            "now": {}, "place": "", "hints": hints})
 }
 
+/// GH #1526: the budget is the one the curator sized the view by and says
+/// back in the view (`budget_tokens`), no longer a param of the route.
 fn decide_state_within(judge: Value, budget: u64) -> String {
-    let out = run_cell(
-        ROUTE,
-        &[
-            ("judge_context", json!("1")),
-            ("context_budget_tokens", json!(budget)),
-        ],
-        judged_turns(judge),
-    )
-    .0;
+    let mut view = judged_turns(judge);
+    view["budget_tokens"] = json!(budget);
+    let out = run_cell(ROUTE, &[("judge_context", json!("1"))], view).0;
     let d = out
         .iter()
         .find(|m| m["header"]["route"] == "decide")
@@ -622,4 +618,54 @@ fn hints_inside_the_budget_render_as_before() {
     );
     assert!(state.contains(&block), "{state}");
     assert!(!state.contains("[cut:"), "{state}");
+}
+
+/// GH #1526 (d58-3 grenzen, contract point 1): the curator counts the view at
+/// the rate of the judge's catalog row and says it back beside the budget
+/// (`chars_per_token`, pinned in
+/// `curator_sections/gh_d583_grenzen_the_budget_uses_the_targets_rate.rs`);
+/// the route counts its hints and the turns at that rate, never at three. At
+/// four characters a token the budget below holds the two newest hints -- at
+/// three it held one.
+#[test]
+fn the_hints_count_at_the_rate_the_view_names() {
+    let hints = long_hints();
+    let at = |rate: usize| -> Vec<(String, usize)> {
+        hints
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| {
+                let (line, _) = hint_line(h);
+                let tokens = line.len().div_ceil(rate);
+                (line, tokens)
+            })
+            .collect()
+    };
+    let (four, three) = (at(4), at(3));
+    let budget = (four[0].1 + four[1].1 + four[2].1 / 2) as u64;
+    assert!(
+        (three[0].1 + three[1].1) as u64 > budget,
+        "at three the two newest do not fit this budget"
+    );
+    let mut view = judged_turns(judge_with(json!([]), hints.clone()));
+    view["budget_tokens"] = json!(budget);
+    view["chars_per_token"] = json!(4);
+    let out = run_cell(ROUTE, &[("judge_context", json!("1"))], view).0;
+    let d = out
+        .iter()
+        .find(|m| m["header"]["route"] == "decide")
+        .unwrap_or_else(|| panic!("no decide: {out:?}"));
+    let state = d["decide"]["state"].as_str().expect("state");
+    assert!(state.contains(&four[0].0), "{state}");
+    assert!(state.contains(&four[1].0), "{state}");
+    let mark = format!(
+        "...[cut: 2 of 3 hints shown, {} of {} tokens; budget of the window]",
+        four[0].1 + four[1].1,
+        four.iter().map(|(_, t)| t).sum::<usize>()
+    );
+    assert!(state.contains(&mark), "{mark}\n{state}");
+    // Without a rate in the view: the one estimate, one hint.
+    let state = decide_state_within(judge_with(json!([]), hints), budget);
+    assert!(!state.contains("The middle one"), "{state}");
 }

@@ -1,4 +1,4 @@
-# `llm-registry@2.14.1`
+# `llm-registry@2.15.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -120,7 +120,7 @@ it is born with.
 | `cost_cached_in` | the column of the same name -- the price of a million prompt tokens read from the provider's cache, in cents and with fractions (`pricing.input_cache_read` of the listing), stamped as `hop.cost_cached_in`. The row's `cost_cache_write` (cache write price) stays in the catalogue and is not pushed |
 | `price_tiers` | the column of the same name (GH #1318) -- the price steps of a model that bills a long prompt dearer, above the base step `cost_in`/`cost_out`: a list of `{"above_input", "cost_in", "cost_out"}` with an optional `cost_cached_in`, `above_input` rising (the step applies to a prompt of more tokens), each under the row's window. `model_upsert` refuses a list that is out of order, misses a price or holds a step at or over the window of the row it will stand in (`invalid_model_field`); a step without a cached price is stamped with its input price as the cached one (no discount assumed); `[]` (the default) = one price, and nothing is pushed. The brain stamps the step its prompt falls in as `hop.cost_in`/`hop.cost_cached_in`, so the curator weighs a long window at the price it is billed at. A price lives in the columns, never in the `note`: a test refuses a note that states one |
 | `chars_per_token`, `tokens_per_image` | `package` -- the rates the brain's window estimate counts a prompt with against `input_hard` and `context_window`: bytes of text a token (fractions allowed) and tokens an inline image. Every shipped row states them and its note names the source; a row without them leaves the brain its cautious defaults, three bytes and 1024 tokens (GH #1085) |
-| `output_tps` | the column of the same name -- the model's measured slow output rate in tokens per second; a row without a measurement brings the rate of the slowest measured row, a catalogue without any sends none. A brain that opts in (`external_timeout_from_chain`, `talky/quick` as shipped) derives its operation timeout from it after a push, by the timeout chain of `docs/cell-types.md`; every other brain only shows it in its params line (GH #1350) |
+| `output_tps` | the column of the same name -- the model's measured slow output rate in tokens per second; a row without a measurement brings the rate of the slowest measured row, at most 42 tokens a second (`UNMEASURED_OUTPUT_TPS`, the slowest rate ever measured on a catalogue row, GH #1525), a catalogue without any sends none. A brain that opts in (`external_timeout_from_chain`, `talky/quick` as shipped) derives its operation timeout from it after a push, by the timeout chain of `docs/cell-types.md`; every other brain only shows it in its params line (GH #1350) |
 | `tool_choice_required` | `package` -- whether the model's host takes a forced tool call; absent = it does. `false` on a row whose pinned host refuses `tool_choice: "required"` (`openai/gpt-oss-120b` on its pinned host: HTTP 404, the gateway's tool compatibility filter drops the only endpoint): a call whose `tool_scope` requires a tool then goes out on `auto`, and the brain says so once per package and waking (`require_degraded`, GH #1260) |
 | `reasoning_effort`, `reasoning_wire`, `reasoning`, `thinking_budget`, `max_tokens`, `temperature`, `external_timeout_ms`, `provider_extra` | `package`, a json object; any other key in it is dropped and never reaches a cell |
 
@@ -467,7 +467,7 @@ the row, `./hand` refuses a translation that names it anyway (`translation_outsi
 and the ranked search of `./select` never offers it, while a named tier that points at it still
 resolves to it. The row is outside the catalogue the translator reads, so it is outside the
 catalogue hash too: adding, changing or retiring an explicit row asks no requirement again.
-`qwen/qwen3.7-flash` ships as `explicit`. A row can say what no row could before, so it is the
+`openai/gpt-oss-120b`, the cheapest hosted row with tools, ships as `explicit`. A row can say what no row could before, so it is the
 second digit.
 
 ## How a brain becomes a subscriber
@@ -665,42 +665,44 @@ the **template** -- the store has a `delete` op and would happily run it.
 
 ## The seed
 
-`store/seed/models.jsonl` ships **six rows a hosted provider lists publicly, as of
-2026-09-26** -- id, context window and list price in cents per million tokens, all behind one
-OpenAI-compatible gateway endpoint (`https://openrouter.ai/api/v1`, `chat_completions`), each
-with a sentence of `strengths` for the translator and how its provider caches (`cache_mode`,
-`cache_ttl_s`, the source in its `note`) -- plus one row retired on purpose and, since GH #957,
-one typed decisions model behind the same gateway (`https://openrouter.ai/api`, `decisions`),
-read 2026-10-02, and one local row (`provider` `local`, read 2026-10-07): a model an
-OpenAI-compatible server runs on the operator's own hardware, its window the `max_model_len` the
-server reports, no endpoint (the cell keeps the `base_url` its set gives it) and no price:
+`store/seed/models.jsonl` keeps **one row per model family, the newest the provider lists**
+(GH #1525, read 2026-11-14): hosted rows behind one OpenAI-compatible gateway endpoint
+(`https://openrouter.ai/api/v1`, `chat_completions`), each with a sentence of `strengths` for the
+translator and how its provider caches (`cache_mode`, `cache_ttl_s`, the source in its `note`);
+one typed decisions model behind the same gateway (`https://openrouter.ai/api`, `decisions`, since
+GH #957); and one local row (`provider` `local`, read 2026-10-07): a model an OpenAI-compatible
+server runs on the operator's own hardware, its window the `max_model_len` the server reports, no
+endpoint (the cell keeps the `base_url` its set gives it) and no price. A family's older model
+leaves the catalogue when its successor is listed, and every row names its successor's sources
+in its `note`:
 
 | model | context | in / out (cents per million) | status |
 |---|---|---|---|
 | `anthropic/claude-opus-5.5` | 1 000 000 | 400 / 2000 | active |
-| `anthropic/claude-sonnet-5` | 1 000 000 | 200 / 1000 | active |
-| `google/gemini-3.8-flash` | 1 048 576 | 75 / 375 | active |
+| `anthropic/claude-sonnet-5.5` | 1 000 000 | 200 / 1000 | active |
+| `google/gemini-4-hydrogen` | 1 048 576 | 150 / 750 | active |
 | `openai/gpt-6-luna` | 1 050 000 | 10 / 50 | active |
-| `openai/gpt-6-sol` | 1 050 000 | 200 / 1000 | active |
+| `openai/gpt-6.1-sol` | 1 050 000 | 200 / 1000 (400 / 1500 above 272k) | active |
 | `qwen/qwen3.8-flash` | 1 000 000 | 15 / 47 | active |
-| `openai/gpt-5.6-luna` | 1 050 000 | 20 / 120 | retired |
-| `typesafe/jev-1.13` (decisions) | 32 000 | 4 / 0 | active |
-| `qwen/qwen3.7-flash` | 1 000 000 | 3 / 13 | explicit |
+| `typesafe/jev-1.14` (decisions) | 262 144 | 4 / 0 | active |
 | `qwen3.8-27b` (local) | 150 000 | 0 / 0 | explicit |
 | `google/gemini-embedding-2` (embeddings) | 8 192 | 20 / 0 | explicit |
-| `openai/gpt-4o-mini` | 128 000 | 15 / 60 | explicit |
 | `claude-haiku-5-5` (native Messages) | 1 000 000 | 10 / 50 | explicit |
+| `anthropic/claude-haiku-5.5` | 1 000 000 | 10 / 50 | explicit |
+| `openai/gpt-oss-120b` | 131 072 | 5 / 25 | explicit |
+
+GH #1525 (2026-11-14) replaced the previous Sonnet, Sol, Gemini Flash and decisions rows by their
+successors above (the chat rows measured again with `workshop/tools/llm-conformance`, the
+decisions row by one live call),
+and struck the rows whose family already had a newer row: the older qwen flash, the retired luna
+of the previous generation, and the two GPT-4o rows, whose provider names `openai/gpt-6-luna` as
+their replacement. The cells that were born on those two now are born on `openai/gpt-6-luna`.
 
 Since GH #1085 the seed carries one embeddings row, read 2026-10-07: `google/gemini-embedding-2`,
 the model the embed cells of the memory hive and the file space call. `wire_dialect` `embeddings`
 names its protocol and `explicit` keeps it out of every translation and ranked select; it is in
 the catalogue for its window, the number a producer sizes what it embeds by, not to be handed to
 a brain.
-
-Since GH #1085 the seed also carries `openai/gpt-4o-mini`, read 2026-10-07: the model
-`coder-pipeline`'s planner, coder and reviewer are born on. A producer sizes what it hands a
-model by the window of that model's row, so a template born on a model without a row would size
-by a number of its own; `explicit` keeps it out of every translation and ranked select.
 
 Since GH #1243 the seed carries one native row, read 2026-10-17 from the provider's public model
 overview and price list: `claude-haiku-5-5` on `wire_dialect` `messages`, the model test colonies
@@ -736,13 +738,14 @@ turn, which the model refuses. The OpenRouter rows carry no `cred_ref` on purpos
 grant may name its gateway key `cred:openrouter-<account>`, and a row naming one spelling would
 break every other.
 
-`tiers.jsonl` indexes them as `light` (`openai/gpt-6-luna`), `mid` (`anthropic/claude-sonnet-5`),
+`tiers.jsonl` indexes them as `light` (`openai/gpt-6-luna`), `mid` (`anthropic/claude-sonnet-5.5`),
 `strong` (`anthropic/claude-opus-5.5`) and `quick` (`openai/gpt-oss-120b`, see *Tier names are data*). Prices and listings move; every row says in its
 `note` when it was read, and the operator keeps the catalogue with `model_upsert` and
 `model_retire`. No row carries a prompt block, and the package carries what a measurement rests
 on, nothing more: how a deployment runs a model (reasoning effort, token budget, the lines a model
 needs) is its own decision, and the form is in *The model package* above. Two exceptions. A row
-whose endpoint refuses to switch reasoning off (`openai/gpt-oss-120b`, `google/gemini-3.8-flash`)
+whose endpoint refuses to switch reasoning off (`openai/gpt-oss-120b`, `google/gemini-4-hydrogen`,
+`openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5.5`)
 sends the effort as the `reasoning` object `{"effort": "medium"}` (measured at `low`; `medium`
 since [#1300](https://github.com/mmeyerlein/meclaw/issues/1300), the effort every shipped cell runs
 at), not as the `reasoning_effort` shorthand: a push resets every other key to its birth value, and
@@ -753,11 +756,10 @@ outranks the shorthand and which the endpoint answers with HTTP 400. The object 
 `{"provider": {"order": ["crusoe/bf16"], "allow_fallbacks": false}}`, the gateway's provider
 order with the fallback forbidden (a fallback would serve a slower host under the measured time).
 A test holds a pinned row to a measurement on that same provider (`provider_order` in its
-`measured.json`, written by the conformance tool's `--provider-order`). The retired row is retired in this catalogue, not by the provider:
-the row that replaced it does the same job for less, and a retired row is never a result.
-The `explicit` row was added for one lab use (GH #1017): it is the cheapest row with tools, so
-as an active row it would become the translator's answer to every requirement that asks for a
-low price; as `explicit` it serves only the cells a replacement or a tier sends to it.
+`measured.json`, written by the conformance tool's `--provider-order`). The `explicit`
+rows are reached by name only (GH #1017, GH #1025): the cheapest hosted row with tools as an active
+row would become the translator's answer to every requirement that asks for a low price; as
+`explicit` it serves only the cells a replacement or a tier sends to it.
 `traits` stays empty -- a curated score is a judgement a deployment makes about its own work.
 `subscribers` is deliberately **not** seeded -- an invented subscriber path would push params at
 a cell that does not exist -- and neither are `overrides`, `translations`, `open_questions` and `incidents`, which
@@ -808,12 +810,13 @@ moves it with one `remap`. The seed's `quick` is `openai/gpt-oss-120b` pinned to
 p50 of 231 ms with 20 of 20 hits and a p95 of 333 ms. Pinned to other fast hosts the same model
 measured 325 ms (`nebius/fp4`, 19 of 20, one tool argument not valid JSON), 333 ms
 (`cerebras/fp16`, p95 1617 ms), 337 ms (`groq`) and 667 ms (`coreweave/fp4`); on the gateway's
-default routing 1624 ms. Behind it, earlier the same day, `anthropic/claude-haiku-5.5` through the
-gateway (926 ms, 20 of 20) and `qwen/qwen3.7-flash` (1201 ms, 20 of 20; 1115 ms on 2026-10-16). The first measurement, on 2026-10-16, put
-`qwen/qwen3.7-flash` ahead of `openai/gpt-6-luna` (1169 ms, 19 of 20), `qwen/qwen3.8-flash`
-(1359 ms, 19 of 20) and `google/gemini-3.8-flash` (2149 ms, 20 of 20). The gemini and gpt-oss
-times were taken with reasoning at effort low, because their endpoints refuse reasoning off; the
-rows' `note` says so. The native `claude-haiku-5-5` row is timed as well (857 ms), but it speaks
+default routing 1624 ms. Behind it,
+earlier the same day, `anthropic/claude-haiku-5.5` through the gateway (926 ms, 20 of 20). On
+2026-11-14 (GH #1525) the successors were timed the same way: `anthropic/claude-sonnet-5.5`
+983 ms (16 of 16; the cost guard stopped the run after 16 of 20 calls), `google/gemini-4-hydrogen`
+1131 ms (20 of 20) and `openai/gpt-6.1-sol` 1768 ms (19 of 20), all three with reasoning at effort
+low, because their endpoints refuse reasoning off; the rows' `note` says so. Earlier measurements of
+rows that have left the catalogue are in the git history of this file. The native `claude-haiku-5-5` row is timed as well (857 ms), but it speaks
 another protocol that no chat cell is resolved to, so it is never the tier's answer. The
 recordings lie under `crates/meclaw-cells/tests/fixtures/conformance/<slug>/latency.json`, and a
 test holds the seed's `response_ms` and the `quick` row to them.

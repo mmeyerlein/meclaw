@@ -1,0 +1,42 @@
+//! Test harness `curator_walls_1` of `meclaw-cells`: one binary, one module per old file.
+//! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
+
+#[path = "../support/curator_bank.rs"]
+pub mod curator_bank;
+#[path = "../support/curator_hive.rs"]
+pub mod curator_hive;
+#[path = "../support/curator_profiles.rs"]
+pub mod curator_profiles;
+pub mod gh_d583_ballast_a_block_not_read_asks_nothing;
+pub mod gh_d583_ballast_a_failed_judge_keeps_the_round;
+pub mod gh_d583_ballast_a_kept_round_stays_raw;
+pub mod gh_d583_ballast_a_long_line_is_cut;
+pub mod gh_d583_ballast_a_mark_moves_nothing_before_the_rebuild;
+pub mod gh_d583_ballast_a_marked_round_becomes_one_line_at_the_next_rebuild;
+pub mod gh_d583_ballast_a_round_led_by_a_tool_row_is_one_text_line;
+pub mod gh_d583_ballast_a_row_the_judge_did_not_see_stays_raw;
+pub mod gh_d583_ballast_a_set_override_is_taken;
+pub mod gh_d583_ballast_a_tool_round_becomes_one_line;
+pub mod gh_d583_ballast_an_asked_round_is_held_by_its_round;
+pub mod gh_d583_ballast_bank_ballast_is_out;
+pub mod gh_d583_ballast_bridge_a_bridge_with_its_result_leaves_at_the_rebuild;
+pub mod gh_d583_ballast_bridge_a_bridge_without_its_result_stays_raw;
+pub mod gh_d583_ballast_bridge_a_later_rounds_result_settles_the_bridge;
+pub mod gh_d583_ballast_bridge_recent_bridges_stay_raw;
+pub mod gh_d583_ballast_bridge_the_class_is_counted;
+pub mod gh_d583_ballast_bridge_the_mark_moves_nothing_before_the_rebuild;
+pub mod gh_d583_ballast_bridge_the_original_stays_readable;
+pub mod gh_d583_ballast_bridge_the_plan_holds_a_bridge_by_its_round;
+pub mod gh_d583_ballast_off_sends_no_judge_call;
+pub mod gh_d583_ballast_recent_rounds_are_never_shrunk;
+pub mod gh_d583_ballast_the_judge_call_names_its_app;
+pub mod gh_d583_ballast_the_original_stays_readable;
+pub mod gh_d583_oc9_a_brief_cut_off_inside_a_line_leaves_the_old_window;
+pub mod gh_d583_suche_the_whole_wall_is_searched;
+pub mod gh_d583_tag_a_day_change_rebuilds_every_horizon;
+pub mod gh_d583_tag_a_hard_limit_still_cuts_today;
+pub mod gh_d583_tag_a_set_override_of_day_floor_is_taken;
+pub mod gh_d583_tag_all_keeps_today_raw_with_the_floor;
+pub mod gh_d583_tag_bank_the_day_trigger_lands_at_aim;
+#[path = "../mock_openai.rs"]
+pub mod mock_openai;

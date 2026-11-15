@@ -206,6 +206,7 @@ impl CellFactory for ProxyCellFactory {
                 contract.consumes.clone(),
                 contract.transfer_bounds(),
                 contract.ingress_carries_trace,
+                message_timeout,
             )?),
             ProxyPlatform::Meclaw => Box::new(make_build_meclaw(
                 params,
@@ -326,6 +327,7 @@ impl CellFactory for ProxyCellFactory {
                     contract.consumes.clone(),
                     contract.transfer_bounds(),
                     contract.ingress_carries_trace,
+                    message_timeout,
                 )
                 .ok()?,
             ),
@@ -573,10 +575,15 @@ fn make_build_slack(
     bounds: meclaw_core::TransferBounds,
     // GH #617 — `contract.ingress.carries_trace`, handed to the LR funnel.
     carries_trace: bool,
+    // GH #1530 — this cell's resolved `message_timeout`: the fallback ceiling
+    // of the reaction keeper without `typing_max_ms`, as for Telegram (GH #1099).
+    default_backstop: Option<std::time::Duration>,
 ) -> Result<impl Fn() -> SpawnTuple, String> {
     // Parsed once, outside the closure: a params error must surface as a spawn
     // failure, not as a panic on the respawn path.
     let mut parsed = SlackParams::parse(&params)?;
+    let typing_cadence =
+        crate::proxy::typing::TypingCadence::for_connector(parsed.typing_max_ms, default_backstop);
     // GH #1059 (OR-VG-4): a grant set → its literal is never used, not even
     // while the box is missing. Said once per birth, by param name, never value.
     if crate::credential::literal_is_ignored(
@@ -641,7 +648,8 @@ fn make_build_slack(
         let client =
             crate::proxy::slack::client::SlackClient::new(&parsed).expect("SlackClient::new");
         // GH #1059: a grant's connector is born without that token and asks.
-        let cell = crate::proxy::slack::cell::SlackCell::new(&parsed, client);
+        let mut cell = crate::proxy::slack::cell::SlackCell::new(&parsed, client);
+        cell.set_typing_cadence(typing_cadence);
         let cell = cell.with_credential(
             parsed.app_token_grant_id.as_deref(),
             parsed.bot_token_grant_id.as_deref(),

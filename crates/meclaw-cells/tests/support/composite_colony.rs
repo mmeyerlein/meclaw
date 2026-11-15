@@ -509,12 +509,32 @@ pub async fn report_packages_at_boot(td: &tempfile::TempDir, h: &ColonyHandle, c
     let ledger = td
         .path()
         .join(format!("main/{composite}/curator/ledger/cell.db"));
+    // D58-3 limits (GH #1526): a cell whose package line the composite hands
+    // the curator on `in_limits_row` (a target with a view only, no wall) is
+    // held as `limits:<cell>` by history, never as a `catalog:` row; every
+    // other cell's row is `catalog:<cell>`. The lane is read off the
+    // composite's shipped edges, so each cell waits for exactly its key.
+    let edges = read_json(&dir.join("config.json"))["params"]["graph"]["edges"].clone();
+    let limits_row = |cell: &str| {
+        edges.as_array().into_iter().flatten().any(|e| {
+            e["from"] == json!(format!("./{cell}"))
+                && e["to"] == "./curator"
+                && e["modifier"]["set_hop"]["route"] == "'in_limits_row'"
+        })
+    };
     for cell in &cells {
-        let key = format!("catalog:{cell}");
+        let key = if limits_row(cell) {
+            format!("limits:{cell}")
+        } else {
+            format!("catalog:{cell}")
+        };
         let held = || {
-            rows(&ledger, "SELECT key FROM state WHERE key LIKE 'catalog:%'")
-                .iter()
-                .any(|r| r.first() == Some(&key))
+            rows(
+                &ledger,
+                "SELECT key FROM state WHERE key LIKE 'catalog:%' OR key LIKE 'limits:%'",
+            )
+            .iter()
+            .any(|r| r.first() == Some(&key))
         };
         wait::until_with(
             &format!("the curator holds the package of {cell}"),

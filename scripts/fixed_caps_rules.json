@@ -1,0 +1,49 @@
+{
+ "about": "The rules of the precheck check `fixed-caps` (scripts/fixed_caps.py): a fixed window, budget or rate value a rule matches is justified. A rule is a structure condition -- a name pattern, the values it allows, and what the source around the value has to show (inside_block, block_defines, calls, reads) -- never a list of paths. Every rule carries its reason.",
+ "rules": [
+  {
+   "id": "content-budget-v2-rate",
+   "names": "^CHARS_PER_TOKEN$",
+   "kind": "RATE",
+   "values": [3],
+   "inside_block": "content-budget v2",
+   "block_defines": "chars_per_token_or_core",
+   "calls": "chars_per_token_or_core",
+   "reason": "The content-budget v2 block reads the rate of the target's catalog row through chars_per_token_or_core; 3 is the core's estimate, used only when no row names a rate."
+  },
+  {
+   "id": "image-cost-fallback",
+   "names": "^IMAGE_TOKENS$",
+   "values": [1024],
+   "reads": "tokens_per_image",
+   "reason": "The cell reads tokens_per_image of the model's catalog row; 1024 (the llm cell's own estimate) counts an inline image only when no row names a cost."
+  },
+  {
+   "id": "rate-tokens-milli-unit",
+   "names": "^return:rate_tokens$",
+   "kind": "NUM",
+   "values": [1000],
+   "reads": "chars_per_token",
+   "reason": "rate_tokens counts a text at the rate the cell read (chars_per_token of the curator's answer, the target's catalog row) in thousandths of a character, as the curator's history counts the view; 1000 is that unit, not a window or budget. Any other value, or the same function in a cell that reads no rate, stays a finding."
+  },
+  {
+   "id": "input-soft-fallback",
+   "names": "^input_soft_fallback$",
+   "values": [17500],
+   "reason": "The window of a target with no catalog row; with a row, the row's input_soft sizes the window."
+  },
+  {
+   "id": "embed-input-soft-fallback",
+   "names": "^embed_input_soft_fallback$",
+   "values": [2048],
+   "reason": "The input window of an embedding model with no catalog row; with a row, the row's input_soft sizes it."
+  },
+  {
+   "id": "seed-budget-fallback",
+   "names": "^(seed_budget|SEED_BUDGET_SHIPPED)$",
+   "values": [8192],
+   "reads": "seed_share",
+   "reason": "The start window when the ask names no target window; with a window, seed_share of that window sizes it."
+  }
+ ]
+}

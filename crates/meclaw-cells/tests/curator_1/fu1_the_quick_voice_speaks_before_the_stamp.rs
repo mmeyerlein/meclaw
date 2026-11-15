@@ -3,7 +3,7 @@
 //!
 //! WHY this file exists: a `simple` turn waited for the route stamp (the route
 //! model) before the quick voice was even asked, so the stamp's latency stood
-//! in front of every fast answer. With `quick_speculative` on, the collector
+//! in front of every fast answer. With `spec_ahead` on, the collector
 //! sends the SAME curate of the turn early (`hop.spec = "1"`, no path), the
 //! curator asks the quick voice at once and HOLDS its answer; at the normal
 //! curate (the stamp) it keeps or drops it. A held answer never reaches the
@@ -28,7 +28,7 @@ use meclaw_core::serde_json::{self as sj, Map, Value, json};
 
 fn spec_hive(spec_tools: &str) -> Hive {
     let mut h = Hive::with(&[
-        ("lead", "quick_speculative", json!("1")),
+        ("lead", "spec_ahead", json!("1")),
         ("lead", "spec_tools", json!(spec_tools)),
     ])
     .reporting_composite("talky");
@@ -372,7 +372,7 @@ fn spec_off_parks_a_spec_curate() {
     }
     // The knobs live in the lead since GH #1447 (its own hive since GH #1474).
     let policy = lead_config("lead");
-    for (k, v) in [("quick_speculative", "0"), ("spec_tools", "")] {
+    for (k, v) in [("spec_ahead", "0"), ("spec_tools", "")] {
         assert_eq!(policy["params"][k], json!(v), "{k}");
         assert_eq!(
             policy["contract"]["settings"][k]["default"],

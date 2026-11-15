@@ -3,12 +3,12 @@
 //! WHY this file exists: a `research` turn leaves for the backend in the
 //! background; the quick voice names the waiting time (`research_wait_ms`,
 //! two minutes by default) and the conversation goes on. The session's mark
-//! `consult_pending:<session>` tells the speaking model a consult runs -- but
-//! it ran out at `consult_pending_ms` (30 s) for both ways, the deadline of a
+//! `ask_pending:<session>` tells the speaking model a consult runs -- but
+//! it ran out at `ask_pending_ms` (30 s) for both ways, the deadline of a
 //! `complex` answer in the same turn. A research result due after two minutes
 //! lost its mark at half a minute, and the voice could start the same errand
 //! again. The mark's `until` now follows the way: `consult` at
-//! `consult_pending_ms`, `research` at `research_wait_ms` plus that same
+//! `ask_pending_ms`, `research` at `research_wait_ms` plus that same
 //! margin. The time is read off the mark's own stamps; no wall clock decides.
 
 // harness_fold: #[path = "support/curator_hive.rs"]
@@ -62,7 +62,7 @@ fn curate_with(h: &mut Hive, turn_id: &str, path: &str, extra_ctx: Value, ask: &
 
 /// The consult mark of `s1` -- the lead's row since GH #1447 (`lead_state`).
 fn pending(h: &Hive) -> Value {
-    meclaw_core::serde_json::from_str(&h.lead_state("consult_pending:s1")).unwrap_or(Value::Null)
+    meclaw_core::serde_json::from_str(&h.lead_state("ask_pending:s1")).unwrap_or(Value::Null)
 }
 
 /// `until - at` of the pending mark, in milliseconds.
@@ -107,7 +107,7 @@ fn a_research_answer_returns_in_a_later_turn() {
         "{said}"
     );
     let mark = pending(&h);
-    assert_eq!(mark["consult_id"], json!(cid), "{mark}");
+    assert_eq!(mark["ask_id"], json!(cid), "{mark}");
     assert_eq!(
         span_ms(&mark),
         120_000 + 120_000,
@@ -169,6 +169,6 @@ fn a_research_answer_returns_in_a_later_turn() {
     assert_eq!(
         span_ms(&pending(&h)),
         120_000,
-        "a consult mark stands for consult_pending_ms"
+        "a consult mark stands for ask_pending_ms"
     );
 }

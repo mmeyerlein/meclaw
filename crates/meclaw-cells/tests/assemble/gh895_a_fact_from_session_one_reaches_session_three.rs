@@ -999,11 +999,28 @@ fn remembering_reply() -> String {
     format!("Porto -- how lovely for her.\n\n```sidecar\n{block}\n```")
 }
 
+/// The answer to session three's first turn: the same words, and the section
+/// `things` naming the books the person just said (GH #1523: `mentioned:`
+/// holds only names the model named in this session's `things` section and
+/// the person said in its newest rounds; the section comes with the answer,
+/// so the names reach the question one turn later). Session two's answer
+/// names nothing -- what session two said enriches nothing (GH #1342).
+fn naming_reply() -> String {
+    let block = json!({
+        "things": {"items": [
+            {"name": "Moby Dick", "kind": "book", "note": "named as a sailing book"},
+            {"name": "Treasure Island", "kind": "book", "note": "named as a sailing book"}
+        ]},
+        "memory": {"nothing_new": true, "facts": [], "topic": {"movement": "continue"}}
+    });
+    format!("{OTHER_REPLY}\n\n```sidecar\n{block}\n```")
+}
+
 async fn a_fact_crosses_two_sessions(surface: &str) {
     let brain = MockOpenAI::start(vec![
         canned_chat_completion(&remembering_reply(), "stop"),
         canned_chat_completion(OTHER_REPLY, "stop"),
-        canned_chat_completion(OTHER_REPLY, "stop"),
+        canned_chat_completion(&naming_reply(), "stop"),
         canned_chat_completion("In Porto.", "stop"),
     ])
     .await;

@@ -38,3 +38,4 @@ pub mod gh973_a_count_is_ascii_digits;
 pub mod gh980_projection_tools_hidden_without_a_projection;
 pub mod gh994_a_page_number_on_a_file_without_pages;
 pub mod gh996_inserting_at_the_line_after_the_last_appends;
+pub mod gh_d583_raten_cells_the_rate_comes_from_the_targets_row;

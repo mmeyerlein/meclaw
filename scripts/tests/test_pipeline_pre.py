@@ -1641,6 +1641,8 @@ class Gate(unittest.TestCase):
                     # read by the ratchet's own read_bans (re-check M1)
                     "wall_clock.py", "../.github/gates/clock-bans/clippy.toml",
                     "../.github/gates/unwrap_budget.py",
+                    # ... and the fixed-caps rule with its rules and baseline (#1532)
+                    "fixed_caps.py", "fixed_caps_rules.json", "fixed_caps_baseline.json",
                     "pipeline/__init__.py", "pipeline/pre.py", "pipeline/locks.py", "pipeline/gitenv.py",
                     # pre runs the dry cascade (GH #1173)
                     "pipeline/cascade_dry.py", "pipeline/versions.py",

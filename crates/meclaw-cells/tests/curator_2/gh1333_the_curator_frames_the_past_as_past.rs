@@ -651,6 +651,8 @@ mod session {
         (call.messages(), base)
     }
 
+    /// d58-3 treue T1 (OR-583-79, OR-583.treue.oc4.1): the model's own answers of the
+    /// earlier session now open with their frame; they stay in their place, the rest is unchanged.
     #[test]
     fn gh1335_an_earlier_session_stands_framed_behind_the_boundary() {
         if !shipped() {
@@ -687,10 +689,37 @@ mod session {
                 "{line:?} framed as an earlier session: {t:?}"
             );
         }
-        for answer in ["I am with you.", "I am here and I stay."] {
+        // d58-3 treue T1: each own answer of s1 stays, as the model's, in its
+        // place -- after the person line it answers, before the next one --
+        // and opens with the frame of an own answer of an earlier session.
+        let answer_frame = format!(
+            "[your own answer in an earlier session, since {} -- said then, not now]\n",
+            base.format("%Y-%m-%d %H:%M UTC")
+        );
+        let at = |line: &str| {
+            msgs.iter()
+                .position(|m| m["text"].as_str().unwrap_or("").ends_with(line))
+                .unwrap_or_else(|| panic!("{line:?} stays in the window: {msgs:#?}"))
+        };
+        let order = [
+            (DOCTOR, "I am with you.", at(CRISIS)),
+            (CRISIS, "I am here and I stay.", msgs.len() - 1),
+        ];
+        for (asked, answer, next) in order {
+            let i = msgs
+                .iter()
+                .position(|m| {
+                    m["text"]
+                        .as_str()
+                        .unwrap_or("")
+                        .strip_prefix(&answer_frame)
+                        .is_some_and(|rest| bare(&json!({"text": rest})) == answer)
+                })
+                .unwrap_or_else(|| panic!("{answer:?} stays, framed: {msgs:#?}"));
+            assert_eq!(kind(&msgs[i]), "assistant/text", "{answer:?}: {msgs:#?}");
             assert!(
-                msgs.iter().any(|m| bare(m) == answer),
-                "{answer:?} stays: {msgs:#?}"
+                at(asked) < i && i < next,
+                "{answer:?} stays in its place: {msgs:#?}"
             );
         }
         // The recall of this turn keeps its own frame (GH #1333).

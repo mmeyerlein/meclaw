@@ -1,8 +1,6 @@
 //! Test harness `curator_3` of `meclaw-cells`: one binary, one module per old file.
 //! Written by scripts/harness_fold.py from tests/HARNESS.toml -- edit the table, not this file.
 
-#[path = "../support/assistant_followup.rs"]
-pub mod assistant_followup;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
@@ -13,6 +11,20 @@ pub mod gh1436_h_a_fresh_stamp_of_the_source_shows_its_own_note_not_the_carried;
 pub mod gh1436_i_the_carried_note_ends_at_its_until;
 pub mod gh1436_j_without_carry_notes_every_window_is_byte_identical;
 pub mod gh1436_k_a_carried_note_born_in_a_running_call_moves_no_feed;
+pub mod gh926_a_curator_counts_its_own_ledger;
+pub mod gh932_the_curator_pages_only_over_visible_rows;
+pub mod gh935_the_identity_budget_splits_the_pack;
+pub mod gh943_a_plan_per_round;
+pub mod gh949_a_candidate_never_widens_its_round;
+pub mod gh949_a_trigger_matches_on_word_boundaries;
+pub mod gh949_an_app_reads_its_round_from_the_ledger;
+pub mod gh949_the_push_carries_covered_candidates_only;
+pub mod gh949_things_leave_as_thing_seen;
+pub mod gh955_the_loser_of_two_first_claims_backs_off;
+pub mod gh972_a_pin_carries_the_round_its_row_proves;
+pub mod gh972_two_groups_of_one_source_replace_in_one_message;
+pub mod gh_d38_c0_policy_corpus_is_byte_identical;
+pub mod gh_d38_c1_lead_state_lives_in_its_own_cell;
 pub mod gh_d38_c1_the_lead_keeps_to_its_cell;
 pub mod gh_d38_c1_the_lead_names_way_and_target;
 pub mod gh_d38_c1_the_lead_station_writes_handle_ms;
@@ -51,28 +63,13 @@ pub mod gh_d38_k5_a_window_over_the_price_step_rebuilds_sooner;
 pub mod gh_d38_k5_the_rebuild_counts_the_cache_write;
 pub mod gh_d38_k6_a_token_budget_keeps_the_youngest_rounds_raw;
 pub mod gh_d38_k6_keep_recent_stays_the_floor;
-pub mod gh_d38_k6_null_budget_is_byte_identical;
-pub mod gh_d38_k6_the_budget_never_outgrows_the_aim;
-pub mod gh_d38_k6_the_budget_spans_the_day_boundary;
-pub mod gh_d38_k6_the_window_watch_reads_the_raw_part;
-pub mod gh_d38_k6b_the_budget_measures_the_rounds_as_sent;
-pub mod gh_d38_k6b_the_curate_stamp_measures_like_the_budget;
-pub mod gh_d38_k6b_the_rebuild_measures_a_cut_answer_as_sent;
-pub mod gh_d38_k6b_the_running_round_counts_whole;
-pub mod gh_d38_k7_a_set_override_of_the_new_params_passes_the_door;
-pub mod gh_d38_k7_a_simple_turn_that_needs_memory_leaves_on_brain;
-pub mod gh_d38_k7_knob_off_is_byte_identical;
-pub mod gh_d38_pins_a_recall_keeps_its_quote_when_the_guard_cuts_the_source;
-pub mod gh_d38_pins_b_the_curator_form_runs_with_every_knob_on;
-pub mod gh_d38_pins_c_a_folded_recall_of_the_oldest_round_goes_once;
-pub mod gh_d38_v1_a_scheduled_line_stays_out_of_the_block;
-pub mod gh_d38_v1_one_line_per_subject;
-pub mod gh_d38_v1_two_notes_on_one_item_keep_the_latest;
-pub mod gh_d38_v1_v3_the_rebuild_lists_the_state_as_the_window;
-pub mod gh_d38_v2_a_mentioned_wellbeing_closes;
-pub mod gh_d38_v2_the_carrying_call_is_not_fed_its_line_again;
-pub mod gh_d38_v2_the_next_call_knows_the_open_wellbeing_once;
 #[path = "../gh927/harness.rs"]
 pub mod harness;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;
+#[path = "../mock_openai.rs"]
+pub mod mock_openai;
+#[path = "../support/objects_hive.rs"]
+pub mod objects_hive;
+#[path = "../support/organism_assistant.rs"]
+pub mod organism_assistant;

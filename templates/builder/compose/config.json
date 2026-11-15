@@ -39,7 +39,7 @@
       "external_timeout_ms_row": {
         "type": "string",
         "secret": false,
-        "default": "openai/gpt-6-sol",
+        "default": "openai/gpt-6.1-sol",
         "description": "GH #1097: not read by the cell -- the catalogue row its `external_timeout_ms` and `cell.message_timeout` are derived from (the timeout chain, docs/cell-types.md § llm): the row of the model this cell is born on. A manifest that bears it on another row derives both again from that row."
       },
       "reasoning_effort": {
@@ -137,6 +137,14 @@
         },
         "price_tiers": {
           "type": "array",
+          "required": false
+        },
+        "chars_per_token": {
+          "type": "number",
+          "required": false
+        },
+        "tokens_per_image": {
+          "type": "number",
           "required": false
         },
         "dropped": {

@@ -193,7 +193,7 @@ fn gh_d58_moveout_a_side_call_never_ends_the_turn() {
 
     // `shown_end` (the lead drops the turn's shown spec sentence): with the
     // speculation on, a side answer never says it; the closing answer does.
-    let mut h = moveout_hive(&[("lead", "quick_speculative", json!("1"))]);
+    let mut h = moveout_hive(&[("lead", "spec_ahead", json!("1"))]);
     seam(
         &mut h,
         "t1",

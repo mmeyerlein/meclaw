@@ -14,7 +14,7 @@ secret stays in one file, and another model is an `.env` line and a restart, not
 
 ```
 OPENROUTER_API_KEY=sk-...
-MODEL_BRAIN=openai/gpt-5.6-luna
+MODEL_BRAIN=openai/gpt-6-luna
 ```
 
 `OPENROUTER_API_KEY` binds `api_key` in [`templates/talky/brain/config.json`](../templates/talky/brain/config.json).

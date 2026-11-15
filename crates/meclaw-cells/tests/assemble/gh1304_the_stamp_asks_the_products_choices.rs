@@ -470,18 +470,17 @@ fn gh1304_no_choices_means_todays_stamp() {
 
 #[test]
 fn gh1304_context_turns_ask_the_wall_before_the_decide_call() {
-    let over = [
-        ("context_turns", json!(3)),
-        ("context_budget_tokens", json!(9000)),
-    ];
+    let over = [("context_turns", json!(3))];
     let out = run_cell(ROUTE, &over, turn()).0;
     assert_eq!(out.len(), 1, "{out:?}");
     // D58 GH #1480: the read is a view without a target (the person's words).
+    // GH #1526: no number of tokens -- the curator sizes the view by the
+    // target's window.
     let ask = on(&out, "view_ask");
     assert_eq!(
         ask["view_ask"],
-        json!({"turns": 3, "budget_tokens": 4000}),
-        "capped: {ask}"
+        json!({"turns": 3}),
+        "no token number: {ask}"
     );
     assert_eq!(hop_str(ask, "state"), "My knee hurts again.");
     let asked_at = hop_str(ask, "asked_at");

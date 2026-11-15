@@ -43,6 +43,12 @@
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
 use crate::mock_openai; // harness_fold: mod mock_openai;
+// harness_fold: #[path = "support/curator_llm.rs"]
+#[allow(unused_imports)]
+use crate::curator_llm; // harness_fold: mod curator_llm;
+// harness_fold: #[path = "support/gh1541_browser.rs"]
+#[allow(unused_imports)]
+use crate::gh1541_browser; // harness_fold: mod gh1541_browser;
 
 use meclaw_cells::LlmCellFactory;
 use meclaw_cells::code::CodeCellFactory;
@@ -285,13 +291,12 @@ fn build_root(td: &tempfile::TempDir, base_url: &str) {
     // is an `llm` cell whose model is `${ctx.model}` -- an instantiation-side
     // substitution a tree booted from disk cannot resolve. It names the mock
     // here; a run this short never reaches a rebuild, so it is never called.
-    patch(
-        &root.join("main/agent/curator/summarizer/config.json"),
-        |v| {
-            v["params"]["base_url"] = json!(base_url);
-            v["params"]["model"] = json!("gpt-4o-mock");
-        },
-    );
+    // GH #1528: the helper points every `llm` cell of the curator at the mock --
+    // the summarizer and the ballast judge alike.
+    curator_llm::patch_llm_cells(&root.join("main/agent/curator"), |v| {
+        v["params"]["base_url"] = json!(base_url);
+        v["params"]["model"] = json!("gpt-4o-mock");
+    });
     // GH #1248: the quick voice is an `llm` cell on the same `${ctx.model}`
     // start value as the brain; a tree booted from disk carries a literal.
     patch(&root.join("main/agent/quick/config.json"), |v| {
@@ -437,23 +442,25 @@ fn menu_in_the_agent(td: &tempfile::TempDir) -> BTreeSet<String> {
     names
 }
 
-/// One GET of the screen's own route; `None` while the listener does not
-/// answer at all. The client's own timeout is the hang mark, so a GET that
-/// hangs comes back `None` and the wait around it names the hang.
+/// The screen's route as a browser shows it; `None` while the listener does
+/// not answer at all. GH #1541: read through GET AND join
+/// (`support/gh1541_browser.rs`), because a page above `CUT_ABOVE_BYTES` --
+/// the picture of this colony after the mutation can be one -- embeds only
+/// its first slots in the GET, and the join carries the rest. The hang mark
+/// bounds every step, so a read that hangs comes back `None` and the wait
+/// around it names the hang.
 async fn get_page(port: u16) -> Option<(u16, String)> {
-    let url = format!("http://127.0.0.1:{port}/{MOUNT}/");
-    let client = reqwest::Client::builder()
-        .timeout(deadline::scaled(deadline::HANG))
-        .build()
-        .ok()?;
-    let r = client.get(&url).send().await.ok()?;
-    let status = r.status().as_u16();
-    Some((status, r.text().await.unwrap_or_default()))
+    gh1541_browser::read_page(port, MOUNT)
+        .await
+        .map(|seen| (seen.status, seen.html))
 }
 
-/// The screen's route as a `(status, bytes)` pair, for a hang's last state.
+/// The screen's route as `(status, GET bytes, shown bytes, join frames)`, for
+/// a hang's last state.
 async fn page_state(port: u16) -> String {
-    format!("{:?}", get_page(port).await.map(|(s, b)| (s, b.len())))
+    gh1541_browser::read_page(port, MOUNT)
+        .await
+        .map_or_else(|| "no answer".to_string(), |seen| seen.state())
 }
 
 /// Waits until the screen serves a page containing `wanted`, and returns it.
@@ -623,6 +630,19 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
         after.contains("agent/brain"),
         "the refreshed picture lost the agent it already had"
     );
+    // GH #1541: the size of the picture the browser got, and whether the GET
+    // alone carried the new cells -- above the cut it carries the first slots
+    // only, and the join the rest.
+    if let Some(seen) = gh1541_browser::read_page(port, MOUNT).await {
+        println!(
+            "NOTE gh553 picture after the mutation: {} cut_above={} \
+             get_has_tools_schemas={} shown_has_tools_schemas={}",
+            seen.state(),
+            meclaw_cells::web::render::CUT_ABOVE_BYTES,
+            seen.get.contains("tools/schemas"),
+            seen.html.contains("tools/schemas")
+        );
+    }
 
     wait::until_with(
         "the receipt refreshes the menu (web_search and web_fetch in the curator's ledger)",

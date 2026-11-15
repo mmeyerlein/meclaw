@@ -94,7 +94,7 @@ fn gh_d58_lead_a_rebuild_without_a_lead_reaches_the_ledger() {
     let line = transcript
         .lines()
         .find(|l| l.starts_with("[state -- "))
-        .unwrap_or_else(|| panic!("the state line rides behind the transcript: {transcript}"))
+        .unwrap_or_else(|| panic!("the state line rides with the transcript: {transcript}"))
         .to_string();
     assert!(
         line.contains(&format!("set today: {FACT}")),

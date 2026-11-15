@@ -31,7 +31,7 @@ fn gh_d58_moveout_a_conditional_feed_leaves_with_the_round() {
     if !shipped() {
         return;
     }
-    let knobs = lead_knobs(json!({"horizon_advise": "1",
+    let knobs = lead_knobs(json!({"horizon_feed": "1",
                                   "horizon_defaults_ms": json!({"weather": 2000}).to_string()}));
     let v = verdict(knobs, "simple", &["tool"], &["weather"], LIVE_H);
     let entries = feeds_of_verdict(&v, MUST_CALL);

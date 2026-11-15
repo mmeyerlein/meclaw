@@ -20,7 +20,7 @@
         },
         {
           "route": "in_spec_llm",
-          "because": "GH #1275: the quick voice's answer to a spec call (`hop.spec` \"1\", policy `quick_speculative`), with the call's context (`context.curator_call`, `session_id`, `turn_id`). Held in the ledger, never on the wall: the normal curate of the turn keeps it (out on `spec_release`, into the tap as `in_llm`) or drops it"
+          "because": "GH #1275: the quick voice's answer to a spec call (`hop.spec` \"1\", policy `spec_ahead`), with the call's context (`context.curator_call`, `session_id`, `turn_id`). Held in the ledger, never on the wall: the normal curate of the turn keeps it (out on `spec_release`, into the tap as `in_llm`) or drops it"
         },
         {
           "route": "in_spec_partial",
@@ -76,7 +76,11 @@
         },
         {
           "route": "in_catalog",
-          "because": "GH #1449: the package line of a model cell this hive serves: `{messages: [], package: {model, input_soft, input_hard, max_output, price_tiers, cache_mode, cache_ttl_s, wire_dialect, supported_params, chars_per_token}}`, every key present and `null` where the package states none, `hop.package_of` the cell's path. Sent once per push that touches the model's package and as the answer to an empty params slot, so the catalogue row is here before the first call. Handed to `./policy`"
+          "because": "GH #1449: the package line of a model cell this hive serves: `{messages: [], package: {model, input_soft, input_hard, max_output, price_tiers, cache_mode, cache_ttl_s, wire_dialect, supported_params, chars_per_token, tokens_per_image}}`, every key present and `null` where the package states none, `hop.package_of` the cell's path. Sent once per push that touches the model's package and as the answer to an empty params slot, so the catalogue row is here before the first call. Handed to `./policy`"
+        },
+        {
+          "route": "in_limits_row",
+          "because": "GH #1526: the package line of a model cell this hive cuts no window for, only the target of a view (`in_view_ask` names it): the same body as `in_catalog`, `hop.package_of` the cell's path. Handed to `./policy`, which keeps no catalogue row of it -- the plan, the wall and the stats never see it -- and tells `./history` the cell's `input_soft` and `chars_per_token`, which size the view of that target"
         },
         {
           "route": "in_candidate",
@@ -93,13 +97,14 @@
         {
           "route": "in_sealed",
           "at": [
-            "./summarizer"
+            "./summarizer",
+            "./relevance"
           ],
           "because": "the answer half of the same lane (GH #801): the broker's `ack` for `vault.deliver` with the sealed box, renamed at the boundary and addressed by `hop.grant_id`, one grant per consumer. It lands on the cell that asked and on nothing else -- the box is sealed against that cell's ephemeral key. Only a cell grown with a grant ever receives one"
         },
         {
           "route": "in_view_ask",
-          "because": "D58 GH #1480 (replaces GH #1304's `in_turns_ask`): a VIEW -- any composition asks for a window for a named target, only read and handed back to it: `{messages: [], view_ask: {target?, turns, budget_tokens}}` with the turn's context (`session_id` the running generation, `turn_id` the running turn, `audience_set` the round; a partial's `delta` and `live`), which rides back unchanged. Answered by `./history` out of this hive's ledger with exactly one `view`: no `./intake`, no lead, no plan, no call, no pending claim, no window bound, at most two ledger rounds. Fail-closed on the round like `history_read` (GH #925): without `context.audience_set` nothing is read and the answer is empty with `hop.refused` `no_round`"
+          "because": "D58 GH #1480 (replaces GH #1304's `in_turns_ask`): a VIEW -- any composition asks for a window for a named target, only read and handed back to it: `{messages: [], view_ask: {target?, turns, share?}}` with the turn's context (`session_id` the running generation, `turn_id` the running turn, `audience_set` the round; a partial's `delta` and `live`), which rides back unchanged. Answered by `./history` out of this hive's ledger with exactly one `view`: no `./intake`, no lead, no plan, no call, no pending claim, no window bound, at most two ledger rounds. Fail-closed on the round like `history_read` (GH #925): without `context.audience_set` nothing is read and the answer is empty with `hop.refused` `no_round`"
         },
         {
           "route": "in_part",
@@ -206,7 +211,8 @@
         {
           "route": "credential_request",
           "at": [
-            "./summarizer"
+            "./summarizer",
+            "./relevance"
           ],
           "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
         },
@@ -216,7 +222,7 @@
         },
         {
           "route": "view",
-          "because": "the answer to one `in_view_ask`: `{messages: [{origin, type: \"text\", text}], system?, truncated}` -- `messages` the earlier turns of the running generation and of rows the round may see, never the running turn, the newest `turns` oldest first within `budget_tokens` (at most 4000; at or below 0, or none, 1500), the oldest dropped first and `truncated` then true; with a target both sides and `system`, a tree of leaves `{text}`: `frame` (the moment), `topic` (aged, when there is one) and the target's family of contributions `{<source>: leaf}`; without a target the person's words alone and no `system`. `hop.refused` `no_round` or `bad_arguments` (also for a target named `frame` or `topic`, the view's own leaves), `hop.degraded` `store` when the ledger refused a read -- each with `messages: []`. The context rides on"
+          "because": "the answer to one `in_view_ask`: `{messages: [{origin, type: \"text\", text}], system?, truncated}` -- `messages` the earlier turns of the running generation and of rows the round may see, never the running turn, the newest `turns` oldest first within `share` (or `./history`'s `view_share`) x the window of the target (the catalog row `./policy` sends `./history` on lane `in_limits`; without one the window `./history` measures its reads by; none at all: the turns whole), counted at the target's `chars_per_token` and said back as `budget_tokens`, the oldest dropped first and `truncated` then true; with a target both sides and `system`, a tree of leaves `{text}`: `frame` (the moment), `topic` (aged, when there is one) and the target's family of contributions `{<source>: leaf}`; without a target the person's words alone and no `system`. `hop.refused` `no_round` or `bad_arguments` (also for a target named `frame` or `topic`, the view's own leaves), `hop.degraded` `store` when the ledger refused a read -- each with `messages: []`. The context rides on"
         },
         {
           "route": "seed",
@@ -351,6 +357,11 @@
           "from": "./ledger",
           "to": "./history",
           "condition": "has(context.cur_origin) && context.cur_origin == 'curator-history'"
+        },
+        {
+          "from": "./policy",
+          "to": "./history",
+          "condition": "has(hop.route) && hop.route == 'in_limits'"
         },
         {
           "from": "./intake",
@@ -655,6 +666,46 @@
           }
         },
         {
+          "from": ".",
+          "to": "./relevance",
+          "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber.endsWith('/relevance')"
+        },
+        {
+          "from": "./policy",
+          "to": "./relevance",
+          "condition": "has(hop.route) && hop.route == 'relevance'"
+        },
+        {
+          "from": "./relevance",
+          "to": "./policy",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_relevance'"
+            }
+          }
+        },
+        {
+          "from": "./relevance",
+          "to": ".",
+          "condition": "has(hop.refused_subscriber)",
+          "modifier": {
+            "set_hop": {
+              "route": "'model_refused'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_reason",
+              "cur_close",
+              "curator_call",
+              "call_kind",
+              "interim"
+            ]
+          }
+        },
+        {
           "from": "./handover",
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'sidecar'",
@@ -683,6 +734,11 @@
           "from": ".",
           "to": "./policy",
           "condition": "has(hop.route) && hop.route == 'in_catalog'"
+        },
+        {
+          "from": ".",
+          "to": "./policy",
+          "condition": "has(hop.route) && hop.route == 'in_limits_row'"
         },
         {
           "from": "./stats",
@@ -1037,7 +1093,7 @@
     "purpose": "Scope marker of the curator hive: the window of ONE model and the ledger of every call it got, by the policy of the model's role. THE HIVE IS THE ADDRESS -- everything from outside is sent to the hive path and the hive hands it on.",
     "use_when": "One per model whose window has to be owned: in front of a conversation brain, wired between the context collector and the `llm` cell. Nothing in the contract assumes a conversation -- any `llm` cell can sit behind it.",
     "not_in_scope": "No retrieval of its own (memory answers; `./push` only builds the question) and no tool fan-out -- the one tool family it serves is its own wall (`history_*`, GH #893) -- no persona of its own. It keeps what the model saw and decides what it sees next; what is worth remembering is the memory's business.",
-    "contract_in": "Twenty-nine lanes on `hop.route`: in_curate, in_slots, in_llm, in_spec_llm, in_spec_partial, in_pack, in_close, in_model, in_section, in_answer_check, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_catalog, in_candidate, in_note, in_read, in_sealed, in_view_ask, in_part, in_seed_ask, in_seed_line, in_live_end, in_delta_stamp, in_lead.",
+    "contract_in": "Thirty lanes on `hop.route`: in_curate, in_slots, in_llm, in_spec_llm, in_spec_partial, in_pack, in_close, in_model, in_section, in_answer_check, in_pin, in_schemas, in_history_call, in_recall_ask, in_gap_bundle, in_renewed, in_stats, in_catalog, in_limits_row, in_candidate, in_note, in_read, in_sealed, in_view_ask, in_part, in_seed_ask, in_seed_line, in_live_end, in_delta_stamp, in_lead.",
     "contract_out": "Twenty-nine routes on `hop.route`, leaving through the hive path: model_call, spec_release, partial, errand, turn_write, write, closed, pack_ack, model_refused, sidecar, answer_check, tool_schemas, tool_result, recall, stats, candidate_ack, thing_seen, read, credential_request, reject, view, seed, note_receipt, live_facts, live_feed, propose, lead_ask, lead_spec, lead_note."
   }
 }

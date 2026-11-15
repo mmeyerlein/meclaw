@@ -254,8 +254,15 @@ fn every_rebuild_leaves_one_gc_mark() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[("intake", "replay_channel_prefix", json!("replay-"))])
-        .reporting_composite("talky");
+    // GH #1526 (d58-3 grenzen, OR-583.grenzen.12): talky's profile names shares of the
+    // target's window since; this case was measured with its former token
+    // numbers, which the override (token value beside the share) keeps.
+    let mut h = Hive::with(&[
+        ("intake", "replay_channel_prefix", json!("replay-")),
+        ("policy", "keep_recent_tokens", json!(80000)),
+        ("policy", "window_target", json!(100000)),
+    ])
+    .reporting_composite("talky");
     let marks = two_rebuilds(&mut h);
     assert_eq!(
         marks.len(),

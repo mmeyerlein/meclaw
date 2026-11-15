@@ -42,7 +42,16 @@ fn wide() -> Value {
 fn question(over: &[(&str, &str, Value)], profile: Value) -> String {
     // More names than the push's shipped eight (`entity_max`), so the names
     // alone outgrow the preset of 200 characters.
-    let mut all = vec![("push", "entity_max", json!(30))];
+    // GH #1523: `things` registered under the mark `thing` -- the names
+    // `mentioned:` may hold, which the model names below.
+    let mut all = vec![
+        ("push", "entity_max", json!(30)),
+        (
+            "intake",
+            "sections",
+            json!({"things": {"lane": "thing_seen", "cap_share": 0.1, "mark": "thing"}}),
+        ),
+    ];
     all.extend(over.iter().cloned());
     let mut h = Hive::with(&all);
     announce_profile(&mut h, "main", profile);
@@ -62,6 +71,44 @@ fn question(over: &[(&str, &str, Value)], profile: Value) -> String {
         json!([said("Porto sounds lovely; say hello to Hannah from me.")]),
     );
     assert_eq!(h.state("input_soft"), "1000000", "{:?}", h.stderr);
+    // The section `things` of that answer: every name the person said.
+    let names = [
+        "Hannah",
+        "Lisbon",
+        "Porto",
+        "Ana",
+        "Bea",
+        "Carla",
+        "Dora",
+        "Emma",
+        "Frida",
+        "Greta",
+        "Hilde",
+        "Ines",
+        "Jana",
+        "Karla",
+        "Lena",
+        "Mira",
+        "Nora",
+        "Olga",
+        "Madrid",
+        "Seville",
+        "Granada",
+        "Cordoba",
+        "Valencia",
+        "Barcelona",
+    ];
+    let items: Vec<Value> = names
+        .iter()
+        .map(|n| json!({"name": n, "kind": "thing"}))
+        .collect();
+    h.lane(
+        "in_section",
+        json!({"session_id": "s1", "turn_id": "t1", "iter": "0", "curator_call": "c-1",
+               "channel": "test", "audience_set": ROUND_E}),
+        json!({"section": "things"}),
+        json!({"messages": [], "section": "things", "payload": {"items": items}}),
+    );
     h.out.clear();
     h.lane(
         "in_recall_ask",

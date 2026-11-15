@@ -4,7 +4,7 @@
 //! with the result, and the owner's line (R-WP-1, R-WM-1) is that the curator
 //! decides who speaks it: the quick voice while the result is speakable as it
 //! is -- every call of the turn answered, the newest result neither empty nor
-//! an error, at most `quick_max_iter` (2) iterations -- else the brain, with
+//! an error, at most `fast_max_iter` (2) iterations -- else the brain, with
 //! one `escalate` mark that says why. A turn once escalated stays with the
 //! brain for the rest of its round.
 
@@ -44,7 +44,7 @@ fn the_curator_names_the_speaker_after_a_tool_result() {
         return;
     }
     // GH #1447: the iteration bound is the lead's, the cell that names the way.
-    let (max, _) = cell_scope("lead", json!({}), "QUICK_MAX_ITER", Value::Null);
+    let (max, _) = cell_scope("lead", json!({}), "FAST_MAX_ITER", Value::Null);
     assert_eq!(
         max,
         json!(2),
