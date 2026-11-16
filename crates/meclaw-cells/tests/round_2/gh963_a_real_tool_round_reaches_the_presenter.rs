@@ -317,6 +317,9 @@ fn build_tree(root: &std::path::Path, search: &str, decider: &str) {
         v["params"]["model"] = json!("mock-decider");
         v["params"]["api_key"] = json!("fake-key");
         v["params"]["base_url"] = json!(decider);
+        // GH #1558: without a curve the decider refuses before any request;
+        // the registry pushes it with the model row, here a curve of test data.
+        v["params"]["decision_calibration"] = json!({"yes_no": {"default": [[0, 0], [1, 1]]}, "choice": {"default": [[0, 0], [1, 1]]}});
         v["params"]["external_timeout_ms"] = json!(60_000);
         v["cell"]["message_timeout"] = json!(90_000);
     });

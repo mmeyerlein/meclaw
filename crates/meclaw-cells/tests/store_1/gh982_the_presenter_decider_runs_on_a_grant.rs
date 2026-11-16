@@ -475,6 +475,9 @@ async fn grow_tree(root: &std::path::Path, base_url: &str) {
     patch_json(&presenter.join("decide/config.json"), |v| {
         v["params"]["model"] = json!("mock-decider");
         v["params"]["base_url"] = json!(base_url);
+        // GH #1558: without a curve the decider refuses before any request;
+        // the registry pushes it with the model row, here a curve of test data.
+        v["params"]["decision_calibration"] = json!({"yes_no": {"default": [[0, 0], [1, 1]]}, "choice": {"default": [[0, 0], [1, 1]]}});
         // No bearer of its own (an empty string is not a bearer, GH #271), a grant instead.
         v["params"]["api_key"] = json!("");
         v["params"]["credential_grant_id"] = json!(GRANT);

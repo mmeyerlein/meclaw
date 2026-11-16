@@ -758,6 +758,76 @@ class CoverageBinariesTest(unittest.TestCase):
             self.assertFalse(night.coverage_due(db, FakeRunner())[0])
 
 
+class GreenTipNotDueTest(unittest.TestCase):
+    """GH #1554: the night builds no map for a master tip that already has a
+    GREEN map -- not even when a `merge_done` is newer than the newest
+    `coverage_built` (the merge that made the tip, mapped by a wave close or a
+    carry). It rebuilt such a tip under load, the rerun came out red and
+    `wave close` refused on a commit whose map had been GREEN an hour before."""
+
+    TIP = "f00d" * 10
+
+    def setUp(self):
+        from scripts.pipeline import coverage
+        self.coverage = coverage
+        self.db, tmp = _store(self)
+        self.maps = tmp / "maps"
+        self.maps.mkdir()
+        self.tmp = tmp
+        env = mock.patch.dict(os.environ, {"MECLAW_PIPELINE_COVERAGE_DIR": str(self.maps)})
+        env.start()
+        self.addCleanup(env.stop)
+        # master of the tree, as the build's own resolver reads it
+        rev = mock.patch.object(coverage, "resolve_rev",
+                                lambda name, repo=None: self.TIP if name == "master" else None)
+        rev.start()
+        self.addCleanup(rev.stop)
+        events.emit(self.db, "coverage_built", "status",
+                    {"rev": "a" * 40, "runner": "lane-a", "secs": 1.0, "tests": 1, "files": 1,
+                     "edges": 1, "granularity": "binary"}, at=DAY + "T10:00:00Z")
+        events.emit(self.db, "merge_done", "status", {"merge": "m-1", "strand": "s", "base": "b"},
+                    at=DAY + "T12:30:00Z")
+        self.calls = []
+
+    def runner(self, argv, **kw):
+        self.calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def tip_map(self, **fields):
+        cov = self.coverage.coverage_map(self.TIP, "lane-a", [
+            {"binary": "alpha", "module": None, "files": {"a.rs": 1}}], 1.0, 1,
+            built_at=DAY + "T11:00:00Z", expected_ids=["alpha"], **fields)
+        self.coverage.map_path(self.TIP, self.maps).write_text(json.dumps(cov), encoding="utf-8")
+        return cov
+
+    def test_a_green_map_on_the_tip_is_not_due_despite_a_newer_merge(self):
+        self.assertEqual("GREEN", self.coverage.verdict_of(self.tip_map()))
+        due, merges, _since = night.coverage_due(self.db, self.runner)
+        self.assertFalse(due)
+        self.assertEqual(0, merges)
+
+    def test_a_red_map_on_the_tip_stays_due(self):
+        self.tip_map(run_ok=False, nextest_exit=100, red_tests=["alpha t::broken"])
+        due, merges, _since = night.coverage_due(self.db, self.runner)
+        self.assertTrue(due)
+        self.assertEqual(1, merges)
+
+    def test_no_map_on_the_tip_stays_due(self):
+        due, merges, _since = night.coverage_due(self.db, self.runner)
+        self.assertTrue(due)
+        self.assertEqual(1, merges)
+
+    def test_the_report_starts_no_build_for_a_green_tip(self):
+        self.tip_map()
+        _run(self.db, "run-1", DAY + "T12:00:00Z", "GREEN", [("fmt", "GREEN", 5, 0, {})])
+        self.db.execute("INSERT INTO runners (name, state) VALUES ('lane-a', 'on')")
+        with mock.patch.object(night, "coverage_cli", lambda: REPO / "scripts/pipeline.py"):
+            path = night.report(self.db, now=NOW, out_root=self.tmp / "nacht",
+                                runner=self.runner, date=DAY)
+        self.assertIn("coverage: not due", path.read_text())
+        self.assertEqual([], [c for c in self.calls if "coverage" in c and "build" in c])
+
+
 class ProposalTest(unittest.TestCase):
     def _build(self, order):
         db, tmp = _store(self)

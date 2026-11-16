@@ -101,6 +101,9 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.89.0: this release calibrates the decisions of a talky composite: every decider's answer lands on one
+  calibrated scale from the curves in its model registry row, so an application's thresholds hold whichever decider
+  answers, and a model switch through the registry reaches the decide cells in place, without a rebirth.
 - v0.88.1: this patch release keeps the greeting of a live voice session whole: the guard on the opening answer of a
   `gpt_live` session measures the greeting on the audio clock instead of the transcript, so a greeting is no longer
   cut mid-sentence, an invented tail is still stopped after the greeting's budget, and a stalled transcript no

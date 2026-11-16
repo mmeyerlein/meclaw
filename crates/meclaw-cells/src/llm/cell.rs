@@ -7,8 +7,9 @@ use crate::llm::translate::{TranslateError, TranslatedResponse};
 use crate::llm::window;
 use crate::llm::wire::WireError;
 use crate::llm::{
-    auth, continuation, latency, output, package, params::LlmParams, sanitize, state, system_gate,
-    tool_scope, translate, translate_anthropic, translate_decisions, translate_responses, wire,
+    auth, calibration, continuation, latency, output, package, params::LlmParams, sanitize, state,
+    system_gate, tool_scope, translate, translate_anthropic, translate_decisions,
+    translate_responses, wire,
 };
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_colony::{AttachmentReadError, AttachmentReader};
@@ -1362,6 +1363,37 @@ impl LlmCell {
             .await;
             return;
         }
+        // GH #1558: the lane answers on the one calibrated scale or not at
+        // all. A model without its curves, or a question whose kind has none,
+        // is a loud configuration error before any request -- never a default
+        // and never the raw numbers, which mean something else per model.
+        let curves = match calibration::covering(
+            &self.params.model,
+            self.params.decision_calibration.as_ref(),
+            &asked,
+        ) {
+            Ok(c) => c.clone(),
+            Err(detail) => {
+                tracing::warn!(
+                    target: "meclaw::llm::decisions",
+                    "decision_uncalibrated at {}: {detail}",
+                    sink.sender_path().as_str()
+                );
+                decisions_error(
+                    sink,
+                    reply_target,
+                    &request,
+                    "decision_uncalibrated",
+                    &detail,
+                    "calibration",
+                    started_at_unix_ms,
+                    0,
+                    None,
+                )
+                .await;
+                return;
+            }
+        };
         let mut request_json = translate_decisions::build_request(&self.params.model, &asked);
         // GH #1085 (R-IG-1): the bound is the catalog row of the model asked
         // -- `input_hard` (else `context_window`), the same window rule the
@@ -1458,10 +1490,17 @@ impl LlmCell {
             tokens_cache_write: None,
             cost: decided.cost,
         };
+        // GH #1558: `covering` passed above, so every answer has its curve;
+        // the raw answers ride beside the calibrated ones for the audit.
+        let answers = calibration::calibrated(&curves, &asked, &decided.answers);
+        let stamp = curves.sha12();
+        let raw = decided.answers;
         output::emit_decision(
             sink,
             reply_target,
-            decided.answers,
+            answers,
+            raw,
+            &stamp,
             &decided.missing,
             usage,
             &model,

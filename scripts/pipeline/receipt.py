@@ -182,8 +182,10 @@ def project(rows, ledgers=()):
         rnd["verdict"] = _round_verdict(rnd["stations"])
     doc["rounds"] = [rounds[n] for n in sorted(rounds)]
     doc["stations"] = [last[name] for name in order]
-    # B schlank (OR-TV-13): every test a NOTE `load-flake` station names, with
-    # its triage proof -- red only under full load, an observation.
+    # B schlank (OR-TV-13): every test the triage classified a load flake, with
+    # its triage proof -- red only under full load, an observation. A NOTE
+    # `load-flake` station names all of its tests; a station that stays RED or
+    # FLAKY names its load flakes too, its verdict unchanged (#1519).
     doc["load_flake"] = [dict(e) for st in doc["stations"] for e in st.get("load_flake") or ()]
     doc["cache_hits"] = hits
     return doc

@@ -652,6 +652,14 @@ pub struct LlmParams {
     /// times on `auto`. A package key.
     #[serde(default = "tool_choice_required_default")]
     pub tool_choice_required: bool,
+    /// GH #1558: the decider's calibration -- per kind of question the curves
+    /// that map this model's raw probabilities onto the one scale every
+    /// application reads (see [`crate::llm::calibration`]). Read only by the
+    /// `decisions` lane, which answers `decision_uncalibrated` without it; a
+    /// chat cell carries it unread. `None` (the default) = no calibration. A
+    /// package key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_calibration: Option<crate::llm::calibration::DecisionCalibration>,
 }
 
 /// GH #1260: a host takes a forced tool call unless its package says not.
@@ -803,6 +811,11 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
         if let Some(v) = obj.get_mut("price_tiers") {
             *v = price_tiers_checked(v)?;
         }
+        // GH #1558: the curves of a decider, checked by name before serde
+        // sees them -- a malformed curve is a loud refusal, never a guess.
+        if let Some(v) = obj.get_mut(crate::llm::calibration::PARAM) {
+            *v = crate::llm::calibration::checked(v)?;
+        }
         // GH #1085: a rate takes the form of a price (fractions, digit
         // strings); its refusal names what it is.
         if let Some(v) = obj.get_mut("chars_per_token") {
@@ -829,7 +842,8 @@ fn with_cache_knobs_checked(raw: &Value) -> Result<Value, String> {
 /// GH #1037 adds the output limit; R-HK-15/16 the input bounds and the two
 /// prompt prices the curator weighs a cached window with; GH #1085 the two
 /// rates the window estimate counts a prompt with; GH #1318 the price steps
-/// by prompt length; GH #1431 the cache-write price.
+/// by prompt length; GH #1431 the cache-write price; GH #1558 the decider's
+/// calibration.
 pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     "model",
     "base_url",
@@ -866,6 +880,9 @@ pub const MODEL_PACKAGE_KEYS: &[&str] = &[
     // GH #1350 (I1): the row's output rate, from which the operation
     // timeout of the served model is derived.
     "output_tps",
+    // GH #1558: the decider's calibration -- a contract change, made on
+    // purpose: a push moves the model and its curves together.
+    "decision_calibration",
 ];
 
 /// GH #1097: the allowance for the first token on top of the output time in
@@ -1669,6 +1686,8 @@ pub(crate) const KNOWN_PARAM_KEYS: &[&str] = &[
     "tokens_per_image",
     // GH #1260: whether the host takes a forced tool call, a package key.
     "tool_choice_required",
+    // GH #1558: the decider's calibration, a package key.
+    "decision_calibration",
     // P10 auth dimension.
     "auth",
     "auth_ref",

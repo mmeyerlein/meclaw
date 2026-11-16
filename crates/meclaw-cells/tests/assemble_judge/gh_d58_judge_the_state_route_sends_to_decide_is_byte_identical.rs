@@ -6,9 +6,11 @@
 //! `translate_decisions.rs`), so the view goes back to the orderer, and
 //! `talky/route` folds it into `decide.state` as it folded the package
 //! `judge`. The text it sends must stay the bytes of before -- the earlier
-//! turns of both sides, the topic, the person's how-questions, the line
-//! "On the screen right now: - nothing", now and place -- and so must the
-//! screen questions built from the presenter's topics.
+//! turns of both sides, the topic, the person's how-questions, now and place
+//! -- and so must the screen questions built from the presenter's topics.
+//! GH #1556 moved both to the decisions providers' form: the line "On the
+//! screen right now: - nothing" is gone (no screen state reaches the curator)
+//! and every question names its subject; the pin holds the new bytes.
 //!
 //! The chain as the composition runs it: the route's ask (`judge_context`
 //! "1", `context_turns` 2) goes to the shipped `./history` on `in_view_ask`,
@@ -16,7 +18,7 @@
 //! `hop.state`. `TODAY_STATE` and `TODAY_QUESTIONS` are what the route of
 //! master before the strand sent for the same wall with the package `judge`
 //! (computed from `templates/talky/route/config.json` at abbbd811 with the
-//! judge package `./history` gave for this wall).
+//! judge package `./history` gave for this wall, moved to the GH #1556 form).
 
 // harness_fold: #[path = "support/assemble_cell.rs"]
 #[allow(unused_imports)]
@@ -40,9 +42,9 @@ use serde_json::{Value, json};
 const ROUTE: &str = "templates/talky/route/config.json";
 const TEXT: &str = "How is the weather tomorrow?";
 
-const TODAY_STATE: &str = "Earlier in this conversation (oldest first):\n- person: Good morning.\n- companion: Good morning to you.\n\nThe conversation is about: the trip on Sunday\n\nHow this person meant earlier requests when asked (newest first):\n- asked \"Its concerts or its website?\", the person answered \"its concerts\" (class: simple)\n\nOn the screen right now:\n- nothing\n\nNow: Friday, 2026-10-30T02:00:00+01:00 (Europe/Berlin)\n\nPlace: Berlin\n\nThe request now:\nHow is the weather tomorrow?";
+const TODAY_STATE: &str = "Earlier in this conversation (oldest first):\n- person: Good morning.\n- companion: Good morning to you.\n\nThe conversation is about: the trip on Sunday\n\nHow this person meant earlier requests when asked (newest first):\n- asked \"Its concerts or its website?\", the person answered \"its concerts\" (class: simple)\n\nNow: Friday, 2026-10-30T02:00:00+01:00 (Europe/Berlin)\n\nPlace: Berlin\n\nThe request now:\nHow is the weather tomorrow?";
 
-const TODAY_QUESTIONS: &str = r#"{"families.history": {"instructions": "Would answering it use earlier conversations with this person?", "kind": "yes_no"}, "families.web": {"instructions": "Would answering it use searching or reading the web?", "kind": "yes_no"}, "intent": {"instructions": "What does the person want with this request?", "kind": "choice", "options": {"chat": "to talk, share or be heard", "other": "none of these", "question": "to know something", "task": "to get something done"}}, "needs.reasoning": {"instructions": "Does answering it need careful step-by-step reasoning?", "kind": "yes_no"}, "needs.research": {"instructions": "Does answering it need a deep search over many sources?", "kind": "yes_no"}, "needs.tool": {"instructions": "Does answering it need a tool call?", "kind": "yes_no"}, "path": {"instructions": "Which way should this request be answered?", "kind": "choice", "options": {"complex": "needs careful reasoning, planning or several steps before it can be answered", "research": "needs a deep search over many sources before it can be answered", "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation", "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool"}}, "screen.further": {"instructions": "Which second block of that same topic helps beside the first one, if any?", "kind": "choice", "options": {"none": "no second block", "weather/today": "weather: today's weather", "weather/week": "weather: the week ahead"}}, "screen.lead": {"instructions": "Which block of the topic that would help shows best what the request asks about?", "kind": "choice", "options": {"weather/today": "weather: today's weather", "weather/week": "weather: the week ahead"}}, "screen.topic": {"instructions": "Which of these would help on a screen beside the answer to this request?", "kind": "choice", "options": {"calendar": "the person's appointments", "none": "nothing on the screen helps with this request", "weather": "the weather today and the next days"}}}"#;
+const TODAY_QUESTIONS: &str = r#"{"families.history": {"instructions": "Would answering the person's latest request (\"The request now\") use earlier conversations with this person?", "kind": "yes_no"}, "families.web": {"instructions": "Would answering the person's latest request (\"The request now\") use searching or reading the web?", "kind": "yes_no"}, "intent": {"instructions": "What does the person want with the person's latest request (\"The request now\")?", "kind": "choice", "options": {"chat": "to talk, share or be heard", "other": "none of these", "question": "to know something", "task": "to get something done"}}, "needs.reasoning": {"instructions": "Does answering the person's latest request (\"The request now\") need careful step-by-step reasoning?", "kind": "yes_no"}, "needs.research": {"instructions": "Does answering the person's latest request (\"The request now\") need a deep search over many sources?", "kind": "yes_no"}, "needs.tool": {"instructions": "Does answering the person's latest request (\"The request now\") need a tool call?", "kind": "yes_no"}, "path": {"instructions": "Which way should the person's latest request (\"The request now\") be answered?", "kind": "choice", "options": {"complex": "needs careful reasoning, planning or several steps before it can be answered", "research": "needs a deep search over many sources before it can be answered", "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation", "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool"}}, "screen.further": {"instructions": "Which second block of that same topic helps beside the first one, if any?", "kind": "choice", "options": {"none": "no second block", "weather/today": "weather: today's weather", "weather/week": "weather: the week ahead"}}, "screen.lead": {"instructions": "Which block of the topic that would help shows best what the person's latest request (\"The request now\") asks about?", "kind": "choice", "options": {"weather/today": "weather: today's weather", "weather/week": "weather: the week ahead"}}, "screen.topic": {"instructions": "Which of these would help on a screen beside the answer to the person's latest request (\"The request now\")?", "kind": "choice", "options": {"calendar": "the person's appointments", "none": "nothing on the screen helps with this request", "weather": "the weather today and the next days"}}}"#;
 
 fn ctx() -> Value {
     json!({"turn_id": "t2", "session_id": "s-now", "channel": "tg:1",

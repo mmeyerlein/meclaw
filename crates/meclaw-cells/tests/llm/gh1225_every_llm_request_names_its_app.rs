@@ -481,7 +481,14 @@ fn shipped_params(dir: &str, base_url: &str, extra: &Value) -> Value {
 /// returns the attribution headers and the request body the provider saw.
 async fn captured(dir: &str, extra: Value) -> (Option<String>, Option<String>, Value) {
     let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
-    let raw = shipped_params(dir, &format!("{}/v1", mock.base_url), &extra);
+    let mut raw = shipped_params(dir, &format!("{}/v1", mock.base_url), &extra);
+    // GH #1558: a decider without a calibration refuses before any request
+    // (`decision_uncalibrated`); the registry pushes the curve with the model
+    // row, so a shipped decide cell has none at birth. This test is about the
+    // attribution on the wire, so it gives the cell a curve of test data.
+    if raw["provider"] == "decisions" && raw.get("decision_calibration").is_none() {
+        raw["decision_calibration"] = json!({"yes_no": {"default": [[0, 0], [1, 1]]}});
+    }
     let mut llm = LlmCell::new(
         LlmParams::parse(&raw).unwrap_or_else(|e| panic!("{dir}: the shipped params parse: {e:?}")),
         reqwest::Client::builder().build().unwrap(),

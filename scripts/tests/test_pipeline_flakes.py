@@ -1582,6 +1582,86 @@ class TheSlotFixes(unittest.TestCase):
         self.assertEqual(final["reason"], "not isolatable: later commands not run")
         self.assertEqual([e["verdict"] for ev, e in lines if ev == "flake_isolated"], ["RED"])
 
+    def run_two_modules(self, red_in_t1=(), more=(), green=()):
+        """#1519: unittest commands (modules m, n and `more`), red on their first run
+        unless in `green`; every isolation run is green unless its module is in
+        `red_in_t1`, and T2 runs on a fake lane proven at 30 % (no real load)."""
+        d = self.dispatch("m")
+        for mod in ("n",) + tuple(more):
+            d["stations"][0]["cmds"].append({"argv": ["python3", "-m", "unittest", "-v", mod],
+                                             "cwd": ""})
+        d["t2_production"] = True
+
+        def ans(argv):
+            mod = next((m for m in ("n",) + tuple(more)
+                        if any(a.startswith(m + ".") or a == m for a in argv)), "m")
+            if "-k" in argv or "--seed" in argv or mod in green:
+                if mod in red_in_t1:
+                    return 1, UT_RED.replace("m.", mod + ".")
+                return 0, UT_ONE_OK.replace("m.", mod + ".")
+            return 1, UT_RED.replace("m.", mod + ".")
+
+        def lane():
+            return lambda run, spent: (run(), "load1 1.6 of 12 vCPU + 2 busy loops", True)
+        with mock.patch.object(flakes, "production_lane", side_effect=lane):
+            return self.run_fake(d, ans)
+
+    def test_1519_two_red_commands_of_load_flakes_end_note_with_both(self):
+        ended, fake, _ = self.run_two_modules()
+        self.assertEqual(ended["verdict"], "NOTE", ended)
+        self.assertEqual([e["test"] for e in ended["load_flake"]],
+                         ["m.T.test_wobbles", "n.T.test_wobbles"], ended)
+        self.assertTrue(all(e["t2_lane"] for e in ended["load_flake"]), ended)
+        # one numbering for both triages: T1, T2, T3 of m, then of n -- none overwritten
+        logs = sorted(p.name for p in (self.root / "ws" / "logs").glob("unittests.isolate-*.log"))
+        self.assertEqual(["unittests.isolate-%d.log" % i for i in range(1, 7)], logs)
+
+    def test_1519_three_commands_each_red_one_is_triaged_in_turn(self):
+        ended, fake, _ = self.run_two_modules(more=("o",), green=("o",))
+        self.assertEqual(ended["verdict"], "NOTE", ended)
+        self.assertEqual([e["test"] for e in ended["load_flake"]],
+                         ["m.T.test_wobbles", "n.T.test_wobbles"], ended)
+        ended, fake, _ = self.run_two_modules(more=("o",))
+        self.assertEqual(ended["verdict"], "NOTE", ended)
+        self.assertEqual([e["test"] for e in ended["load_flake"]],
+                         ["m.T.test_wobbles", "n.T.test_wobbles", "o.T.test_wobbles"], ended)
+        ended, fake, _ = self.run_two_modules(more=("o",), red_in_t1=("o",))
+        self.assertEqual(ended["verdict"], "RED", ended)
+        self.assertEqual([e["test"] for e in ended["load_flake"]],
+                         ["m.T.test_wobbles", "n.T.test_wobbles"], ended)
+
+    def test_1519_a_t1_red_test_in_the_later_command_keeps_the_station_red(self):
+        ended, fake, _ = self.run_two_modules(red_in_t1=("n",))
+        self.assertEqual(ended["verdict"], "RED", ended)
+        self.assertIn("triage T1 red", ended["reason"])
+        # issue pin 3: the load flake of m stays in the receipt, the verdict stays RED
+        self.assertEqual([e["test"] for e in ended["load_flake"]], ["m.T.test_wobbles"], ended)
+
+    def test_1519_fold_keeps_the_old_guard_without_a_triage_of_the_later_command(self):
+        first = {"verdict": "FLAKY", "isolated": 1, "kind": "nextest", "load_flake": True,
+                 "events": [{"test": "a", "verdict": "FLAKY", "cause": flakes.CAUSE_NONE,
+                             "load_flake": True}]}
+        later = dict(first, events=[dict(first["events"][0], test="b")])
+        for sub, exit_code, timed_out in ((None, 100, False), (later, 100, True),
+                                          (later, 101, False),
+                                          (dict(later, isolated=0, events=[]), 100, False)):
+            got = flakes.fold_later(first, sub, exit_code, timed_out)
+            self.assertEqual(got["later"], {"ran": True, "exit": exit_code,
+                                            "timed_out": timed_out}, got)
+            final = flakes.end_station({"station": "s", "verdict": "RED", "exit": 100},
+                                       got)[-1][1]
+            self.assertEqual(final["verdict"], "RED", final)
+        got = flakes.fold_later(first, later, 100)
+        self.assertNotIn("later", got)
+        self.assertEqual([e["test"] for e in got["events"]], ["a", "b"])
+        self.assertIs(got.get("load_flake"), True)
+        many = {"verdict": "RED", "isolated": 0, "reason": flakes.TOO_MANY, "events": []}
+        got = flakes.fold_later(first, many, 100)
+        self.assertEqual((got["verdict"], got["reason"]), ("RED", flakes.TOO_MANY), got)
+        mixed = dict(later, events=[dict(later["events"][0], load_flake=False)])
+        mixed.pop("load_flake")
+        self.assertNotIn("load_flake", flakes.fold_later(first, mixed, 100))
+
     def test_c1_a_flaky_station_is_never_cached(self):
         """Delta C1 cached a FLAKY station whose commands all ran; OR-TV-2 (VG TV-F1)
         makes FLAKY a finding -- no cache entry, all commands run or not."""

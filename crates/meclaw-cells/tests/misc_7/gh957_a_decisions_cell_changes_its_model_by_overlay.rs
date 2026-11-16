@@ -6,6 +6,9 @@
 //! reset): it is answered with silence and no request, and the NEXT call
 //! carries the new model. A push naming `provider` is refused on the error
 //! path and changes nothing -- the call after it still runs on the old model.
+//!
+//! GH #1558: a decider answers only with its calibration, which the registry
+//! pushes in the same package; the pushes here carry one (test curves).
 
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
@@ -48,8 +51,13 @@ fn decide() -> Value {
         "wants": {"kind": "yes_no", "instructions": "Show it?"}}}})
 }
 
+/// GH #1558: test curves, mapping every probability onto itself.
+fn calibration() -> Value {
+    json!({"yes_no": {"default": [[0, 0], [1, 1]]}})
+}
+
 fn yes() -> MockResponse {
-    MockResponse::ok_json(br#"{"answers": {"wants": {"type": "noul", "noul": 0.9}}}"#)
+    MockResponse::ok_json(br#"{"answers": {"q1": {"type": "noul", "noul": 0.9}}}"#)
 }
 
 fn drain(rx: &mut mpsc::Receiver<CellEmission>) -> Vec<CellEmission> {
@@ -64,7 +72,8 @@ fn drain(rx: &mut mpsc::Receiver<CellEmission>) -> Vec<CellEmission> {
 async fn a_pushed_model_is_the_model_of_the_next_call_and_the_provider_stays() {
     let mock = MockOpenAI::start(vec![yes(), yes()]).await;
     let raw = json!({"provider": "decisions", "model": "vendor/decider-a", "api_key": "k",
-                     "base_url": format!("{}/api", mock.base_url)});
+                     "base_url": format!("{}/api", mock.base_url),
+                     "decision_calibration": calibration()});
     let mut cell = LlmCell::new(
         LlmParams::parse(&raw).unwrap(),
         reqwest::Client::builder().build().unwrap(),
@@ -78,10 +87,12 @@ async fn a_pushed_model_is_the_model_of_the_next_call_and_the_provider_stays() {
     let reset: Vec<&str> = MODEL_PACKAGE_KEYS
         .iter()
         .copied()
-        .filter(|k| *k != "model")
+        .filter(|k| *k != "model" && *k != "decision_calibration")
         .collect();
     cell.handle(
-        msg(json!({"system": {}, "params": {"model": "vendor/decider-b", "$reset": reset}})),
+        msg(json!({"system": {}, "params": {"model": "vendor/decider-b",
+                                           "decision_calibration": calibration(),
+                                           "$reset": reset}})),
         &sink,
         &mut db,
     )
@@ -137,14 +148,16 @@ async fn a_pushed_base_url_needs_its_origin_in_the_allow_list() {
     let reset: Vec<&str> = MODEL_PACKAGE_KEYS
         .iter()
         .copied()
-        .filter(|k| *k != "model" && *k != "base_url")
+        .filter(|k| *k != "model" && *k != "base_url" && *k != "decision_calibration")
         .collect();
     let push = json!({"system": {}, "params": {"model": "vendor/decider-b",
-        "base_url": format!("{}/api", new.base_url), "$reset": reset}});
+        "base_url": format!("{}/api", new.base_url), "decision_calibration": calibration(),
+        "$reset": reset}});
 
     for allowed in [false, true] {
         let mut raw = json!({"provider": "decisions", "model": "vendor/decider-a",
-            "api_key": "k", "base_url": format!("{}/api", old.base_url)});
+            "api_key": "k", "base_url": format!("{}/api", old.base_url),
+            "decision_calibration": calibration()});
         if allowed {
             raw["base_url_allow"] = json!([new.base_url.clone()]);
         }

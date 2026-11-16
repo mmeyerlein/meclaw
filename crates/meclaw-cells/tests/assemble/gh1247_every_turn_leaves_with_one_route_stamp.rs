@@ -122,7 +122,11 @@ fn every_turn_leaves_with_one_route_stamp() {
         json!([{"origin": "user", "type": "text", "text": "Will it rain in Berlin?"}]),
     );
     let call = one(run_cell(ROUTE, &[], turn).0, "decide");
-    assert_eq!(call["decide"]["state"], "Will it rain in Berlin?");
+    // GH #1556: the turn stands under the label every question names.
+    assert_eq!(
+        call["decide"]["state"],
+        "The request now:\nWill it rain in Berlin?"
+    );
     let qs = &call["decide"]["questions"];
     let mut offered: Vec<&str> = qs["path"]["options"]
         .as_object()

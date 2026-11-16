@@ -1,4 +1,4 @@
-# `llm-registry@2.15.0`
+# `llm-registry@2.16.0`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -474,7 +474,9 @@ second digit.
 
 **From the tree, in `meclaw-os`.** The builder's `grow_level assistant` draws, beside the level,
 a declaration at `/os/orgs`: one push edge per brain (`talky`, `talky-chat`, `cogny`) onto the
-composite's `in_model` door, and one edge that turns every mutation receipt reaching the
+composite's `in_model` door -- and one per curator summarizer (GH #877) and, since
+[#1559](https://github.com/mmeyerlein/meclaw/issues/1559), one per talky decider (`talky/decide`, `talky-chat/decide`, announced with
+`"protocol": "decisions"` and no start value, so its curve comes with its push) --, and one edge that turns every mutation receipt reaching the
 generation into an **announcement** -- a message with the brains on
 `context.model_announced`, `[{"cell_path": …, "start_model": …, "requirement"?: …}]`, and the generation itself
 on `context.model_generation` -- which `meclaw-os` hands to this hive's `in_hand`, stamping

@@ -103,7 +103,9 @@ fn a_set_object_with_four_entries_asks_the_memory_question_and_the_stamp_names_m
     assert_eq!(qs["needs.memory"]["kind"], "yes_no", "{qs}");
     assert_eq!(
         qs["needs.memory"]["instructions"],
-        json!(format!("Does answering it need {MEMORY_Q}?")),
+        json!(format!(
+            "Does answering the person's latest request (\"The request now\") need {MEMORY_Q}?"
+        )),
         "{qs}"
     );
     for k in ["needs.tool", "needs.reasoning", "needs.research"] {

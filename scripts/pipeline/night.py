@@ -42,7 +42,10 @@ harness or binary list of the tree no longer matches the newest map
 (`binaries_changed`, review Z-I1), or master moved past its `rev`, the night
 first tries `coverage.carry` (GH #1461): when the diff from the newest clean
 GREEN map to master selects no test, that map is carried to master without a
-run, lane or no lane, and the report says so. Not carried, the report names
+run, lane or no lane, and the report says so. Nothing is due while master's
+tip already has a GREEN map (`green_on_master`, GH #1554), whatever merged
+since the newest `coverage_built`; and a build never replaces a GREEN map of
+the same rev with a red one (`coverage.keeps_green`). Not carried, the report names
 why, and if W6 (`scripts/pipeline/coverage.py`) exists, the night runs
 `pipeline coverage build --lane <lane> --rev master` before the report and
 writes its outcome (built, skipped, failed with exit and reason, review Z-I gap
@@ -434,9 +437,27 @@ def binaries_changed(cov, metadata):
     return bool(gone or new), gone, new
 
 
+def green_on_master():
+    """True when master's tip already has a GREEN map (`coverage.verdict_of`, the
+    reading of `wave close`). GH #1554: the night rebuilt such a tip because a
+    `merge_done` was newer than the newest `coverage_built`; under load the rerun
+    came out red and `wave close` refused a commit that was GREEN an hour before.
+    master resolves with `coverage.resolve_rev`, the resolver the night's
+    `coverage build --rev master` names its map with."""
+    from . import coverage as _coverage
+    head = _coverage.resolve_rev("master", str(REPO))
+    if not head:
+        return False
+    cov, _why = _coverage.load_map(_coverage.map_path(head))
+    return bool(cov) and cov.get("rev") == head and _coverage.verdict_of(cov) == "GREEN"
+
+
 def coverage_due(db, runner):
     """`(due, merges_since, since)`: a `merge_done` after the newest map, the
-    harness/binary list changed, or master moved."""
+    harness/binary list changed, or master moved -- never while master's tip
+    already has a GREEN map (GH #1554)."""
+    if green_on_master():
+        return False, 0, None
     built = db.execute("SELECT seq, at, data FROM journal WHERE event='coverage_built'"
                        " ORDER BY seq DESC LIMIT 1").fetchone()
     after = built[0] if built else 0

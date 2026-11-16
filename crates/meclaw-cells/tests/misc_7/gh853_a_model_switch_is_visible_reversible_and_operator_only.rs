@@ -470,6 +470,9 @@ fn the_package_keys_are_the_contract() {
             // the served model derives from -- a contract change, made on
             // purpose.
             "output_tps",
+            // GH #1558: the decider's calibration curves travel with the
+            // model -- a contract change, made on purpose.
+            "decision_calibration",
         ]
     );
     // Every package key is a known, run-time-mutable param.

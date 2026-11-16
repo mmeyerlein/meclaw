@@ -21,7 +21,10 @@ full suite of that wave. `aggregate --nextest-log` reads the names of the red
 tests from the nextest log; `build` writes `process_finding coverage_red` with
 them and exits `RED_EXIT`; `wave close` refuses while the end tip has no GREEN
 map. A map is GREEN only when complete, RED on nextest exit 100 or a named red
-test, else INCOMPLETE. Older than 7 days, it is stale:
+test, else INCOMPLETE. A build never replaces a GREEN map of the same rev with
+a RED or INCOMPLETE one (GH #1554): the GREEN map stays installed, the run's
+finding and exit are as above, its map lies in `--out-dir` until the next
+build there and no `coverage_built` is journaled for it. Older than 7 days, a map is stale:
 `process_finding coverage_stale`, and `impact` falls back to `rdeps`. With no
 lane up the run switches none on (rulings.md 2): `process_finding
 coverage_skipped_no_lane`. A lane without llvm-tools is `TOOL_EXIT` and
@@ -395,6 +398,16 @@ def map_path(rev, map_dir=None):
     (`--out-dir`, coverage.json and the rest) stays where it is."""
     from pipeline import narrow
     return pathlib.Path(map_dir or narrow.coverage_dir()) / ("coverage-%s.json" % rev)
+
+
+def keeps_green(path, cov):
+    """True when the map at `path` is GREEN (`verdict_of`, the reading of `wave
+    close`) and `cov` of the same rev is not: `build` never replaces a GREEN map
+    with a RED or INCOMPLETE one (GH #1554). A GREEN run replaces as before."""
+    if verdict_of(cov) == "GREEN":
+        return False
+    old, _why = load_map(path)
+    return bool(old) and old.get("rev") == cov.get("rev") and verdict_of(old) == "GREEN"
 
 
 def is_complete(cov):
@@ -842,25 +855,41 @@ def _cmd_coverage(args):
         return 2
     cov["runner"] = args.lane
     final = map_path(cov["rev"], getattr(args, "map_dir", None))
-    final.parent.mkdir(parents=True, exist_ok=True)
-    final.write_text(json.dumps(cov, sort_keys=True), encoding="utf-8")
-    print(json.dumps(built(cov, db_path=args.db)))
+    # `kept` is the suffix of the RED/INCOMPLETE line below and stays text in both
+    # branches: as a bool it printed `impact keeps rdepsFalse` into every red night
+    # report without a GREEN map (review I1, the night copies the last stderr line).
+    kept = ""
+    if keeps_green(final, cov):
+        # GH #1554: the night rebuilt a master tip that already had a GREEN map; under
+        # load the rerun came out red (289 red tests, 5 binaries without profiles),
+        # overwrote it, and `wave close` refused a commit that was GREEN an hour
+        # before. The GREEN map stays; this run is reported and journaled below,
+        # and no `coverage_built` claims it. Its lane map lies in `--out-dir` only
+        # until the next build there overwrites it (review M2); the journal holds
+        # the finding.
+        kept = " -- the GREEN map of %s stays installed, this run's map is at %s until" \
+            " the next build" % (cov["rev"], path)
+    else:
+        final.parent.mkdir(parents=True, exist_ok=True)
+        final.write_text(json.dumps(cov, sort_keys=True), encoding="utf-8")
+        print(json.dumps(built(cov, db_path=args.db)))
     if verdict_of(cov) == "RED":
         reds = list(cov.get("red_tests") or [])
         _finding("coverage_red", cov["rev"], len(reds), 0, cov["built_at"], db_path=args.db,
                  extra={"tests": reds[:50]})
-        print("coverage: map %s is RED: %s -- a finding (coverage_red), impact keeps rdeps"
+        print("coverage: map %s is RED: %s -- a finding (coverage_red), impact keeps rdeps%s"
               % (cov["rev"], ("%d red tests: %s" % (len(reds), _shown(reds, 20))) if reds
-                 else "red tests, no name found in the nextest log"), file=sys.stderr)
+                 else "red tests, no name found in the nextest log", kept), file=sys.stderr)
         return RED_EXIT
     if not is_complete(cov):
         _finding("coverage_incomplete", cov["rev"], cov.get("binaries_measured", 0),
                  cov.get("binaries_expected", 0), cov["built_at"], db_path=args.db)
         print("coverage: map %s is NOT complete (%s/%s binaries, %s errors, run_ok=%s: %s) --"
-              " impact keeps rdeps" % (cov["rev"], cov.get("binaries_measured"),
-                                       cov.get("binaries_expected"), cov.get("errors"),
-                                       cov.get("run_ok"),
-                                       "; ".join(cov.get("incomplete") or ["no reason recorded"])),
+              " impact keeps rdeps%s" % (cov["rev"], cov.get("binaries_measured"),
+                                         cov.get("binaries_expected"), cov.get("errors"),
+                                         cov.get("run_ok"),
+                                         "; ".join(cov.get("incomplete") or ["no reason recorded"]),
+                                         kept),
               file=sys.stderr)
         return 1
     return 0

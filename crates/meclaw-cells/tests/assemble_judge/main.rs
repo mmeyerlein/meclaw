@@ -5,6 +5,8 @@
 pub mod assemble_cell;
 #[path = "../support/curator_hive.rs"]
 pub mod curator_hive;
+pub mod gh1556_the_route_speaks_the_decisions_form;
+pub mod gh1558_the_route_falls_back_on_an_uncalibrated_decider;
 pub mod gh_d54g_listennote_seam_carries_the_choices;
 pub mod gh_d54g_stamp_route;
 pub mod gh_d583_kern_route_a_late_stamp_carries_its_yes_values;

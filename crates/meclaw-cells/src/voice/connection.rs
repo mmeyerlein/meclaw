@@ -1652,6 +1652,43 @@ fn audible_offset_ms(armed: bool, chunk: &[u8], rate: u32, level: f64) -> Option
     crate::voice::duck::first_audible(chunk, rate, level).map(|at| pcm_ms(at, rate))
 }
 
+/// The span of the model's speech that went out to the client, in ms (GH
+/// #1557): what of its answer the caller can have heard, the measure of
+/// [`crate::voice::live_turns::UNSAID_MS_PER_CHAR`].
+///
+/// Counted in 20 ms windows at the audible level, from the first audible
+/// window to the last: the silent windows between two audible ones count
+/// (the pauses, unvoiced sounds and fading ends of speech fall under the
+/// level), the silence after the last audible window does not, and nor does
+/// a gap longer than `quiet_ms` -- the model was quiet then, not speaking
+/// (a live model streams its silence too, [`park_pump`]). The limit: it
+/// counts what went out to the client, not what the client played.
+#[derive(Debug, Default)]
+struct HeardSpan {
+    /// The running sum; `None` until the first chunk of model audio.
+    total: Option<u64>,
+    /// Silence since the last audible window; `None` before the first.
+    since_audible: Option<u64>,
+}
+
+impl HeardSpan {
+    fn push(&mut self, chunk: &[u8], rate: u32, level: f64, quiet_ms: u64) {
+        let mut total = self.total.unwrap_or(0);
+        let window = pcm_ms_bytes(Duration::from_millis(20), rate).max(2);
+        for w in chunk.chunks(window) {
+            let ms = pcm_ms(w.len(), rate);
+            if crate::voice::duck::first_audible(w, rate, level).is_some() {
+                let gap = self.since_audible.filter(|g| *g <= quiet_ms).unwrap_or(0);
+                total = total.saturating_add(gap).saturating_add(ms);
+                self.since_audible = Some(0);
+            } else if let Some(since) = self.since_audible.as_mut() {
+                *since = since.saturating_add(ms);
+            }
+        }
+        self.total = Some(total);
+    }
+}
+
 /// The pump between a parked session and the connection that will adopt it
 /// (GH #1055 R1).
 ///
@@ -2726,6 +2763,7 @@ async fn report_failed_renewal(
                 provider_code,
                 client_event_id: None,
             },
+            model_heard_ms: None,
         })
         .await;
 }
@@ -3104,6 +3142,7 @@ async fn page_wait(
                                 provider_code: None,
                                 client_event_id: Some(event_id),
                             },
+                            model_heard_ms: None,
                         }).await;
                     }
                     // A wiring fault on this engine, answered as on a session's
@@ -3411,6 +3450,17 @@ async fn duplex_session(
     // that closes there says its sentence was cut. The same number that calls
     // the line quiet for a `speak_end` and for a takeover.
     let mut model_audio_at: Option<Instant> = None;
+    // How much of the model's speech went out to the client, in ms, as the
+    // client got it -- the span from first to last audible window, see
+    // [`HeardSpan`]: after the opening guard, the duck and a hold (GH #1557). `None` until the first chunk of model audio, audible or not:
+    // a session that never streamed audio has no audio clock, and the turn
+    // machine cuts none of its text. It rides on the events the handler
+    // already gets (`Live`, `LiveTick`, `LiveEnded`), never one per frame.
+    //
+    // Only for a provider whose transcript IS its audio: the loopback's text
+    // is a mirror and its audio an echo, so it keeps no audio clock either.
+    let measures_heard = provider.transcript_is_its_audio();
+    let mut model_heard = HeardSpan::default();
     let mut ticker = tokio::time::interval(Duration::from_millis(shared.duplex_tick_ms.max(1)));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The call's time marks (D48, DK): one timer, in this loop, so it ends
@@ -3914,6 +3964,7 @@ async fn duplex_session(
                         shared.emit(VoiceEvent::Live {
                             session_id: session_id.clone(),
                             event,
+                            model_heard_ms: model_heard.total,
                         }).await;
                         if metered {
                             report_usage(&shared, &session_id, &lineup.usage, false).await;
@@ -4015,6 +4066,7 @@ async fn duplex_session(
                             shared.emit(VoiceEvent::Live {
                                 session_id: session_id.clone(),
                                 event,
+                                model_heard_ms: model_heard.total,
                             }).await;
                         }
                     }
@@ -4041,6 +4093,7 @@ async fn duplex_session(
                                     shared.emit(VoiceEvent::Live {
                                         session_id: session_id.clone(),
                                         event,
+                                        model_heard_ms: model_heard.total,
                                     }).await;
                                 }
                             }
@@ -4228,6 +4281,7 @@ async fn duplex_session(
                 shared.emit(VoiceEvent::LiveTick {
                     session_id: session_id.clone(),
                     now_ms,
+                    model_heard_ms: model_heard.total,
                 }).await;
             }
 
@@ -4429,6 +4483,7 @@ async fn duplex_session(
                         shared.emit(VoiceEvent::Live {
                             session_id: session_id.clone(),
                             event: w,
+                            model_heard_ms: None,
                         }).await;
                     }
                     RenewalTick::Event(Some(other)) => {
@@ -4557,6 +4612,14 @@ async fn duplex_session(
                         if hushed {
                             bytes.fill(0);
                         }
+                        if measures_heard {
+                            model_heard.push(
+                                &bytes,
+                                audible_rate,
+                                audible_level,
+                                shared.spoken_quiet_ms,
+                            );
+                        }
                         let frames = match lineup.retiring_audio.as_mut() {
                             Some(a) => a.framer.push(bytes),
                             None => vec![bytes],
@@ -4611,6 +4674,14 @@ async fn duplex_session(
                         // Probe (d): a hold came into the model's speech.
                         if hushed {
                             bytes.fill(0);
+                        }
+                        if measures_heard {
+                            model_heard.push(
+                                &bytes,
+                                audible_rate,
+                                audible_level,
+                                shared.spoken_quiet_ms,
+                            );
                         }
                         // The session in charge speaks: whatever the session a
                         // renewal replaced still had to say is dropped from
@@ -4674,6 +4745,7 @@ async fn duplex_session(
             session_id: session_id.clone(),
             at_ms: clock_now_ms(model_clock, opened),
             model_audible: model_audio_at.is_some_and(|at| at.elapsed() < quiet),
+            model_heard_ms: model_heard.total,
         })
         .await;
     // A renewal still waiting and a session still retiring end with the call
@@ -4951,6 +5023,7 @@ async fn after_the_end(
         .emit(VoiceEvent::Live {
             session_id: session_id.to_string(),
             event: shift_event(event, clock_base_ms),
+            model_heard_ms: None,
         })
         .await;
 }
@@ -5203,6 +5276,39 @@ async fn sleep_until_opt(at: Option<Instant>) {
 mod tests {
     use super::*;
     use crate::voice::contract::AudioFormat;
+
+    /// GH #1557 (review M1): the model's speech counts from its first audible
+    /// window to its last, the pauses between included; silence before the
+    /// first, after the last and across a gap longer than the quiet does not.
+    #[test]
+    fn the_heard_span_runs_from_first_to_last_audible_window() {
+        const RATE: u32 = 16_000;
+        let pcm = |ms: u32, level: i16| -> Vec<u8> {
+            (0..RATE / 1_000 * ms)
+                .flat_map(|_| level.to_le_bytes())
+                .collect()
+        };
+        let level = crate::voice::duck::linear(-35.0);
+        let mut span = HeardSpan::default();
+        assert_eq!(span.total, None, "no audio, no clock");
+        span.push(&pcm(100, 0), RATE, level, 1_500);
+        assert_eq!(
+            span.total,
+            Some(0),
+            "silence before the speech counts nothing"
+        );
+        span.push(&[pcm(160, 8_000), pcm(160, 0)].concat(), RATE, level, 1_500);
+        assert_eq!(
+            span.total,
+            Some(160),
+            "the silence after the last window waits"
+        );
+        span.push(&pcm(160, 8_000), RATE, level, 1_500);
+        assert_eq!(span.total, Some(480), "a pause between two windows counts");
+        span.push(&pcm(2_000, 0), RATE, level, 1_500);
+        span.push(&pcm(100, 8_000), RATE, level, 1_500);
+        assert_eq!(span.total, Some(580), "a gap past the quiet is not speech");
+    }
 
     /// d54g callseam: the caller's sentence at a takeover is cut for the
     /// append ceiling between words, and nothing of it is lost.

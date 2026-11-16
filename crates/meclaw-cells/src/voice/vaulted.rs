@@ -226,6 +226,9 @@ impl DuplexProvider for VaultedDuplex {
     fn negotiate(&self, sample_rate: u32) -> Option<AudioFormat> {
         self.template.negotiate(sample_rate)
     }
+    fn transcript_is_its_audio(&self) -> bool {
+        self.template.transcript_is_its_audio()
+    }
     fn run_session(
         &self,
         format: AudioFormat,

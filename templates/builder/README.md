@@ -1,4 +1,4 @@
-# `builder@1.34.1`
+# `builder@1.34.2`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -1081,7 +1081,12 @@ when it reads the recipe cell's config. The push form the gate checks is one seg
 edge's `to`: a talky's `brain`, or one of the memory hive's four cells, and nothing deeper
 (`crates/meclaw-cells/tests/misc_7/gh858_a_grown_member_announces_its_memory.rs`) -- except
 `curator/summarizer`, the curator summarizer behind each rim, which a generation announces since
-GH #877 beside its three brains.
+GH #877 beside its three brains. Since [#1559](https://github.com/mmeyerlein/meclaw/issues/1559) a
+generation announces the `decide` cell of `talky` and `talky-chat` too: an entry with
+`"protocol": "decisions"`, an empty `start_model` (the cell is born on the template's empty
+`model`) and the `requirement` of `talky/decide`, a push edge onto the rim and the rim's way back.
+The decider's calibration curve rides only on the registry's push, so without the announcement it
+answered every turn `decision_uncalibrated`.
 
 ## A simple-agent is one block
 

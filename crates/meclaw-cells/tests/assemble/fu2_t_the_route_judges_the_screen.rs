@@ -364,7 +364,8 @@ fn route_judge_context_asks_the_screen_question() {
     let ask = run_cell(ROUTE, &jc, turn()).0;
     assert_eq!(on(&ask, "view_ask")["view_ask"]["target"], "decide");
 
-    // The judge context renders before the turn, both sides, the screen, now.
+    // The judge context renders before the turn, both sides, now -- and no screen
+    // line: no screen state reaches the curator (GH #1556).
     let out = run_cell(ROUTE, &jc, judged_turns()).0;
     let d = &on(&out, "decide")["decide"];
     let state = d["state"].as_str().expect("state");
@@ -372,12 +373,12 @@ fn route_judge_context_asks_the_screen_question() {
         "- person: Good morning.",
         "- companion: Good morning to you.",
         "The conversation is about: the trip on Sunday",
-        "On the screen right now:\n- nothing",
         "Now: Friday, 2026-10-30T09:00:00+01:00 (Europe/Berlin)",
         "Place: Berlin",
     ] {
         assert!(state.contains(needle), "{needle}: {state}");
     }
+    assert!(!state.contains("On the screen"), "{state}");
     assert!(state.ends_with("The request now:\nHow is the weather tomorrow?"));
     let qs = &d["questions"];
     let topic = &qs["screen.topic"]["options"];
@@ -568,8 +569,9 @@ fn delta_stamp_goes_to_the_curator_not_the_collector() {
 }
 
 // Today's bytes, as `gh1304_no_choices_means_todays_stamp` holds them (master
-// 710554c8d): the decide call and a sure stamp without choices.
-const TODAY_DECIDE: &str = r#"{"header": {"route": "decide", "asked_at": "<now>"}, "messages": [], "decide": {"state": "How is the weather tomorrow?", "questions": {"path": {"kind": "choice", "instructions": "Which way should this request be answered?", "options": {"complex": "needs careful reasoning, planning or several steps before it can be answered", "research": "needs a deep search over many sources before it can be answered", "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation", "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool"}}, "intent": {"kind": "choice", "instructions": "What does the person want with this request?", "options": {"chat": "to talk, share or be heard", "other": "none of these", "question": "to know something", "task": "to get something done"}}, "needs.reasoning": {"kind": "yes_no", "instructions": "Does answering it need careful step-by-step reasoning?"}, "needs.research": {"kind": "yes_no", "instructions": "Does answering it need a deep search over many sources?"}, "needs.tool": {"kind": "yes_no", "instructions": "Does answering it need a tool call?"}, "families.history": {"kind": "yes_no", "instructions": "Would answering it use earlier conversations with this person?"}, "families.web": {"kind": "yes_no", "instructions": "Would answering it use searching or reading the web?"}}}}"#;
+// 710554c8d; the decide call in the GH #1556 form): the decide call and a sure
+// stamp without choices.
+const TODAY_DECIDE: &str = r#"{"header": {"route": "decide", "asked_at": "<now>"}, "messages": [], "decide": {"state": "The request now:\nHow is the weather tomorrow?", "questions": {"path": {"kind": "choice", "instructions": "Which way should the person's latest request (\"The request now\") be answered?", "options": {"complex": "needs careful reasoning, planning or several steps before it can be answered", "research": "needs a deep search over many sources before it can be answered", "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation", "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool"}}, "intent": {"kind": "choice", "instructions": "What does the person want with the person's latest request (\"The request now\")?", "options": {"chat": "to talk, share or be heard", "other": "none of these", "question": "to know something", "task": "to get something done"}}, "needs.reasoning": {"kind": "yes_no", "instructions": "Does answering the person's latest request (\"The request now\") need careful step-by-step reasoning?"}, "needs.research": {"kind": "yes_no", "instructions": "Does answering the person's latest request (\"The request now\") need a deep search over many sources?"}, "needs.tool": {"kind": "yes_no", "instructions": "Does answering the person's latest request (\"The request now\") need a tool call?"}, "families.history": {"kind": "yes_no", "instructions": "Would answering the person's latest request (\"The request now\") use earlier conversations with this person?"}, "families.web": {"kind": "yes_no", "instructions": "Would answering the person's latest request (\"The request now\") use searching or reading the web?"}}}}"#;
 const TODAY_SURE: &str = r#"{"header": {"route": "stamp", "turn_id": "c-1", "path": "simple"}, "messages": [], "stamp": {"turn_id": "c-1", "path": "simple", "p": 0.9, "intent": "question", "needs": [], "families": [], "duration": 0}}"#;
 
 #[test]

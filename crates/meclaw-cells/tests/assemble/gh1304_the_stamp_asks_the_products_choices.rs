@@ -410,10 +410,11 @@ fn gh1304_the_rim_stamp_needs_a_round() {
 }
 
 // Today's bytes (GH #1304, review I-1): what the shipped route wrote on master
-// 710554c8d for the same three messages, taken from its stdout as written --
+// 710554c8d for the same three messages -- since GH #1556 in the decisions
+// providers' form (the turn under its label, every question naming its subject), taken from its stdout as written --
 // key order, one emission rather than a list. The decide call's `asked_at` is
 // the moment of the ask, so it is checked as a number and then masked.
-const TODAY_DECIDE: &str = r#"{"header": {"route": "decide", "asked_at": "<now>"}, "messages": [], "decide": {"state": "My knee hurts again.", "questions": {"path": {"kind": "choice", "instructions": "Which way should this request be answered?", "options": {"complex": "needs careful reasoning, planning or several steps before it can be answered", "research": "needs a deep search over many sources before it can be answered", "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation", "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool"}}, "intent": {"kind": "choice", "instructions": "What does the person want with this request?", "options": {"chat": "to talk, share or be heard", "other": "none of these", "question": "to know something", "task": "to get something done"}}, "needs.reasoning": {"kind": "yes_no", "instructions": "Does answering it need careful step-by-step reasoning?"}, "needs.research": {"kind": "yes_no", "instructions": "Does answering it need a deep search over many sources?"}, "needs.tool": {"kind": "yes_no", "instructions": "Does answering it need a tool call?"}, "families.history": {"kind": "yes_no", "instructions": "Would answering it use earlier conversations with this person?"}, "families.web": {"kind": "yes_no", "instructions": "Would answering it use searching or reading the web?"}}}}"#;
+const TODAY_DECIDE: &str = r#"{"header": {"route": "decide", "asked_at": "<now>"}, "messages": [], "decide": {"state": "The request now:\nMy knee hurts again.", "questions": {"path": {"kind": "choice", "instructions": "Which way should the person's latest request (\"The request now\") be answered?", "options": {"complex": "needs careful reasoning, planning or several steps before it can be answered", "research": "needs a deep search over many sources before it can be answered", "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation", "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool"}}, "intent": {"kind": "choice", "instructions": "What does the person want with the person's latest request (\"The request now\")?", "options": {"chat": "to talk, share or be heard", "other": "none of these", "question": "to know something", "task": "to get something done"}}, "needs.reasoning": {"kind": "yes_no", "instructions": "Does answering the person's latest request (\"The request now\") need careful step-by-step reasoning?"}, "needs.research": {"kind": "yes_no", "instructions": "Does answering the person's latest request (\"The request now\") need a deep search over many sources?"}, "needs.tool": {"kind": "yes_no", "instructions": "Does answering the person's latest request (\"The request now\") need a tool call?"}, "families.history": {"kind": "yes_no", "instructions": "Would answering the person's latest request (\"The request now\") use earlier conversations with this person?"}, "families.web": {"kind": "yes_no", "instructions": "Would answering the person's latest request (\"The request now\") use searching or reading the web?"}}}}"#;
 const TODAY_SURE: &str = r#"{"header": {"route": "stamp", "turn_id": "c-1", "path": "talk"}, "messages": [], "stamp": {"turn_id": "c-1", "path": "talk", "p": 0.9, "intent": "chat", "needs": [], "families": [], "duration": 0}}"#;
 const TODAY_UNSURE: &str = r#"{"header": {"route": "stamp", "turn_id": "c-1", "path": "talk", "fallback": "unsure"}, "messages": [], "stamp": {"turn_id": "c-1", "path": "talk", "p": 0.0, "intent": "task", "needs": [], "families": [], "duration": 0}}"#;
 
@@ -507,7 +508,8 @@ fn gh1304_context_turns_ask_the_wall_before_the_decide_call() {
         "{out:?}"
     );
 
-    // an empty or broken wall: the call goes on with the turn alone
+    // an empty or broken wall: the call goes on with the turn alone (under its
+    // label, GH #1556)
     let empty = lane(
         "in_view",
         json!({"state": "My knee hurts again.", "asked_at": now_ms().to_string(),
@@ -516,7 +518,7 @@ fn gh1304_context_turns_ask_the_wall_before_the_decide_call() {
         json!([]),
     );
     let d = on(&run_cell(ROUTE, &over, empty).0, "decide")["decide"].clone();
-    assert_eq!(d["state"], "My knee hurts again.", "{d}");
+    assert_eq!(d["state"], "The request now:\nMy knee hurts again.", "{d}");
 
     // talky draws the read hop through the curator and carries the text
     let edges = edges_of(TALKY);

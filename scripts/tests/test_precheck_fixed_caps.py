@@ -394,6 +394,13 @@ ROWS = [{"model_id": "vendor/model-1.5", "input_soft": 25000, "package": {"chars
 RENDERED = {"input_soft_fallback": {"vendor/model-1.5": 25000, "other/big": 200000}}
 
 
+def catalog_rules():
+    """A rules file with only the catalog rule of the core (a fixture of its own:
+    a pin reads nothing of the tree, it travels with the export)."""
+    return {"about": "pin", "rules": [
+        {"id": "input-soft-fallback-rendered", "names": "^input_soft_fallback\\..+$", "catalog": "input_soft",
+         "reason": "a pin rule: each rendered value is justified while it is its catalog row's input_soft"}]}
+
 class RenderedFromTheCatalog(unittest.TestCase):
     """GH #1544: a map a render script writes from the catalog
     (`input_soft_fallback` {model_id: input_soft}) is justified exactly while
@@ -467,6 +474,84 @@ class RenderedFromTheCatalog(unittest.TestCase):
         red = [f.message for f in tree.red([CATALOG])]
         self.assertEqual(1, len(red), red)
         self.assertIn("vendor/model-1.5", red[0])
+
+    def test_the_rules_file_names_the_repositorys_catalog(self):
+        """GH #1548: a repository built on a release has no core catalog in its
+        tree and no environment on a lane; its rules file names a catalog
+        snapshot it carries. A current render is green, a stale one red, and the
+        environment does not override the named file."""
+        rules = catalog_rules()
+        rules["catalog_file"] = "scripts/catalog_snapshot.jsonl"
+        files = {fixed_caps.RULES_FILE: json.dumps(rules), "scripts/catalog_snapshot.jsonl": catalog(ROWS),
+                 CFG: config("print(1)\n", RENDERED)}
+        tree = Tree(self, files, rules=False)
+        self.assertEqual([], tree.red([CFG]))
+        tree.write("asset/models.jsonl", catalog(ROWS))
+        tree.write("scripts/catalog_snapshot.jsonl", catalog([dict(ROWS[0], input_soft=30000), ROWS[1]]))
+        os.environ[fixed_caps.CATALOG_ENV] = os.path.join(tree.root, "asset", "models.jsonl")
+        self.addCleanup(os.environ.pop, fixed_caps.CATALOG_ENV, None)
+        red = [f.message for f in tree.red([CFG])]
+        self.assertEqual(1, len(red), red)
+        self.assertIn("vendor/model-1.5", red[0])
+
+    def test_a_diff_at_the_named_catalog_alone_grades_the_renders(self):
+        rules = catalog_rules()
+        rules["catalog_file"] = "scripts/catalog_snapshot.jsonl"
+        tree = Tree(self, {fixed_caps.RULES_FILE: json.dumps(rules), "scripts/catalog_snapshot.jsonl": catalog(ROWS),
+                           CFG: config("print(1)\n", RENDERED)}, rules=False)
+        self.assertEqual([], tree.red(["scripts/catalog_snapshot.jsonl"]))
+        tree.write("scripts/catalog_snapshot.jsonl", catalog([dict(ROWS[0], input_soft=30000), ROWS[1]]))
+        self.assertEqual(1, len(tree.red(["scripts/catalog_snapshot.jsonl"])))
+
+    def _named(self, value, snapshot=None):
+        rules = catalog_rules()
+        rules["catalog_file"] = value
+        files = {fixed_caps.RULES_FILE: json.dumps(rules), CFG: config("print(1)\n", RENDERED)}
+        if snapshot:
+            files[snapshot] = catalog(ROWS)
+        return Tree(self, files, rules=False)
+
+    def test_a_named_catalog_is_one_path_however_written(self):
+        """Review I1: `./scripts/x` is read as `scripts/x`, and a diff at it
+        alone grades the renders (red when it stales them)."""
+        tree = self._named("./scripts//catalog_snapshot.jsonl", "scripts/catalog_snapshot.jsonl")
+        self.assertEqual([], tree.red([CFG]))
+        tree.write("scripts/catalog_snapshot.jsonl", catalog([dict(ROWS[0], input_soft=30000), ROWS[1]]))
+        self.assertEqual(1, len(tree.red(["scripts/catalog_snapshot.jsonl"])))
+
+    def test_an_invalid_catalog_file_fails_closed(self):
+        """Review I2: absolute, outside the repository, empty or no string: the
+        rules file is reported RED and no other catalog (env, tree) answers."""
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        good = os.path.join(outside.name, "models.jsonl")
+        with open(good, "w", encoding="utf-8") as fh:
+            fh.write(catalog(ROWS))
+        os.environ[fixed_caps.CATALOG_ENV] = good
+        self.addCleanup(os.environ.pop, fixed_caps.CATALOG_ENV, None)
+        for value in (good, "..", "", 123, ["scripts/x.jsonl"]):
+            with self.subTest(value=value):
+                tree = self._named(value)
+                if value == "..":                      # a real catalog one level above the repository root
+                    name = "%s-models.jsonl" % os.path.basename(tree.root)     # unique beside the tree
+                    above = os.path.join(os.path.dirname(tree.root), name)
+                    with open(above, "w", encoding="utf-8") as fh:
+                        fh.write(catalog(ROWS))
+                    self.addCleanup(os.remove, above)
+                    rules = catalog_rules()
+                    rules["catalog_file"] = "../" + name
+                    tree.write(fixed_caps.RULES_FILE, json.dumps(rules))
+                red = [f.message for f in tree.red([CFG])]
+                self.assertTrue(any("invalid catalog_file" in m for m in red), red)
+                self.assertEqual(3, len(red), red)          # the rules file and both rendered values
+
+    def test_an_unreadable_rules_file_is_red_not_an_exception(self):
+        for text in ("{not json", json.dumps({"rules": [{"id": "x", "names": "^(", "values": [1], "reason": "r"}]})):
+            with self.subTest(text=text):
+                tree = Tree(self, {fixed_caps.RULES_FILE: text, CFG: config("print(1)\n", RENDERED)}, rules=False)
+                red = [f.message for f in tree.red([CFG])]
+                self.assertEqual(1, len(red), red)
+                self.assertIn("unreadable", red[0])
 
     def test_a_catalog_rule_holds_only_its_field(self):
         rules = {"about": "pin", "rules": [
@@ -562,6 +647,17 @@ class AgainstTheMergeBase(unittest.TestCase):
         red = tree.red([fixed_caps.BASELINE_FILE])
         self.assertEqual(1, len(red), red)
         self.assertIn("cannot read %s at the merge base" % fixed_caps.BASELINE_FILE, red[0].message)
+
+    def test_an_unreadable_baseline_of_the_tree_is_red_not_an_exception(self):
+        tree = GitTree(self, {self.LIVE: config(STOCK_SCRIPT)})
+        fixed_caps.write_baseline(tree.root)
+        tree.commit("baseline")
+        tree.git("checkout", "-q", "master")
+        tree.git("merge", "-q", "--ff-only", "strand")
+        tree.git("checkout", "-q", "strand")
+        tree.write(fixed_caps.BASELINE_FILE, "{not json\n")
+        red = [f.message for f in tree.red([fixed_caps.BASELINE_FILE])]
+        self.assertTrue(red and all("unreadable" in m for m in red), red)
 
     def test_a_first_baseline_has_no_ratchet(self):
         # the merge base carries no baseline yet: the new one is the stock

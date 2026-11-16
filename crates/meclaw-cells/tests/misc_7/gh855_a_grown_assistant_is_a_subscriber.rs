@@ -187,8 +187,9 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
         .collect();
     assert_eq!(
         pushes.len(),
-        6,
-        "one push edge per brain, and since GH #877 one per curator summarizer: {pushes:?}"
+        8,
+        "one push edge per brain, since GH #877 one per curator summarizer and since \
+         GH #1559 one per talky decider: {pushes:?}"
     );
     let cells = [
         ("talky", "brain"),
@@ -197,6 +198,8 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
         ("talky", "curator/summarizer"),
         ("talky-chat", "curator/summarizer"),
         ("cogny", "curator/summarizer"),
+        ("talky", "decide"),
+        ("talky-chat", "decide"),
     ];
     for ((rim, cell), (to, cond)) in cells.iter().zip(&pushes) {
         // A summarizer's push rides onto the rim it stands behind; that rim's
@@ -286,7 +289,13 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
             {"cell_path": format!("{GEN}/talky-chat/curator/summarizer"),
              "start_model": "${MODEL_CORE}", "requirement": need("curator/summarizer")},
             {"cell_path": format!("{GEN}/cogny/curator/summarizer"), "start_model": "${MODEL_CORE}",
-             "requirement": need("curator/summarizer")}
+             "requirement": need("curator/summarizer")},
+            // GH #1559: each talky's decider, a decisions subscriber born on no
+            // model -- its model and its calibration come by push alone.
+            {"cell_path": format!("{GEN}/talky/decide"), "start_model": "",
+             "requirement": need("talky/decide"), "protocol": "decisions"},
+            {"cell_path": format!("{GEN}/talky-chat/decide"), "start_model": "",
+             "requirement": need("talky/decide"), "protocol": "decisions"}
         ])
     );
 
@@ -614,11 +623,14 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
             format!("{GEN}/talky-chat/curator/summarizer"),
             "m-core".to_string(),
         ),
+        // GH #1559: the deciders, with no start value.
+        (format!("{GEN}/talky-chat/decide"), String::new()),
         (format!("{GEN}/talky/brain"), "m-surface".to_string()),
         (
             format!("{GEN}/talky/curator/summarizer"),
             "m-core".to_string(),
         ),
+        (format!("{GEN}/talky/decide"), String::new()),
         (
             format!("{MEMBER}/memory-hive/closer"),
             "m-closer".to_string(),
@@ -669,7 +681,7 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
     let got = rows();
     assert_eq!(
         got, want,
-        "the grown generation's three brains and three curator summarizers (GH #877) and \
+        "the grown generation's three brains and three curator summarizers (GH #877), its two deciders (GH #1559) and \
          the member's four memory cells are subscribers, with the start values the substitution resolved, beside the shell's own \
          judge"
     );
@@ -1727,4 +1739,423 @@ fn gh1199_an_announcement_that_loses_the_race_books_and_pushes_nothing() {
         1,
         "the journal books the brain subscribed once -- by the statement that wrote the row"
     );
+}
+
+// ─────────────────────────────── GH #1559: the decider on the shipped road
+
+/// The grown talky's decider is a decisions subscriber, and its model and its
+/// calibration come by push alone. Measured on the road the tree ships: the
+/// shipped shell, the registry with its real hand and store, the edges the
+/// builder's `grow_level assistant` draws, the talky's own door, and the
+/// decider born on the shipped template -- no calibration of its own, no model.
+/// The one real `llm` cell is that decider, pointed at the in-process mock;
+/// `./route` is the real shipped script that reads its answer.
+///
+/// Three catalogue rows of the decisions pool, each test data: two with a
+/// curve of their own, one with none. The operator's target override moves the
+/// decider onto the first, then onto the second (model AND curve change in
+/// place, the next stamp names the other calibration), then onto the bare one
+/// (the next answer is `decision_uncalibrated`, nothing is asked, and the
+/// route takes its fallback for that answer).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1559_the_grown_decider_takes_its_model_and_curve_by_push() {
+    if !shipped() {
+        return;
+    }
+    const D1: &str = "test/decider-one";
+    const D2: &str = "test/decider-two";
+    const D0: &str = "test/decider-bare";
+    let decide = format!("{GEN}/talky/decide");
+    let route = format!("{GEN}/talky/route");
+    let answer = |model: &str| {
+        meclaw_testing::mock_http::MockResponse::ok_json(
+            &meclaw_core::serde_json::to_vec(&json!({"model": model, "answers": {
+                "q1": {"type": "noul", "noul": 0.5}}}))
+            .unwrap(),
+        )
+    };
+    let mock = MockOpenAI::start(vec![answer(D1), answer(D2)]).await;
+    let td = tempfile::TempDir::new().unwrap();
+    let root = td.path();
+    copy_tree(&repo("examples/organism/seed"), root);
+    copy_tree(&repo("templates"), &root.join("templates"));
+    // GH #1061 (#801): no key is deposited, so the shell's translator speaks
+    // anonymously (as in the push test above).
+    let marker = root.join("templates/meclaw-os/llm-registry/config.json");
+    let mut m: Value = meclaw_core::serde_json::from_str(
+        &std::fs::read_to_string(&marker).expect("the shell's registry marker"),
+    )
+    .expect("the marker parses");
+    m["override_params"]["translate"]["credential_grant_id"] = json!("");
+    std::fs::write(
+        &marker,
+        meclaw_core::serde_json::to_string_pretty(&m).unwrap(),
+    )
+    .expect("write the marker");
+    // The three decisions rows: no endpoint of their own (the decider keeps
+    // the one it was born with), a curve per row where there is one.
+    let decisions_row = |id: &str, curve: Option<Value>| {
+        let mut row = json!({"model_id": id, "provider": "gateway", "base_url": "",
+                             "wire_dialect": "decisions", "context_window": 32000,
+                             "cost_in": 1, "cost_out": 0, "caps": {}, "traits": {},
+                             "status": "active", "note": "TEST ROW", "package": {}});
+        if let Some(c) = curve {
+            row["package"]["decision_calibration"] = c;
+        }
+        row.to_string()
+    };
+    let seed = root.join("templates/llm-registry/store/seed/models.jsonl");
+    let mut rows = std::fs::read_to_string(&seed).unwrap();
+    if !rows.ends_with('\n') {
+        rows.push('\n');
+    }
+    for row in [
+        decisions_row(
+            D1,
+            Some(json!({"yes_no": {"default": [[0, 0], [0.5, 0.2], [1, 1]]}})),
+        ),
+        decisions_row(
+            D2,
+            Some(json!({"yes_no": {"default": [[0, 0], [0.5, 0.8], [1, 1]]}})),
+        ),
+        decisions_row(D0, None),
+    ] {
+        rows.push_str(&row);
+        rows.push('\n');
+    }
+    std::fs::write(&seed, rows).unwrap();
+    std::fs::write(
+        root.join(".env"),
+        "OPENROUTER_API_KEY=test-key\n\
+         MODEL_CORE=m-core\n\
+         MODEL_CORE_FAST=m-core-fast\n\
+         MODEL_SURFACE=m-surface\n\
+         MODEL_CLOSER=m\nMODEL_DIALECTIC=m\nMODEL_FILE_SPACE=m\nMODEL_DREAMER=m\nMODEL_BRAIN=m\n",
+    )
+    .unwrap();
+    let real: Arc<dyn CellFactory> = Arc::new(OneRealDecider {
+        path: decide.clone(),
+        base_url: format!("{}/api", mock.base_url),
+    });
+    let fs: Vec<(String, Arc<dyn CellFactory>)> = factories(root)
+        .into_iter()
+        .map(|(t, f)| {
+            if t == "llm" {
+                (t, real.clone())
+            } else {
+                (t, f)
+            }
+        })
+        .collect();
+    let h = ColonyHandle::new_with_factories_at(&td, fs.clone());
+    let mut registry = CellFactoryRegistry::new();
+    for (name, f) in fs {
+        registry.insert(name, f);
+    }
+    bootstrap_from_filesystem(root, &registry, &h.runtime())
+        .await
+        .expect("the empty seed boots");
+    let (ack_tx, ack_rx) = oneshot::channel();
+    h.inbox_tx
+        .send(ColonyMsg::RescanTemplates {
+            templates_root: root.join("templates"),
+            ack: ack_tx,
+        })
+        .await
+        .expect("rescan");
+    ack_rx.await.expect("rescan ack").expect("rescan ran");
+    for file in GROW {
+        let outcome = mutate(&h, read_json(&repo(file))).await;
+        assert!(
+            matches!(outcome, MutationOutcome::Committed { .. }),
+            "{file}: {outcome:?}"
+        );
+    }
+    for decl in render(
+        json!({"model_registry_scope": SCOPE}),
+        &assistant_template(),
+    ) {
+        let outcome = mutate(&h, decl).await;
+        assert!(
+            matches!(outcome, MutationOutcome::Committed { .. }),
+            "{outcome:?}"
+        );
+    }
+    // The decider's row, as an event of the store: without it the operator's
+    // override is refused `no_subscriber`.
+    let rows = || find_store_db(root).map_or_else(Vec::new, |db| subscriber_rows(&db));
+    wait::boot_until_with(
+        "the grown decider's subscriber row",
+        || {
+            let here = rows().iter().any(|(p, _)| *p == decide);
+            async move { here }
+        },
+        rows,
+    )
+    .await;
+    let db = find_store_db(root).expect("the registry's store");
+    assert_eq!(
+        protocol_of(&db, &decide).as_deref(),
+        Some("decisions"),
+        "the decider is a subscriber of the decisions pool"
+    );
+
+    // One push per row, each by the operator at the shell's rim, and after
+    // each push one question the way `./route` asks it.
+    let override_to = |model: &str, id: &str| {
+        let cmd = json!({"op": "override_set", "scope": "target", "match": decide,
+                         "model_id": model});
+        MessageBuilder::new(Path::new("/os"))
+            .hop(json!({"route": "in_hand"}).as_object().cloned().unwrap())
+            .body(Body::Inline(json!({"messages": [
+                {"origin": "assistant", "type": "tool_call", "id": id,
+                 "text": cmd.to_string()}]})))
+            .ttl(200)
+            .build()
+    };
+    // `asked_at` far ahead of any clock (epoch ms in the year 2286): the route
+    // reads the answer as on time, and no clock is read here.
+    let asked_at = "9999999999999";
+    let question = |turn: &str| {
+        MessageBuilder::new(Path::new(&decide))
+            .hop(
+                json!({"route": "decide", "asked_at": asked_at})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            )
+            .context(
+                json!({"turn_id": turn, "route_asked_at": asked_at})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            )
+            .body(Body::Inline(
+                json!({"messages": [], "decide": {"state": "s",
+                "questions": {"needs.memory": {"kind": "yes_no",
+                                               "instructions": "Memory?"}}}}),
+            ))
+            .ttl(200)
+            .build()
+    };
+
+    // 1. The first row: its model and its curve.
+    h.send(override_to(D1, "op1")).await;
+    until_pushed(&h, &decide, D1, "the push of the first decisions row").await;
+    h.send_from(Path::new(&route), question("t1")).await;
+    let first = until_from(&h, &decide, "the decider's first answer", |row| {
+        body_of(row)["decision"]["model"] == D1
+    })
+    .await;
+    let d1 = body_of(&first)["decision"].clone();
+    assert!(
+        d1["calibration"]
+            .as_str()
+            .is_some_and(|s| s.len() == 12 && s.bytes().all(|b| b.is_ascii_hexdigit())),
+        "the stamp names the calibration the push brought: {d1}"
+    );
+    assert!(
+        (d1["answers"]["needs.memory"]["yes"]
+            .as_f64()
+            .unwrap_or(-1.0)
+            - 0.2)
+            .abs()
+            < 1e-9,
+        "the raw 0.5 mapped through the first row's curve: {d1}"
+    );
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(reqs.len(), 1, "one call");
+    assert_eq!(reqs[0].body["model"], D1, "{}", reqs[0].body);
+
+    // 2. The override moves the decider in place: another model, another curve.
+    h.send(override_to(D2, "op2")).await;
+    until_pushed(&h, &decide, D2, "the push of the second decisions row").await;
+    h.send_from(Path::new(&route), question("t2")).await;
+    let second = until_from(&h, &decide, "the decider's second answer", |row| {
+        body_of(row)["decision"]["model"] == D2
+    })
+    .await;
+    let d2 = body_of(&second)["decision"].clone();
+    assert!(
+        (d2["answers"]["needs.memory"]["yes"]
+            .as_f64()
+            .unwrap_or(-1.0)
+            - 0.8)
+            .abs()
+            < 1e-9,
+        "the same raw answer through the second row's curve: {d2}"
+    );
+    assert!(
+        d2["calibration"].is_string() && d2["calibration"] != d1["calibration"],
+        "the next stamp names the other calibration: {d1} / {d2}"
+    );
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(reqs.len(), 2, "one more call");
+    assert_eq!(reqs[1].body["model"], D2, "{}", reqs[1].body);
+
+    // 3. A row without a curve: the push takes the curve away, the decider
+    // asks nobody and says so, and the route falls back on that answer.
+    h.send(override_to(D0, "op3")).await;
+    until_pushed(&h, &decide, D0, "the push of the bare decisions row").await;
+    h.send_from(Path::new(&route), question("t3")).await;
+    let refused = until_from(&h, &decide, "the decider's uncalibrated answer", |row| {
+        hop_of(row)["error_code"] == "decision_uncalibrated"
+    })
+    .await;
+    assert!(
+        refused
+            .body_payload
+            .as_deref()
+            .unwrap_or_default()
+            .contains(D0),
+        "the refusal names the model it has no curve for: {:?}",
+        refused.body_payload
+    );
+    let id = refused.id.clone();
+    let stamp = until_from(
+        &h,
+        &route,
+        "the route's stamp for the uncalibrated answer",
+        |row| row.parent_message_id.as_deref() == Some(id.as_str()),
+    )
+    .await;
+    assert_eq!(
+        hop_of(&stamp)["fallback"],
+        "error",
+        "the route takes its fallback: {}",
+        stamp.headers_json
+    );
+    assert_eq!(
+        mock.recorded_requests().await.len(),
+        2,
+        "no call without a curve"
+    );
+    h.shutdown().await;
+}
+
+/// Every `llm` cell of the grown tree is inert except the ONE decider, which is
+/// the real cell pointed at the in-process mock with a key of test data.
+struct OneRealDecider {
+    path: String,
+    base_url: String,
+}
+
+impl CellFactory for OneRealDecider {
+    fn validate_params(&self, _params: &JsonValue) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn is_lazy(&self) -> bool {
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_cell(
+        self: Arc<Self>,
+        path: Path,
+        params: JsonValue,
+        outputs_tx: mpsc::Sender<meclaw_core::CellEmission>,
+        cell_dir: std::path::PathBuf,
+        contract: meclaw_colony::ContractView,
+        colony_inbox_tx: mpsc::Sender<ColonyMsg>,
+        idle_timeout: Option<std::time::Duration>,
+        cell_timeout: i64,
+        message_timeout: Option<std::time::Duration>,
+        blob_store: Option<Arc<meclaw_colony::DiskBlobStore>>,
+        mailbox_capacity: usize,
+    ) -> Result<SpawnedCellKind, String> {
+        if path.as_str() != self.path {
+            return Arc::new(InertCellFactory).spawn_cell(
+                path,
+                params,
+                outputs_tx,
+                cell_dir,
+                contract,
+                colony_inbox_tx,
+                idle_timeout,
+                cell_timeout,
+                message_timeout,
+                blob_store,
+                mailbox_capacity,
+            );
+        }
+        let mut params = params;
+        params["base_url"] = json!(self.base_url);
+        params["api_key"] = json!("test-key");
+        Arc::new(LlmCellFactory).spawn_cell(
+            path,
+            params,
+            outputs_tx,
+            cell_dir,
+            contract,
+            colony_inbox_tx,
+            idle_timeout,
+            cell_timeout,
+            message_timeout,
+            blob_store,
+            mailbox_capacity,
+        )
+    }
+}
+
+/// The subscriber row's protocol, read where the registry's store writes it.
+fn protocol_of(db: &std::path::Path, cell_path: &str) -> Option<String> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    conn.query_row(
+        "SELECT COALESCE(protocol, '') FROM subscribers WHERE cell_path = ?1",
+        [cell_path],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+fn body_of(row: &MessageLogDto) -> Value {
+    row.body_payload
+        .as_deref()
+        .and_then(|b| meclaw_core::serde_json::from_str(b).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn hop_of(row: &MessageLogDto) -> Value {
+    meclaw_core::serde_json::from_str::<Value>(&row.headers_json)
+        .map(|v| v["hop"].clone())
+        .unwrap_or(Value::Null)
+}
+
+/// Until the colony's log holds a row sent by `from` that `pred` takes -- an
+/// event of the log, under the hang mark; the failure names what `from` sent.
+async fn until_from(
+    h: &ColonyHandle,
+    from: &str,
+    what: &str,
+    pred: impl Fn(&MessageLogDto) -> bool,
+) -> MessageLogDto {
+    let mut moved = h.subscribe_log_seq();
+    let last = std::cell::RefCell::new(Vec::<String>::new());
+    meclaw_testing::deadline::hang_with(
+        what,
+        async {
+            loop {
+                moved.borrow_and_update();
+                let rows = h
+                    .read_log(MessageLogFilter {
+                        from_path_prefix: Some(from.to_string()),
+                        ..MessageLogFilter::default()
+                    })
+                    .await;
+                if let Some(hit) = rows.iter().find(|r| r.from_path == from && pred(r)) {
+                    return hit.clone();
+                }
+                *last.borrow_mut() = rows
+                    .iter()
+                    .map(|r| format!("{} -> {} {}", r.from_path, r.to_path, r.headers_json))
+                    .collect();
+                moved.changed().await.expect("the log writer is alive");
+            }
+        },
+        || last.borrow().clone(),
+    )
+    .await
 }

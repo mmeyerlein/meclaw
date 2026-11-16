@@ -288,6 +288,12 @@ pub(crate) fn params_line(path: &str, params: &LlmParams, overlay: &Map<String, 
             "credential_ref" => params.credential_ref.clone().filter(|r| !r.is_empty()),
             // GH #1350 (I1): shown only when stated.
             "output_tps" => (params.output_tps > 0).then(|| params.output_tps.to_string()),
+            // GH #1558: shown only when stated, as the stamp an answer carries
+            // (`decision.calibration`), so a line and an answer match by eye.
+            "decision_calibration" => params
+                .decision_calibration
+                .as_ref()
+                .map(|c| format!("sha:{}", c.sha12())),
             _ => None,
         };
         if let Some(v) = value {

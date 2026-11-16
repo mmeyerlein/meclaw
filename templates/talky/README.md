@@ -1,4 +1,4 @@
-# `talky@8.0.0`
+# `talky@8.0.1`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -80,7 +80,7 @@ one `config.json` and nothing else:
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@8.0.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@8.0.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -527,7 +527,12 @@ registry's overlay or the installing set's `override_params` names one.
 its model comes through the model door (`in_model` with `hop.subscriber` ending in
 `/decide`, the brain's door lets that push pass), a refused push leaves as
 `model_refused`, and its credential comes through the credential lane at `./decide`
-(see *The credential connect point*). Another composite asks its own route question by
+(see *The credential connect point*). In `meclaw-os` the builder's `grow_level assistant`
+announces each talky's `./decide` to the model registry as a subscriber with
+`"protocol": "decisions"`, no start value and the cell's `requirement`, beside the push edge
+onto this rim and the way back of a refusal ([#1559](https://github.com/mmeyerlein/meclaw/issues/1559)).
+Its calibration comes with that push and nowhere else: a decider the registry never pushes to
+answers every turn `decision_uncalibrated`, and the route takes its fallback. Another composite asks its own route question by
 giving `./route` its own `classes`, `intents`, `needs` and `families`
 (`override_params`).
 
@@ -1129,7 +1134,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@8.0.0",
+{"add_nodes": [{"name": "scribe", "template": "talky@8.0.1",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 

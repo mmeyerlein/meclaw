@@ -89,6 +89,13 @@ impl DuplexProvider for EchoDuplex {
         ECHO_DUPLEX_RATES.to_vec()
     }
 
+    /// `false`: the mirror of an append is text, the audio is the echo of the
+    /// microphone, and the one says nothing about how much of the other the
+    /// caller heard (GH #1557).
+    fn transcript_is_its_audio(&self) -> bool {
+        false
+    }
+
     /// Run the loopback until the audio ends or a `Close` arrives.
     ///
     /// **Neither deadline applies, and that is not an oversight.** Rule 12's

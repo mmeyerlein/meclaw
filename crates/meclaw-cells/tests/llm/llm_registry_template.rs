@@ -882,6 +882,8 @@ const PACKAGE_KEYS: &[&str] = &[
     "credential_ref",
     // GH #1350 (I1): the row's output rate, the cell derives its timeout from.
     "output_tps",
+    // GH #1558: the decider's calibration curves, a key of the row's package.
+    "decision_calibration",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════ pins

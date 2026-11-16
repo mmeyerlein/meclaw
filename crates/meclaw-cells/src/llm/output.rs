@@ -398,7 +398,7 @@ pub(crate) async fn emit_assistant_turn(
 }
 
 /// GH #957 success path of a `decisions` cell: ONE emission carrying the
-/// whole verdict, `{decision: {answers, model, ms}}`, beside an empty
+/// whole verdict, `{decision: {answers, raw, calibration, model, ms}}` (GH #1558), beside an empty
 /// `messages` slot (a UBF body needs one of its three slots, and a decision
 /// is no conversation turn).
 ///
@@ -413,6 +413,8 @@ pub(crate) async fn emit_decision(
     sink: &OutputSink,
     target: Path,
     answers: Map<String, Value>,
+    raw: Map<String, Value>,
+    calibration: &str,
     missing: &[String],
     usage: HopUsage,
     model: &str,
@@ -438,6 +440,12 @@ pub(crate) async fn emit_decision(
     }
     decision.insert("model".into(), Value::String(model.to_string()));
     decision.insert("ms".into(), Value::from(latency_ms));
+    // GH #1558: `answers` are on the calibrated scale; the service's own
+    // numbers ride in `raw` for the audit, and `calibration` names the sha256
+    // (12 hex digits) of the curves that mapped them -- in the body, beside
+    // the answers they explain, so no template declares a new hop key.
+    decision.insert("raw".into(), Value::Object(raw));
+    decision.insert("calibration".into(), Value::String(calibration.to_string()));
 
     let mut meta = Map::new();
     meta.insert(
@@ -1025,6 +1033,8 @@ mod tests {
             &sink,
             Path::new("/sink"),
             Map::new(),
+            Map::new(),
+            "",
             &[],
             full,
             "vendor/decider",
@@ -1099,10 +1109,14 @@ mod tests {
         let (sink, mut rx) = mk_sink();
         let mut answers = Map::new();
         answers.insert("wants".into(), json!({"yes": 0.8}));
+        let mut raw = Map::new();
+        raw.insert("wants".into(), json!({"yes": 0.6}));
         emit_decision(
             &sink,
             Path::new("/sink"),
             answers.clone(),
+            raw.clone(),
+            "0123456789ab",
             &[],
             HopUsage::default(),
             "vendor/decider",
@@ -1112,9 +1126,12 @@ mod tests {
         )
         .await;
         let em = rx.recv().await.unwrap().content;
+        // GH #1558: the calibrated answers, the raw ones beside them, and the
+        // stamp of the calibration that mapped them.
         assert_eq!(
             em["decision"],
-            json!({"answers": {"wants": {"yes": 0.8}}, "model": "vendor/decider", "ms": 42})
+            json!({"answers": {"wants": {"yes": 0.8}}, "raw": {"wants": {"yes": 0.6}},
+                   "calibration": "0123456789ab", "model": "vendor/decider", "ms": 42})
         );
         // GH #977: a partial decision names its omitted keys beside the answers;
         // a whole one carries no `missing` at all (shape above unchanged).
@@ -1122,6 +1139,8 @@ mod tests {
             &sink,
             Path::new("/sink"),
             answers,
+            raw,
+            "0123456789ab",
             &["a.lead".to_string(), "topic".to_string()],
             HopUsage::default(),
             "vendor/decider",

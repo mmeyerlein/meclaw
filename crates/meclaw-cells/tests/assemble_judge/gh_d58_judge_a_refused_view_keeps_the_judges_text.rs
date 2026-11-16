@@ -24,7 +24,10 @@
 //! (`enabled` "1"). `TODAY_*` are what the route and the screen judge of
 //! master before the strand (abbbd811) sent with the answer the history of
 //! master gave in the same place (computed by running both scripts of that
-//! commit; the questions are the route's without a screen question).
+//! commit; the questions are the route's without a screen question). GH #1556
+//! moved the route's text to the decisions providers' form (`ROUTE_*`): the
+//! turn always under its label, no screen line, every question naming its
+//! subject; the screen judge (an `llm` cell, no decider) keeps its bytes.
 
 // harness_fold: #[path = "support/assemble_cell.rs"]
 #[allow(unused_imports)]
@@ -52,11 +55,17 @@ const TEXT: &str = "How is the weather tomorrow?";
 /// The door's refusal: the former turns ask gave no package, the turn went alone.
 const TODAY_DOOR: &str = "How is the weather tomorrow?";
 
+/// The route's text of the door's refusal since GH #1556: the turn under its label.
+const ROUTE_DOOR: &str = "The request now:\nHow is the weather tomorrow?";
+
 /// A refusal or a degraded read after the first ledger round: the package of
 /// now and place alone.
 const TODAY_LATER: &str = "On the screen right now:\n- nothing\n\nNow: Friday, 2026-10-30T02:00:00+01:00 (Europe/Berlin)\n\nPlace: Berlin\n\nThe request now:\nHow is the weather tomorrow?";
 
-const TODAY_QUESTIONS: &str = r#"{"families.history": {"instructions": "Would answering it use earlier conversations with this person?", "kind": "yes_no"}, "families.web": {"instructions": "Would answering it use searching or reading the web?", "kind": "yes_no"}, "intent": {"instructions": "What does the person want with this request?", "kind": "choice", "options": {"chat": "to talk, share or be heard", "other": "none of these", "question": "to know something", "task": "to get something done"}}, "needs.reasoning": {"instructions": "Does answering it need careful step-by-step reasoning?", "kind": "yes_no"}, "needs.research": {"instructions": "Does answering it need a deep search over many sources?", "kind": "yes_no"}, "needs.tool": {"instructions": "Does answering it need a tool call?", "kind": "yes_no"}, "path": {"instructions": "Which way should this request be answered?", "kind": "choice", "options": {"complex": "needs careful reasoning, planning or several steps before it can be answered", "research": "needs a deep search over many sources before it can be answered", "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation", "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool"}}}"#;
+/// The route's text of the same since GH #1556: now and place, no screen line.
+const ROUTE_LATER: &str = "Now: Friday, 2026-10-30T02:00:00+01:00 (Europe/Berlin)\n\nPlace: Berlin\n\nThe request now:\nHow is the weather tomorrow?";
+
+const TODAY_QUESTIONS: &str = r#"{"families.history": {"instructions": "Would answering the person's latest request (\"The request now\") use earlier conversations with this person?", "kind": "yes_no"}, "families.web": {"instructions": "Would answering the person's latest request (\"The request now\") use searching or reading the web?", "kind": "yes_no"}, "intent": {"instructions": "What does the person want with the person's latest request (\"The request now\")?", "kind": "choice", "options": {"chat": "to talk, share or be heard", "other": "none of these", "question": "to know something", "task": "to get something done"}}, "needs.reasoning": {"instructions": "Does answering the person's latest request (\"The request now\") need careful step-by-step reasoning?", "kind": "yes_no"}, "needs.research": {"instructions": "Does answering the person's latest request (\"The request now\") need a deep search over many sources?", "kind": "yes_no"}, "needs.tool": {"instructions": "Does answering the person's latest request (\"The request now\") need a tool call?", "kind": "yes_no"}, "path": {"instructions": "Which way should the person's latest request (\"The request now\") be answered?", "kind": "choice", "options": {"complex": "needs careful reasoning, planning or several steps before it can be answered", "research": "needs a deep search over many sources before it can be answered", "simple": "one quick answer: a fact, a short lookup or one tool call, no deliberation", "talk": "small talk, a greeting, a feeling or a reply that needs no fact and no tool"}}}"#;
 
 fn ctx() -> Value {
     json!({"turn_id": "t2", "session_id": "s-now", "channel": "tg:1",
@@ -165,8 +174,8 @@ fn gh_d58_judge_a_refused_view_keeps_the_judges_text() {
     );
     let (state, qs, screen) = judged(&door);
     assert_eq!(
-        state, TODAY_DOOR,
-        "a view refused at the door is no judge context: the turn alone, as before"
+        state, ROUTE_DOOR,
+        "a view refused at the door is no judge context: the turn alone under its label"
     );
     assert_eq!(qs, questions, "and the questions without a screen question");
     assert_eq!(
@@ -186,9 +195,9 @@ fn gh_d58_judge_a_refused_view_keeps_the_judges_text() {
         assert_eq!(view.hop.get(flag), Some(&json!(word)), "{name}: {view:?}");
         let (state, qs, screen) = judged(&view);
         assert_eq!(
-            state, TODAY_LATER,
+            state, ROUTE_LATER,
             "{name}: a refused or degraded view after the first round gives the \
-             moment alone, the bytes of the package of now and place"
+             moment alone, now and place"
         );
         assert_eq!(
             qs, questions,

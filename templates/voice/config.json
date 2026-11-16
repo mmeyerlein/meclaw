@@ -309,7 +309,12 @@
         "cut": {
           "type": "boolean",
           "required": false,
-          "description": "On a duplex `turn` that the end of the connection closed: `true` where that end cut the model off -- its audible audio went out within spoken_quiet_ms of the end, or its transcript reaches past the session's clock -- so the model's part was not said to its end and a reader does not take it for a statement that was made. Absent on every other turn."
+          "description": "On a duplex `turn` that the end of the connection closed: `true` where that end cut the model off -- its audible audio went out within spoken_quiet_ms of the end, or its transcript reaches past the session's clock -- so the model's part was not said to its end and a reader does not take it for a statement that was made. Also `true` where `unsaid` is set. Absent on every other turn."
+        },
+        "unsaid": {
+          "type": "string",
+          "required": false,
+          "description": "On a duplex `turn`: the model's words whose audio never reached the caller (the connection ended, the caller barged in), cut at a word boundary and taken out of `messages`; the turn then carries `cut` true. Kept for the record only: no reader takes it for something that was said. Absent where every word was heard."
         },
         "happened_at": {
           "type": "number",

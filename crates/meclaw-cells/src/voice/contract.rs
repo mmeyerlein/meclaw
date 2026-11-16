@@ -595,6 +595,17 @@ pub trait DuplexProvider: Send + Sync + 'static {
     /// [`Self::negotiate`] agreed to. Call `liveness.mark_success()` after
     /// every successful provider round trip. Returns when the session is over;
     /// `Err` when it ended abnormally.
+    /// Whether this provider's assistant transcript is the transcript of its
+    /// own audio (GH #1557). The connection measures the model's text against
+    /// the audio the caller heard and keeps only the words that audio carried;
+    /// that measure means something only where the text and the audio are the
+    /// same answer. A live model's are, so the default is `true`. A provider
+    /// whose audio is something else -- the loopback mirrors an append as text
+    /// and echoes the microphone as audio -- answers `false`, and its sessions
+    /// are never measured or cut, like a session that streamed no audio.
+    fn transcript_is_its_audio(&self) -> bool {
+        true
+    }
     fn run_session(
         &self,
         format: AudioFormat,

@@ -961,6 +961,12 @@ def triage_station(station, kind, test_results, run_cmd, quarantine_issues, cap=
         return {"verdict": "RED", "isolated": len(evs),
                 "reason": f"triage T1 red: {DEFECT}, {len(reds)} of {len(evs)}", "events": evs,
                 "where": ", ".join(e["test"] for e in reds)}
+    return _flaky_result(evs, kind)
+
+
+def _flaky_result(evs, kind):
+    """The FLAKY result of triage events none of which is RED: reason, causes and
+    `load_flake` (true only when every event carries it)."""
     causes = ", ".join(dict.fromkeys(e["cause"] for e in evs))
     if any("issue" not in e for e in evs):
         reason = PENDING
@@ -969,9 +975,43 @@ def triage_station(station, kind, test_results, run_cmd, quarantine_issues, cap=
         reason = "flaky: " + ", ".join(f"GH #{i}" for i in issues)
     out = {"verdict": "FLAKY", "isolated": len(evs), "reason": reason,
            "events": evs, "kind": kind, "cause": causes}
-    if all(e.get("load_flake") for e in evs):
+    if evs and all(e.get("load_flake") for e in evs):
         out["load_flake"] = True
     return out
+
+
+def fold_later(result, later, exit_code, timed_out=False):
+    """A FLAKY station triage folded with the triage of a LATER red command (#1519).
+
+    `result` is the triage of the station's first red command (FLAKY, no
+    `later`); `later` the triage of a further red command -- the next red one
+    of a station that runs its commands in order, or another red part of a
+    `parallel` one -- that ended with `exit_code`. The station is judged on
+    every red test of every command: a red command whose triage isolated
+    tests joins its events, so a station whose every red test is a load
+    flake ends NOTE `load-flake` with all of them, and a test red in T1 in
+    any command keeps it RED.
+
+    Fail-closed, the old guard: a later command without a triage (None), with
+    nothing isolated, timed out, or whose exit is not the test-failure code of
+    its kind says nothing about its tests -- the result carries it as `later`
+    and `end_station` ends the station RED (`isolated flaky, later command
+    red`). A later triage that is RED without isolating (too many, a crash,
+    nothing to isolate) ends it RED with that triage's own reason."""
+    red = {"ran": True, "exit": exit_code, "timed_out": bool(timed_out)}
+    if (later is None or timed_out or later.get("verdict") not in ("RED", "FLAKY")
+            or (later["verdict"] == "FLAKY"
+                and (not later.get("isolated")
+                     or exit_code != TEST_FAILURE_EXIT.get(later.get("kind"))))):
+        return dict(result, later=red)
+    evs = list(result["events"]) + list(later["events"])
+    if later["verdict"] == "RED":
+        out = {"verdict": "RED", "isolated": len(evs), "reason": later.get("reason"),
+               "events": evs}
+        if later.get("where"):
+            out["where"] = later["where"]
+        return out
+    return _flaky_result(evs, result.get("kind"))
 
 
 # The tail `finding.red_reason` puts on a RED reason: `at <where> -- log <path>`.
@@ -993,6 +1033,12 @@ def _keep_where(reason, old, where=None):
     return "%s -- %s" % (head, m.group(2)) if head else m.group(2)
 
 
+def _load_flake_proof(ev):
+    """The receipt's proof of one load flake: its triage event without the verdict."""
+    return {k: ev[k] for k in ("station", "test", "count", "green", "triage", "t2_lane", "seed")
+            if k in ev}
+
+
 def end_station(ended, result, legacy=()):
     """The lines a red station ends with: its isolations, then ONE `station_ended`.
 
@@ -1008,7 +1054,9 @@ def end_station(ended, result, legacy=()):
     carries `legacy: true` and counts green; or when the triage proved every
     test green with T2 on the lane about 30 % busy (`load_flake`, B schlank,
     OR-TV-13, K12): then it ends NOTE `load-flake: <tests>` with the proof of each
-    under `load_flake` -- an observation, never red."""
+    under `load_flake` -- an observation, never red. A station that stays RED or
+    FLAKY carries the proof of its load flakes under `load_flake` too (#1519):
+    the receipt names every load flake of the run, the verdict stays."""
     if ended.get("verdict") != "RED" or result is None:
         return [("station_ended", dict(ended))]
     final = dict(ended, verdict=result["verdict"], isolated=result["isolated"])
@@ -1036,10 +1084,13 @@ def end_station(ended, result, legacy=()):
         if tests and set(tests) <= set(legacy or ()):
             final["legacy"] = True
         elif tests and result.get("load_flake"):
-            final.update(verdict="NOTE", reason="%s: %s" % (LOAD_FLAKE, ", ".join(tests)),
-                         load_flake=[{k: e[k] for k in ("station", "test", "count", "green",
-                                                         "triage", "t2_lane", "seed")
-                                      if k in e} for e in result["events"]])
+            final.update(verdict="NOTE", reason="%s: %s" % (LOAD_FLAKE, ", ".join(tests)))
+    # #1519: every test the triage classified a load flake is in the receipt with
+    # its proof -- on a NOTE station the reason it is green, on a RED or FLAKY one
+    # an observation that changes nothing of its verdict.
+    proofs = [_load_flake_proof(e) for e in result["events"] if e.get("load_flake")]
+    if proofs:
+        final["load_flake"] = proofs
     evs = [dict(e) for e in result["events"]]
     if final["verdict"] == "RED":
         # The station stays RED, so no isolation of it may count as a flake in

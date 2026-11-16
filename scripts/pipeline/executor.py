@@ -2107,6 +2107,7 @@ class _Run:
         failed_cmd = []
         other = None     # the other parts' (rc, timed_out) of a `parallel` station
         part_results = []  # every part's (rc, timed_out) of a `parallel` station
+        red_parts = []     # the red parts of a `parallel` station, in command order
         with open(log_path, "w", encoding="utf-8") as log:
             if self.slots.get(name):
                 log.write("# colony slots (booked %d): %s\n"
@@ -2125,6 +2126,7 @@ class _Run:
             elif _is_parts(st, cmds):
                 rc, timed_out, other = self._run_parts(cmds, st, log, t0, failed_cmd,
                                                        part_results)
+                red_parts = [i for i, (prc, pto) in enumerate(part_results) if prc or pto]
             else:
                 rc, timed_out = self._run_cmds(cmds, st, log, t0, failed_cmd)
         secs = self.clock() - t0
@@ -2157,6 +2159,7 @@ class _Run:
                     reds = [i for i, (prc, pto) in enumerate(part_results)
                             if i != at and (prc or pto)]
                     if reds:
+                        red_parts = reds
                         k = reds[0]
                         emptied = None
                         rc, timed_out = part_results[k]
@@ -2207,29 +2210,65 @@ class _Run:
         result = None
         if (verdict == "RED" and not red and not timed_out and not self.aborted and failed_cmd
                 and rc not in TERMINATED):
-            result = self._isolate(st, failed_cmd[0], log_path, started_wall, junits)
-            # The parts of a `parallel` station all ran, once: none runs again here,
-            # and a red one among them keeps an isolated-green first part red.
-            rest = [] if other is not None else cmds[cmds.index(failed_cmd[0]) + 1:]
-            if other is not None and result is not None and result.get("verdict") == "FLAKY":
-                result = dict(result, later={"ran": True, "exit": other[0],
-                                             "timed_out": other[1]})
-            if result is not None and result.get("verdict") == "FLAKY" and rest:
+            # #1519: ONE isolation budget and ONE cap for every red command of the
+            # station; each red command is triaged on its own tests and folded.
+            share = {"spent": 0.0, "cap": flakes.ISOLATION_CAP}
+            first = cmds.index(failed_cmd[0])
+            part_junits = self._parts_junits(cmds, junits) if other is not None else None
+            if other is not None and part_junits is None:
+                # Parts without one JUnit file each: one triage over every part's
+                # tests, and a red other part keeps an isolated-green one red.
+                result = self._isolate(st, failed_cmd[0], log_path, started_wall, junits,
+                                       share=share)
+                if result is not None and result.get("verdict") == "FLAKY":
+                    result = dict(result, later={"ran": True, "exit": other[0],
+                                                 "timed_out": other[1]})
+            elif other is not None:
+                # The parts of a `parallel` station all ran, once: none runs again
+                # here. Every red part is triaged on its own log and JUnit file.
+                result = self._isolate(st, failed_cmd[0], self._part_log(name, first),
+                                       started_wall, part_junits[first], share=share)
+                for i in red_parts:
+                    if i == first:
+                        continue
+                    if result is None or result.get("verdict") != "FLAKY" or "later" in result:
+                        break
+                    prc, pto = part_results[i]
+                    sub = None
+                    if not pto and prc not in TERMINATED and not self.aborted:
+                        sub = self._isolate(st, cmds[i], self._part_log(name, i), started_wall,
+                                            part_junits[i], share=share)
+                    result = flakes.fold_later(result, sub, prc, pto)
+            else:
+                result = self._isolate(st, failed_cmd[0], log_path, started_wall, junits,
+                                       share=share)
+            rest = [] if other is not None else cmds[first + 1:]
+            while (result is not None and result.get("verdict") == "FLAKY"
+                   and "later" not in result and rest):
                 # Delta C1: a flake in the first command says nothing about the
                 # commands after it -- they run now, and only their green keeps
-                # the station FLAKY (a finding, never cached: OR-TV-2).
+                # the station FLAKY (a finding, never cached: OR-TV-2). A red one
+                # among them is triaged in turn (#1519).
                 rest_wall = time.time()
+                failed2 = []
                 with open(log_path, "a", encoding="utf-8") as log:
                     log.write("\n# after the isolation: the remaining %d command(s)\n"
                               % len(rest))
                     log.flush()
                     # Re-check tb-s7 H2 M-N3: the station's own deadline (`t0`),
                     # not a fresh one after the first command and its isolation.
-                    rc2, to2 = self._run_cmds(rest, st, log, t0)
-                if st.get("nextest") is not None:
-                    junits += self._emit_junit(st, rest, rest_wall)
-                result = dict(result, later={"ran": not self.aborted, "exit": rc2,
-                                             "timed_out": to2})
+                    rc2, to2 = self._run_cmds(rest, st, log, t0, failed2)
+                new = self._emit_junit(st, rest, rest_wall) if st.get("nextest") is not None else []
+                junits += new
+                if not rc2 or self.aborted or not failed2:
+                    result = dict(result, later={"ran": not self.aborted, "exit": rc2,
+                                                 "timed_out": to2})
+                    break
+                sub = None
+                if not to2 and rc2 not in TERMINATED:
+                    sub = self._isolate(st, failed2[0], log_path, rest_wall, new, share=share)
+                result = flakes.fold_later(result, sub, rc2, to2)
+                rest = rest[rest.index(failed2[0]) + 1:]
             # The station held its lane through the isolation and the later
             # commands: its seconds are that whole span, not the first red call
             # (GH #1161, S3-diag: `scenarios:memory` FLAKY read 3 s for 137 s).
@@ -2509,9 +2548,14 @@ class _Run:
             return ""
         return flakes.quarantine_filter(self.d.get("quarantine") or [], known)
 
-    def _isolate(self, st, cmd, log_path, started_wall, junits):
+    def _isolate(self, st, cmd, log_path, started_wall, junits, share=None):
         """The red station's triage (flakes.triage_station, OR-TV-2) -- None when it
-        cannot be triaged at all (the station ends as judged)."""
+        cannot be triaged at all (the station ends as judged).
+
+        `share` ({"spent", "cap"}, #1519) is what every red command of ONE station
+        shares: the isolation budget counts the seconds of every triage of the
+        station together (not the later commands run between them), and the cap
+        of red tests holds for the station, not per command."""
         argv, cwd, extra = cmd
         kind = flakes.station_kind(st, argv)
         name = st["name"]
@@ -2563,18 +2607,21 @@ class _Run:
             # test of the station and the issue duty ends in `not in the register`.
             for r in results:
                 self.emit("test_result", r)
-        counter = [0]
+        share = share if share is not None else {"spent": 0.0, "cap": flakes.ISOLATION_CAP}
+        # One numbering for every triage of the station: the logs of a second red
+        # part or command never overwrite the first one's (#1519).
+        share.setdefault("logs", 0)
         # Delta I1: ONE budget for the whole isolation of this station -- the
         # station's own timeout_min, counted from here for every run together,
         # never a fresh timeout per run.
-        iso_t0 = self.clock()
+        iso_t0 = self.clock() - share["spent"]
         budget = float(st.get("timeout_min") or 30) * 60
 
         def run_cmd(iso_argv, iso_env=None):
-            counter[0] += 1
+            share["logs"] += 1
             if proof is not None:
                 proof.mark()
-            iso_log = os.path.join(self.logs_dir, "%s.isolate-%d.log" % (name, counter[0]))
+            iso_log = os.path.join(self.logs_dir, "%s.isolate-%d.log" % (name, share["logs"]))
             with open(iso_log, "w", encoding="utf-8") as fh:
                 rc, _ = self._spawn(st, iso_argv, cwd_abs, dict(env, **(iso_env or {})), fh,
                                     iso_t0)
@@ -2588,9 +2635,9 @@ class _Run:
         # here on the run's host; a dispatch without the flag keeps every flake red.
         t2_lane = flakes.production_lane() if self.d.get("t2_production") else None
         try:
-            return flakes.triage_station(
+            result = flakes.triage_station(
                 name, kind, results, run_cmd, isolation_issues(self.d), base_argv=base, ignored=ignored,
-                t2_lane=t2_lane,
+                t2_lane=t2_lane, cap=share["cap"],
                 expired=lambda: self.clock() - iso_t0 >= budget, proof=proof,
                 threads=_station_threads(st, env), clock_tests=flakes.clock_tests(
                     results, self.tree) if kind == "unittest" else ())
@@ -2600,6 +2647,10 @@ class _Run:
                 # own result is what the receipt and the next reader see.
                 with open(restore[0], "wb") as fh:
                     fh.write(restore[1])
+        share["spent"] = self.clock() - iso_t0
+        if result is not None:
+            share["cap"] = max(0, share["cap"] - int(result.get("isolated") or 0))
+        return result
 
     @staticmethod
     def _scenario_proof(path):
@@ -2625,6 +2676,23 @@ class _Run:
             return cases.get(flakes.case_id(test)) == "GREEN"
         proof.mark = lambda: before.__setitem__(0, stamp())
         return proof
+
+    def _part_log(self, name, i):
+        """The own log of part `i` of a `parallel` station (`_run_parts`)."""
+        return os.path.join(self.logs_dir, "%s.part-%d.log" % (name, i + 1))
+
+    def _parts_junits(self, cmds, junits):
+        """The JUnit files of this run per part of a `parallel` station (#1519), in
+        command order -- None when the parts do not each name a profile of their
+        own: then no file says which part a test ran in."""
+        profiles = [extra.get("MECLAW_TIER_PROFILE") for _argv, _cwd, extra in cmds]
+        if not all(profiles) or len(set(profiles)) != len(profiles):
+            return None if junits else [[] for _ in cmds]
+        out = []
+        for p in profiles:
+            path = os.path.join(self.tree, "target", "nextest", p, "junit.xml")
+            out.append([path] if path in junits else [])
+        return out
 
     def _emit_junit(self, st, cmds, started_wall):
         paths, profiles = [], []

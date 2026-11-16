@@ -4,11 +4,18 @@
 //! The cell's own vocabulary is vendor-neutral (`kind`: `choice` | `yes_no` |
 //! `scale`, with `options` / `levels`); it is translated HERE and nowhere else
 //! into the wire of the hosted decisions API: `POST <base_url>/alpha/decisions`
-//! with `{model, state, questions: {<key>: {type, instructions, criteria}}}`,
+//! with `{model, state, questions: {<wire key>: {type, instructions, criteria}}}`,
 //! where `choice` stays `choice`, `yes_no` becomes `noul` and `scale` becomes
 //! `score`. The path hangs off `base_url` WITHOUT the chat wire's `/v1`
 //! (example `base_url`: `https://openrouter.ai/api`) -- that prefix does not
 //! exist on this wire.
+//!
+//! The wire never carries a cell key (GH #1550). The cell vocabulary allows a
+//! dot (`sample.lead`), and the strictest documented provider rule is
+//! `[A-Za-z0-9_-]+`, 1..=64 characters, answered with HTTP 400 for the WHOLE
+//! call. Each question goes out as `q<i>` instead, `i` counting from one in the
+//! sorted order of the cell keys, and the answer is read back from `q<i>` onto
+//! the cell key: `answers`, `missing` and every detail name cell keys only.
 //!
 //! Both directions are pure functions. The answer is normalized per asked key
 //! into `{choice, p}`, `{yes}` or `{value, p}`. A question the service left
@@ -47,14 +54,47 @@ pub(crate) enum Kind {
     Scale(Vec<String>),
 }
 
+/// One asked question: its cell key, its key on the wire and its kind.
+#[derive(Debug, Clone, PartialEq)]
+struct Question {
+    /// The key the caller asked under (`decide.questions.<key>`).
+    key: String,
+    /// The neutral key on the wire (`q<i>`, GH #1550).
+    wire: String,
+    kind: Kind,
+}
+
 /// A validated `decide` slot: the state, and each question with its kind.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Asked {
     state: Value,
-    /// The wire form of each question, keyed as asked.
+    /// The wire form of each question, keyed by its wire key.
     wire: Map<String, Value>,
-    /// The kind of each question, keyed as asked.
-    kinds: Vec<(String, Kind)>,
+    /// Each question in the sorted order of the cell keys.
+    questions: Vec<Question>,
+}
+
+impl Asked {
+    /// GH #1558: each asked question as its cell key and the name of its kind
+    /// (`choice`, `yes_no`, `scale`), in the sorted order of the cell keys --
+    /// what the calibration needs to pick a curve per answer.
+    pub(crate) fn kinds(&self) -> impl Iterator<Item = (&str, &'static str)> {
+        self.questions.iter().map(|q| {
+            let kind = match q.kind {
+                Kind::Choice(_) => "choice",
+                Kind::YesNo => "yes_no",
+                Kind::Scale(_) => "scale",
+            };
+            (q.key.as_str(), kind)
+        })
+    }
+}
+
+/// The wire key of the question at `index` (0-based) in the sorted order of
+/// the cell keys: `q1`, `q2`, ... -- within `[A-Za-z0-9_-]{1,64}` for every
+/// count up to `MAX_QUESTIONS`.
+fn wire_key(index: usize) -> String {
+    format!("q{}", index + 1)
 }
 
 /// One normalized answer of the service, plus what the hop header carries.
@@ -116,8 +156,15 @@ pub(crate) fn parse_decide(decide: Option<&Value>) -> Result<Asked, String> {
         ));
     }
     let mut wire = Map::new();
-    let mut kinds = Vec::with_capacity(qs.len());
-    for (key, q) in qs {
+    let mut questions = Vec::with_capacity(qs.len());
+    // GH #1550: sorted explicitly -- the wire numbering must not follow the
+    // map's iteration order, which a `preserve_order` feature of serde_json
+    // would turn into insertion order.
+    let mut keys: Vec<&String> = qs.keys().collect();
+    keys.sort();
+    for (index, key) in keys.into_iter().enumerate() {
+        let q = &qs[key];
+        let wire_key = wire_key(index);
         if !key_ok(key) {
             return Err(format!(
                 "question key '{key}' must be 1..={KEY_MAX_CHARS} characters of [a-z0-9_.-]"
@@ -163,18 +210,26 @@ pub(crate) fn parse_decide(decide: Option<&Value>) -> Result<Asked, String> {
                     }
                 }
                 wire.insert(
-                    key.clone(),
+                    wire_key.clone(),
                     json!({"type": "choice", "instructions": instructions,
                            "criteria": Value::Object(opts.clone())}),
                 );
-                kinds.push((key.clone(), Kind::Choice(opts.keys().cloned().collect())));
+                questions.push(Question {
+                    key: key.clone(),
+                    wire: wire_key,
+                    kind: Kind::Choice(opts.keys().cloned().collect()),
+                });
             }
             "yes_no" => {
                 wire.insert(
-                    key.clone(),
+                    wire_key.clone(),
                     json!({"type": "noul", "instructions": instructions}),
                 );
-                kinds.push((key.clone(), Kind::YesNo));
+                questions.push(Question {
+                    key: key.clone(),
+                    wire: wire_key,
+                    kind: Kind::YesNo,
+                });
             }
             _ => {
                 let levels = q
@@ -201,15 +256,23 @@ pub(crate) fn parse_decide(decide: Option<&Value>) -> Result<Asked, String> {
                     }
                 }
                 wire.insert(
-                    key.clone(),
+                    wire_key.clone(),
                     json!({"type": "score", "instructions": instructions,
                            "criteria": levels.clone()}),
                 );
-                kinds.push((key.clone(), Kind::Scale(names)));
+                questions.push(Question {
+                    key: key.clone(),
+                    wire: wire_key,
+                    kind: Kind::Scale(names),
+                });
             }
         }
     }
-    Ok(Asked { state, wire, kinds })
+    Ok(Asked {
+        state,
+        wire,
+        questions,
+    })
 }
 
 /// The request body for `model`, whole. Its size is no business of the
@@ -269,7 +332,9 @@ fn scale_p(a: &Map<String, Value>, levels: &[String], key: &str) -> Result<Value
 
 /// Read the service's answer against what was asked. `Err` is the detail of
 /// a `decision_incomplete` failure: no answer at all, or a malformed one. An
-/// asked key without an answer lands in `missing` (GH #977).
+/// asked key without an answer lands in `missing` (GH #977). Each answer is
+/// read under its wire key and lands under its cell key; an answer under any
+/// other key answers nothing asked (GH #1550).
 pub(crate) fn parse_response(resp: &Value, asked: &Asked) -> Result<Decided, String> {
     let answers = resp
         .get("answers")
@@ -277,8 +342,8 @@ pub(crate) fn parse_response(resp: &Value, asked: &Asked) -> Result<Decided, Str
         .ok_or("the answer carries no 'answers' object")?;
     let mut out = Map::new();
     let mut missing = Vec::new();
-    for (key, kind) in &asked.kinds {
-        let Some(a) = answers.get(key).filter(|v| !v.is_null()) else {
+    for Question { key, wire, kind } in &asked.questions {
+        let Some(a) = answers.get(wire).filter(|v| !v.is_null()) else {
             missing.push(key.clone());
             continue;
         };
@@ -361,22 +426,190 @@ mod tests {
         })
     }
 
+    /// The questions of `three()` on the wire: the cell keys sorted
+    /// (`topic` < `urgency` < `wants`) and numbered from one.
+    const TOPIC: &str = "q1";
+    const URGENCY: &str = "q2";
+    const WANTS: &str = "q3";
+
+    /// A display's shape: dotted cell keys (`<topic>.lead`, `<topic>.also`).
+    fn dotted() -> Value {
+        json!({
+            "state": "s",
+            "questions": {
+                "topic": {"kind": "choice", "instructions": "Which topic?",
+                          "options": {"sample": "Sample", "none": "Nothing"}},
+                "sample.lead": {"kind": "choice", "instructions": "Which lead?",
+                                "options": {"brief": "Brief", "rows": "Rows"}},
+                "sample.also": {"kind": "yes_no", "instructions": "Anything beside it?"}
+            }
+        })
+    }
+
+    /// `n` yes/no questions whose instructions name their cell key.
+    fn many(keys: &[String]) -> Value {
+        let mut qs = Map::new();
+        for k in keys {
+            qs.insert(
+                k.clone(),
+                json!({"kind": "yes_no", "instructions": format!("about {k}")}),
+            );
+        }
+        json!({"state": "s", "questions": qs})
+    }
+
+    /// The strictest documented rule for a question key on a decisions wire
+    /// (Google's native API: `[A-Za-z0-9_-]+`, 1..=64 characters).
+    fn strict_key(k: &str) -> bool {
+        (1..=64).contains(&k.chars().count())
+            && k.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    }
+
     #[test]
     fn the_three_kinds_map_onto_the_wire() {
         let asked = parse_decide(Some(&three())).unwrap();
         let body = build_request("vendor/decider", &asked);
         assert_eq!(body["model"], "vendor/decider");
-        assert_eq!(body["questions"]["topic"]["type"], "choice");
-        assert_eq!(body["questions"]["topic"]["criteria"]["weather"], "Weather");
+        assert_eq!(body["questions"][TOPIC]["type"], "choice");
+        assert_eq!(body["questions"][TOPIC]["criteria"]["weather"], "Weather");
         assert_eq!(
-            body["questions"]["wants"],
+            body["questions"][WANTS],
             json!({"type": "noul", "instructions": "Show it?"})
         );
-        assert_eq!(body["questions"]["urgency"]["type"], "score");
+        assert_eq!(body["questions"][URGENCY]["type"], "score");
         assert_eq!(
-            body["questions"]["urgency"]["criteria"],
+            body["questions"][URGENCY]["criteria"],
             json!(["low", "medium", "high"])
         );
+    }
+
+    /// GH #1550: a cell key with a dot is refused by a provider whose key rule
+    /// is `[A-Za-z0-9_-]+` (HTTP 400 for the WHOLE call). The wire carries
+    /// `q1..qN` instead, numbered in the sorted order of the cell keys, and no
+    /// cell key at all.
+    #[test]
+    fn the_wire_carries_neutral_keys_in_question_order() {
+        let asked = parse_decide(Some(&dotted())).unwrap();
+        let body = build_request("m", &asked);
+        let qs = body["questions"].as_object().unwrap();
+        let keys: Vec<&str> = qs.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["q1", "q2", "q3"]);
+        // sorted cell keys: sample.also < sample.lead < topic
+        assert_eq!(qs["q1"]["instructions"], "Anything beside it?");
+        assert_eq!(qs["q2"]["instructions"], "Which lead?");
+        assert_eq!(qs["q3"]["instructions"], "Which topic?");
+        let text = body.to_string();
+        for cell_key in ["sample.lead", "sample.also", "\"topic\""] {
+            assert!(
+                !text.contains(cell_key),
+                "{cell_key} is on the wire: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_answer_is_read_back_onto_the_cell_keys() {
+        let asked = parse_decide(Some(&dotted())).unwrap();
+        let resp = json!({"answers": {
+            "q1": {"type": "noul", "noul": 0.25},
+            "q2": {"type": "choice", "choice": "rows", "probabilities": {"rows": 0.7, "brief": 0.3}},
+            "q3": {"type": "choice", "choice": "sample", "probabilities": {"sample": 0.9}}
+        }});
+        let d = parse_response(&resp, &asked).unwrap();
+        assert_eq!(
+            Value::Object(d.answers),
+            json!({
+                "sample.also": {"yes": 0.25},
+                "sample.lead": {"choice": "rows", "p": {"brief": 0.3, "rows": 0.7}},
+                "topic": {"choice": "sample", "p": {"sample": 0.9}}
+            })
+        );
+        assert!(d.missing.is_empty());
+    }
+
+    #[test]
+    fn a_missing_wire_answer_is_named_by_its_cell_key() {
+        let asked = parse_decide(Some(&dotted())).unwrap();
+        let resp = json!({"answers": {"q3": {"choice": "none", "probabilities": {"none": 1}}}});
+        let d = parse_response(&resp, &asked).unwrap();
+        assert_eq!(
+            d.missing,
+            vec!["sample.also".to_string(), "sample.lead".to_string()]
+        );
+        assert_eq!(d.answers.keys().collect::<Vec<_>>(), vec!["topic"]);
+        // A malformed answer is named by its cell key, never by its wire key.
+        let bad = json!({"answers": {"q2": {"choice": "cards", "probabilities": {"cards": 1}}}});
+        let detail = parse_response(&bad, &asked).unwrap_err();
+        assert!(detail.contains("'sample.lead'"), "{detail}");
+        assert!(!detail.contains("q2"), "{detail}");
+    }
+
+    #[test]
+    fn an_answer_under_an_unasked_wire_key_is_ignored() {
+        let asked = parse_decide(Some(&dotted())).unwrap();
+        let resp = json!({"answers": {
+            "q1": {"noul": 0.5},
+            "q4": {"noul": 0.9},
+            "topic": {"choice": "sample", "probabilities": {"sample": 1}},
+            "sample.lead": {"choice": "rows", "probabilities": {"rows": 1}}
+        }});
+        let d = parse_response(&resp, &asked).unwrap();
+        assert_eq!(
+            Value::Object(d.answers),
+            json!({"sample.also": {"yes": 0.5}})
+        );
+        assert_eq!(
+            d.missing,
+            vec!["sample.lead".to_string(), "topic".to_string()]
+        );
+        // Answers only under cell keys (the old wire) answer nothing asked.
+        let old =
+            json!({"answers": {"topic": {"choice": "sample", "probabilities": {"sample": 1}}}});
+        assert!(
+            parse_response(&old, &asked)
+                .unwrap_err()
+                .contains("no question was answered")
+        );
+    }
+
+    #[test]
+    fn every_wire_key_matches_the_strictest_provider_rule() {
+        for n in [1, 32, MAX_QUESTIONS] {
+            // The longest cell keys the cell vocabulary allows, dots and all.
+            let keys: Vec<String> = (0..n)
+                .map(|i| format!("{i:02}.{}", "x".repeat(KEY_MAX_CHARS - 3)))
+                .collect();
+            let asked = parse_decide(Some(&many(&keys))).unwrap();
+            let body = build_request("m", &asked);
+            let qs = body["questions"].as_object().unwrap();
+            assert_eq!(qs.len(), n);
+            for k in qs.keys() {
+                assert!(strict_key(k), "wire key {k} breaks [A-Za-z0-9_-]{{1,64}}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_wire_order_is_the_sorted_cell_key_order() {
+        // Lexicographic, not numeric: `k10` sorts before `k2`.
+        let keys: Vec<String> = (1..=12).map(|i| format!("k{i}")).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        let asked = parse_decide(Some(&many(&keys))).unwrap();
+        let body = build_request("m", &asked);
+        for (i, cell_key) in sorted.iter().enumerate() {
+            assert_eq!(
+                body["questions"][format!("q{}", i + 1)]["instructions"],
+                format!("about {cell_key}"),
+                "q{} carries {cell_key}",
+                i + 1
+            );
+        }
+        // The same slot maps the same way every time.
+        let again = parse_decide(Some(&many(&keys))).unwrap();
+        assert_eq!(build_request("m", &again), body);
+        assert_eq!(again, asked);
     }
 
     #[test]
@@ -439,12 +672,12 @@ mod tests {
             "model": "vendor/decider-1",
             "id": "gen-1",
             "answers": {
-                "topic": {"type": "choice", "choice": "weather",
-                          "probabilities": {"weather": 0.9, "none": 0.1}, "confidence": 0.8},
-                "wants": {"type": "noul", "noul": 0.75},
-                "urgency": {"type": "score", "score": 0.2,
-                            "legend": {"0": "low", "1": "medium", "2": "high"},
-                            "probabilities": {"0": 0.8, "1": 0.2, "2": 0}}
+                TOPIC: {"type": "choice", "choice": "weather",
+                        "probabilities": {"weather": 0.9, "none": 0.1}, "confidence": 0.8},
+                WANTS: {"type": "noul", "noul": 0.75},
+                URGENCY: {"type": "score", "score": 0.2,
+                          "legend": {"0": "low", "1": "medium", "2": "high"},
+                          "probabilities": {"0": 0.8, "1": 0.2, "2": 0}}
             },
             "usage": {"input_tokens": 300, "output_tokens": 20, "cost": 0.00001}
         });
@@ -469,14 +702,14 @@ mod tests {
     #[test]
     fn a_missing_answer_is_named_and_the_rest_stands() {
         let asked = parse_decide(Some(&three())).unwrap();
-        let part = json!({"answers": {"wants": {"noul": 0.5}}});
+        let part = json!({"answers": {WANTS: {"noul": 0.5}}});
         let d = parse_response(&part, &asked).unwrap();
         assert_eq!(Value::Object(d.answers), json!({"wants": {"yes": 0.5}}));
         assert_eq!(d.missing, vec!["topic".to_string(), "urgency".to_string()]);
         let whole = json!({"answers": {
-            "topic": {"choice": "none", "probabilities": {"none": 1}},
-            "wants": {"noul": 0.5},
-            "urgency": {"score": 1, "probabilities": {"1": 1}}}});
+            TOPIC: {"choice": "none", "probabilities": {"none": 1}},
+            WANTS: {"noul": 0.5},
+            URGENCY: {"score": 1, "probabilities": {"1": 1}}}});
         assert!(parse_response(&whole, &asked).unwrap().missing.is_empty());
     }
 
@@ -498,14 +731,52 @@ mod tests {
     fn an_unasked_choice_is_no_decision() {
         let asked = parse_decide(Some(&three())).unwrap();
         let unasked = json!({"answers": {
-            "topic": {"choice": "sport", "probabilities": {"sport": 1}},
-            "wants": {"noul": 0.5},
-            "urgency": {"score": 1, "probabilities": {"1": 1}}}});
+            TOPIC: {"choice": "sport", "probabilities": {"sport": 1}},
+            WANTS: {"noul": 0.5},
+            URGENCY: {"score": 1, "probabilities": {"1": 1}}}});
+        let detail = parse_response(&unasked, &asked).unwrap_err();
+        assert!(detail.contains("not asked"), "{detail}");
         assert!(
-            parse_response(&unasked, &asked)
-                .unwrap_err()
-                .contains("not asked")
+            detail.contains("'topic'"),
+            "named by its cell key: {detail}"
         );
         assert!(parse_response(&json!({"choices": []}), &asked).is_err());
+    }
+
+    /// The live answer of the hosted service parses (the parser case the wire
+    /// proof of GH #957 left behind). Moved here from the cell's wire test
+    /// (GH #1558): a `scale` question has no calibration curve, so a cell asked
+    /// one answers `decision_uncalibrated` before any call -- the parser is
+    /// what this answer pins, and it still reads every kind. The answer sits
+    /// beside this file, not under `tests/fixtures/`: an include target the
+    /// gate plans with its includer (`test_gate_plan` IncludeTargetsStayInReach).
+    #[test]
+    fn the_live_answer_of_the_service_parses() {
+        let live: Value =
+            meclaw_core::serde_json::from_str(include_str!("decisions_response_live.json"))
+                .expect("the fixture is JSON");
+        let asked = parse_decide(Some(&json!({
+            "state": "The user said: Will it rain in the city tomorrow afternoon?",
+            "questions": {
+                "topic": {"kind": "choice", "instructions": "Which topic?",
+                          "options": {"weather": "Weather", "calendar": "Calendar",
+                                      "none": "None"}},
+                "wants_screen": {"kind": "yes_no", "instructions": "A screen?"},
+                "urgency": {"kind": "scale", "instructions": "How urgent?",
+                            "levels": ["low", "medium", "high"]}
+            }
+        })))
+        .unwrap();
+        let d = parse_response(&live, &asked).unwrap();
+        assert_eq!(d.answers["topic"]["choice"], "weather");
+        assert!(d.answers["wants_screen"]["yes"].is_f64());
+        assert!(d.answers["urgency"]["value"].is_number());
+        assert_eq!(
+            d.answers["urgency"]["p"].as_object().map(|p| p.len()),
+            Some(3),
+            "every level by name: {:?}",
+            d.answers
+        );
+        assert!(d.missing.is_empty());
     }
 }

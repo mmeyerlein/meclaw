@@ -1,7 +1,7 @@
 {
   "model": "typesafe/jev-1.13-20260917",
   "answers": {
-    "topic": {
+    "q1": {
       "type": "choice",
       "choice": "weather",
       "probabilities": {
@@ -11,11 +11,11 @@
       },
       "confidence": 1
     },
-    "wants_screen": {
+    "q3": {
       "type": "noul",
       "noul": 0.81
     },
-    "urgency": {
+    "q2": {
       "type": "score",
       "score": 0.15,
       "legend": {

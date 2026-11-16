@@ -38,6 +38,8 @@ fn mk_sink() -> (OutputSink, mpsc::Receiver<CellEmission>) {
     (sink, rx)
 }
 
+/// On the wire `topic` is `q1` and `wants` is `q2`: the cell keys sorted and
+/// numbered from one (GH #1550); the service answers under those keys.
 fn decide_body() -> Value {
     json!({
         "messages": [],
@@ -73,6 +75,9 @@ async fn one_call_with(
     let mut raw = json!({
         "provider": "decisions", "model": "vendor/decider", "api_key": "k",
         "base_url": format!("{}/api", mock.base_url), "external_timeout_ms": timeout_ms,
+        // GH #1558: a decider answers only with its calibration (test curves).
+        "decision_calibration": {"yes_no": {"default": [[0, 0], [1, 1]]},
+                                 "choice": {"default": [[0, 0], [1, 1]]}},
     });
     for (k, v) in extra.as_object().cloned().unwrap_or_default() {
         raw[k] = v;
@@ -153,8 +158,8 @@ async fn no_answer_at_all_is_no_decision() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_choice_nobody_asked_for_is_no_decision() {
     let unasked = answer(json!({"answers": {
-        "topic": {"choice": "sport", "probabilities": {"sport": 1}},
-        "wants": {"noul": 0.4}}}));
+        "q1": {"choice": "sport", "probabilities": {"sport": 1}},
+        "q2": {"noul": 0.4}}}));
     let (_, ems) = one_call(vec![unasked], 30_000, decide_body()).await;
     assert_eq!(the_one_error(&ems), "decision_incomplete");
 }
@@ -175,8 +180,8 @@ async fn a_body_without_a_valid_decide_sends_nothing() {
 
 fn a_whole_answer() -> MockResponse {
     answer(json!({"answers": {
-        "topic": {"choice": "weather", "probabilities": {"weather": 0.9, "none": 0.1}},
-        "wants": {"noul": 0.8}}}))
+        "q1": {"choice": "weather", "probabilities": {"weather": 0.9, "none": 0.1}},
+        "q2": {"noul": 0.8}}}))
 }
 
 /// GH #1085 lock: the fixed 128 KiB request bound is gone -- a state over it
@@ -234,8 +239,8 @@ async fn a_failed_call_hands_its_request_to_a_failover_cell() {
 
     // A second, healthy cell takes the error body as it is and decides.
     let ok = answer(json!({"answers": {
-        "topic": {"choice": "weather", "probabilities": {"weather": 0.9, "none": 0.1}},
-        "wants": {"noul": 0.8}}}));
+        "q1": {"choice": "weather", "probabilities": {"weather": 0.9, "none": 0.1}},
+        "q2": {"noul": 0.8}}}));
     let (sent, ems) = one_call(
         vec![ok],
         30_000,
@@ -290,8 +295,8 @@ async fn a_system_or_tool_scope_slot_is_refused_out_loud() {
         assert!(detail.contains(slot), "the refusal names {slot}: {detail}");
     }
     let ok = answer(json!({"answers": {
-        "topic": {"choice": "weather", "probabilities": {"weather": 0.9, "none": 0.1}},
-        "wants": {"noul": 0.8}}}));
+        "q1": {"choice": "weather", "probabilities": {"weather": 0.9, "none": 0.1}},
+        "q2": {"noul": 0.8}}}));
     let mut body = decide_body();
     body["system"] = json!({});
     let (sent, ems) = one_call(vec![ok], 30_000, body).await;

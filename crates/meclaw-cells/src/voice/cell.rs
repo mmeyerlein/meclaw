@@ -132,6 +132,11 @@ pub enum VoiceEvent {
         session_id: String,
         /// What the model reported.
         event: DuplexEvent,
+        /// The running total of audible model audio the connection sent to
+        /// the client in this session, in milliseconds (GH #1557); `None`
+        /// where there is nothing to report (no model audio yet, or an event
+        /// the connection mints on its own).
+        model_heard_ms: Option<u64>,
     },
     /// Time passed on a duplex session and nobody said anything (R-L7).
     ///
@@ -162,6 +167,11 @@ pub enum VoiceEvent {
         /// clock 626 ms ahead of the model's `offset_ms` after 64 s, and both
         /// deadlines this feeds are measured in seconds.
         now_ms: u64,
+        /// The running total of audible model audio the connection sent to
+        /// the client in this session, in milliseconds (GH #1557); `None`
+        /// where there is nothing to report (no model audio yet, or an event
+        /// the connection mints on its own).
+        model_heard_ms: Option<u64>,
     },
     /// The connection sent the model's audio to the client: the first audible
     /// frame since the last transcript fragment it passed on (BAT R1e, C3;
@@ -203,6 +213,11 @@ pub enum VoiceEvent {
         /// `spoken_quiet_ms` of the end: the model was speaking when the line
         /// went.
         model_audible: bool,
+        /// The running total of audible model audio the connection sent to
+        /// the client in this session, in milliseconds (GH #1557); `None`
+        /// where there is nothing to report (no model audio yet, or an event
+        /// the connection mints on its own).
+        model_heard_ms: Option<u64>,
     },
     /// The duplex provider of this connection gave up, and with it the call.
     ///
@@ -1950,6 +1965,26 @@ impl VoiceCell {
         self.emit(sink, content).await;
     }
 
+    /// Hand the turn machine the audible model audio the connection has sent
+    /// so far (GH #1557), ahead of the event that carried it: a turn that
+    /// closes on that event knows what its audio carried up to that moment.
+    /// Never an action; nothing where the event carries no total.
+    fn live_heard(&mut self, session_id: &str, model_heard_ms: Option<u64>) {
+        let Some(total_ms) = model_heard_ms else {
+            return;
+        };
+        let gap = self.duplex_turn_gap_ms;
+        let backchannel = self.duplex_backchannel_max_ms;
+        if let Some(state) = self.live_sessions.get_mut(session_id) {
+            let _ = live_turns::step(
+                &mut state.turns,
+                TurnInput::Heard { total_ms },
+                gap,
+                backchannel,
+            );
+        }
+    }
+
     /// One tick of the session's own clock (R-L7, R-L9).
     ///
     /// **A watchdog timer is not polling** (owner ruling, 2026-09-21): a
@@ -2126,6 +2161,13 @@ impl VoiceCell {
                         if turn.cut {
                             obj.insert("cut".into(), json!(true));
                         }
+                        // GH #1557: the model's words whose audio never
+                        // reached the caller, out of `messages` and kept
+                        // here for the record only -- no reader takes them
+                        // for something that was said.
+                        if let Some(unsaid) = &turn.unsaid {
+                            obj.insert("unsaid".into(), json!(unsaid));
+                        }
                     }
                     // A turn the caller spoke in releases what is held -- not
                     // the one a closing session closes (review M4).
@@ -2138,7 +2180,18 @@ impl VoiceCell {
                     // the model answered inside the same turn, its own.
                     let mut messages =
                         vec![json!({"origin": "user", "type": "text", "text": turn.user})];
-                    if let Some(assistant) = turn.assistant {
+                    if let Some(mut assistant) = turn.assistant {
+                        // GH #1557: the words of a turn whose rest is
+                        // `unsaid` end on the mark "…". The readers past the
+                        // `session-keeper` keep only the text (the collector
+                        // stores the content, the curator's seed and notes
+                        // read that), so the text itself has to say the answer
+                        // broke off. A turn only the end marks `cut`, its
+                        // answer heard, keeps the flag in this header and no
+                        // mark (review M2). `unsaid` never comes in here.
+                        if turn.unsaid.is_some() && !assistant.ends_with('\u{2026}') {
+                            assistant.push('\u{2026}');
+                        }
                         messages.push(
                             json!({"origin": "assistant", "type": "text", "text": assistant}),
                         );
@@ -4501,7 +4554,9 @@ impl LongRunningCell for VoiceCell {
                     session_id,
                     at_ms,
                     model_audible,
+                    model_heard_ms,
                 } => {
+                    self.live_heard(&session_id, model_heard_ms);
                     // d54g callseam: the open turn closes with the connection,
                     // from what is held now, and leaves before the call's
                     // `final` usage. Measured on 2026-11-07: closed by the
@@ -4529,10 +4584,20 @@ impl LongRunningCell for VoiceCell {
                     };
                     self.run_live_actions(&session_id, actions, sink).await;
                 }
-                VoiceEvent::LiveTick { session_id, now_ms } => {
+                VoiceEvent::LiveTick {
+                    session_id,
+                    now_ms,
+                    model_heard_ms,
+                } => {
+                    self.live_heard(&session_id, model_heard_ms);
                     self.on_live_tick(&session_id, now_ms, sink).await;
                 }
-                VoiceEvent::Live { session_id, event } => {
+                VoiceEvent::Live {
+                    session_id,
+                    event,
+                    model_heard_ms,
+                } => {
+                    self.live_heard(&session_id, model_heard_ms);
                     self.on_live_event(&session_id, event, sink).await;
                 }
                 VoiceEvent::Renewed {

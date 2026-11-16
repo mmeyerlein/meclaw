@@ -75,7 +75,7 @@
       ]
     },
     "load_flake": {
-      "description": "B schlank (OR-TV-13): every test a NOTE load-flake station names -- red only under the gate's full load, green in T1-T4 with T2 on the lane about 30 % busy (K12) -- with its triage proof (station, test, count, green, triage, t2_lane, seed).",
+      "description": "B schlank (OR-TV-13): every test the triage classified a load flake, for every command of its station (#1519) -- the reason a NOTE load-flake station is green, an observation on a station that stays RED or FLAKY -- red only under the gate's full load, green in T1-T4 with T2 on the lane about 30 % busy (K12) -- with its triage proof (station, test, count, green, triage, t2_lane, seed).",
       "type": "array",
       "items": {
         "type": "object",

@@ -3,12 +3,14 @@
 //!
 //! Pinned here, against the in-process HTTP mock (no network, no cost):
 //!
-//! 1. One `decide` slot with one question of each kind (`choice`, `yes_no`,
-//!    `scale`) is exactly ONE `POST <base_url>/alpha/decisions` -- no `/v1`,
+//! 1. One `decide` slot with a `choice` and a `yes_no` question is exactly
+//!    ONE `POST <base_url>/alpha/decisions` -- no `/v1`,
 //!    no stream -- whose body equals `fixtures/decisions_request.json`, with
-//!    the bearer set.
+//!    the bearer set. The questions travel under the neutral wire keys
+//!    `q1..qN` in the sorted order of the cell keys, and the answers come
+//!    back under them (GH #1550); the emission names the cell keys.
 //! 2. The answer (`fixtures/decisions_response.json`, the shape of the one
-//!    live answer in `fixtures/decisions_response_live.json`) becomes exactly
+//!    live answer in `src/llm/decisions_response_live.json`) becomes exactly
 //!    one emission: `{decision: {answers, model, ms}}` with the answers
 //!    normalized per kind, `meta.provider` = `decisions`, `finish_reason`
 //!    `stop`. The caller's `context` key rides on through the substrate's
@@ -16,8 +18,14 @@
 //!    `context` and the cell never learns its key (OR-DP-11).
 //! 3. A cell born on an empty model is `decisions_unconfigured` and sends
 //!    nothing.
-//! 4. The live answer of the hosted service parses (the parser case the
-//!    wire proof of the strand left behind).
+//!
+//! GH #1558: the cell carries a calibration (test curves that map every
+//! probability onto itself, so the numbers below are the service's); the
+//! mapping and the loud refusal without one are pinned in
+//! `gh1558_a_decision_is_calibrated_per_model`. A `scale` question has no
+//! curve and is refused there, so the live answer of the hosted service
+//! (three kinds) is parsed by `translate_decisions`' unit test
+//! `the_live_answer_of_the_service_parses`.
 
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
@@ -36,7 +44,6 @@ use tokio::sync::mpsc;
 
 const REQUEST_FIXTURE: &str = "tests/fixtures/decisions_request.json";
 const RESPONSE_FIXTURE: &str = "tests/fixtures/decisions_response.json";
-const LIVE_FIXTURE: &str = "tests/fixtures/decisions_response_live.json";
 
 fn fixture(rel: &str) -> Value {
     let text = std::fs::read_to_string(rel).unwrap_or_else(|e| panic!("{rel}: {e}"));
@@ -72,6 +79,10 @@ fn decisions_cell(base_url: &str, model: &str) -> (LlmCell, TempDir, DbConn) {
         "model": model,
         "api_key": "test-key-decide",
         "base_url": base_url,
+        "decision_calibration": {
+            "yes_no": {"default": [[0, 0], [1, 1]]},
+            "choice": {"default": [[0, 0], [1, 1]]}
+        },
     });
     let params = LlmParams::parse(&raw).expect("a decisions cell parses");
     let cell = LlmCell::new(params, reqwest::Client::builder().build().unwrap());
@@ -80,7 +91,7 @@ fn decisions_cell(base_url: &str, model: &str) -> (LlmCell, TempDir, DbConn) {
     (cell, td, DbConn::wrap(conn, None))
 }
 
-/// The cell's own vocabulary for the three questions of the request fixture.
+/// The cell's own vocabulary for the two questions of the request fixture.
 /// The body carries an empty `messages` slot: a UBF body needs one of its
 /// three slots, and the cell does not read it in this mode.
 fn decide_body() -> Value {
@@ -101,11 +112,6 @@ fn decide_body() -> Value {
                 "wants_screen": {
                     "kind": "yes_no",
                     "instructions": "Would the person benefit from seeing the answer on a screen?"
-                },
-                "urgency": {
-                    "kind": "scale",
-                    "instructions": "How urgent is the request?",
-                    "levels": ["low", "medium", "high"]
                 }
             }
         }
@@ -163,8 +169,7 @@ async fn one_decide_is_one_post_and_one_whole_decision() {
         json!({
             "topic": {"choice": "weather",
                       "p": {"weather": 0.95, "calendar": 0.04, "none": 0.01}},
-            "wants_screen": {"yes": 0.81},
-            "urgency": {"value": 0.15, "p": {"low": 0.86, "medium": 0.14, "high": 0.0}}
+            "wants_screen": {"yes": 0.81}
         })
     );
     assert_eq!(em.content["decision"]["model"], "vendor/decider-1");
@@ -203,27 +208,4 @@ async fn a_cell_born_without_a_model_is_unconfigured_and_sends_nothing() {
         "decisions_unconfigured"
     );
     assert!(ems[0].content.get("decision").is_none());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_live_answer_of_the_service_parses() {
-    let live = meclaw_core::serde_json::to_vec(&fixture(LIVE_FIXTURE)).unwrap();
-    let mock = MockOpenAI::start(vec![MockResponse::ok_json(&live)]).await;
-    let (mut cell, _td, mut db) =
-        decisions_cell(&format!("{}/api", mock.base_url), "vendor/decider");
-    let (sink, mut rx) = mk_sink();
-
-    cell.handle(decide_msg(decide_body()), &sink, &mut db).await;
-
-    let ems = drain(&mut rx);
-    assert_eq!(ems.len(), 1);
-    let answers = &ems[0].content["decision"]["answers"];
-    assert_eq!(answers["topic"]["choice"], "weather");
-    assert!(answers["wants_screen"]["yes"].is_f64());
-    assert!(answers["urgency"]["value"].is_number());
-    assert_eq!(
-        answers["urgency"]["p"].as_object().map(|p| p.len()),
-        Some(3),
-        "every level by name: {answers}"
-    );
 }

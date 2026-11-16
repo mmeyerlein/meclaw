@@ -56,6 +56,9 @@ struct Frag {
     start_ms: u64,
     /// Where it ends.
     end_ms: u64,
+    /// The model's block the fragment belongs to (session counter, see
+    /// [`TurnState::blocks`]); 0 for a caller's fragment, which has none.
+    block: u64,
 }
 
 /// The turn that is currently being formed.
@@ -93,6 +96,14 @@ struct OpenTurn {
     /// the call's clock ([`TurnInput::AudioOut`]); never before
     /// `person_end_ms`.
     first_audio_ms: Option<u64>,
+    /// The id of the model's running block, where one is (GH #1557): the
+    /// block audible audio that reaches the client is credited to.
+    block_id: Option<u64>,
+    /// Audible model audio credited to each block inside THIS turn, in
+    /// milliseconds ([`TurnInput::Heard`]). A block a barge-in carries into
+    /// the next turn starts there at 0: the audio after the split belongs to
+    /// the turn it went out in.
+    heard: Vec<(u64, u64)>,
 }
 
 /// Which agent fragment answers the caller's last words (review M3).
@@ -133,6 +144,7 @@ impl OpenTurn {
         block_start: Option<u64>,
         block_end: u64,
         run_ms: u64,
+        block_id: Option<u64>,
     ) -> Self {
         Self {
             user_last_end_ms: fragment_end(&run),
@@ -146,6 +158,8 @@ impl OpenTurn {
             user_run_ms: run_ms,
             barged: true,
             first_audio_ms: None,
+            block_id,
+            heard: Vec::new(),
         }
     }
 
@@ -215,7 +229,7 @@ impl OpenTurn {
     /// reaches the connection, no `speak_end cancelled`, no `uuid_break`, and
     /// FS02 plays the answer it already holds over the caller — while the
     /// model keeps speaking 4.4–11.0 s after a disturbance (S0).
-    fn push_assistant(&mut self, frag: Frag, gap_ms: u64) {
+    fn push_assistant(&mut self, mut frag: Frag, gap_ms: u64, blocks: &mut u64) {
         let new_block = opens_new_block(
             self.agent_block_start_ms.map(|_| self.agent_block_end_ms),
             frag.start_ms,
@@ -225,6 +239,8 @@ impl OpenTurn {
             self.agent_block_start_ms = Some(frag.start_ms);
             self.agent_block_end_ms = frag.end_ms;
             self.barged = false;
+            *blocks += 1;
+            self.block_id = Some(*blocks);
         } else {
             self.agent_block_end_ms = self.agent_block_end_ms.max(frag.end_ms);
         }
@@ -238,6 +254,7 @@ impl OpenTurn {
         if answers {
             self.awaiting = Awaiting::Nothing;
         }
+        frag.block = self.block_id.unwrap_or(0);
         self.assistant.push(frag);
     }
 
@@ -273,18 +290,140 @@ impl OpenTurn {
         run
     }
 
-    /// The turn as it goes on the wire.
-    fn finish(&self, index: u64) -> FinishedTurn {
+    /// Credit `ms` of audible audio to the running block. `false` where no
+    /// block is running in this turn: the caller has the audio then.
+    fn credit_heard(&mut self, ms: u64) -> bool {
+        let Some(block) = self.block_id else {
+            return false;
+        };
+        match self.heard.iter_mut().find(|(b, _)| *b == block) {
+            Some((_, total)) => *total += ms,
+            None => self.heard.push((block, ms)),
+        }
+        true
+    }
+
+    /// The model's part split into what its audio carried and what it did not
+    /// (GH #1557): per block, at most `heard_ms / UNSAID_MS_PER_CHAR`
+    /// characters, cut back to the last word boundary. `None` for the unsaid
+    /// part where everything was heard.
+    fn split_heard(&self) -> (Option<String>, Option<String>) {
+        let mut said = String::new();
+        let mut unsaid: Vec<String> = Vec::new();
+        for (_, kept, rest) in self.heard_blocks() {
+            said.push_str(&kept);
+            if !rest.is_empty() {
+                unsaid.push(rest);
+            }
+        }
+        let said = (!said.trim().is_empty()).then_some(said);
+        let unsaid = (!unsaid.is_empty()).then(|| unsaid.join(" "));
+        (said, unsaid)
+    }
+
+    /// Per block of the model's, in order: its id, the words its audio
+    /// carried and the rest ([`cut_at_word`] at `heard_ms /
+    /// UNSAID_MS_PER_CHAR` characters).
+    fn heard_blocks(&self) -> Vec<(u64, String, String)> {
+        let mut blocks: Vec<(u64, String, String)> = Vec::new();
+        for frag in &self.assistant {
+            if blocks.iter().any(|(b, _, _)| *b == frag.block) {
+                continue;
+            }
+            let text: String = self
+                .assistant
+                .iter()
+                .filter(|f| f.block == frag.block)
+                .map(|f| f.text.as_str())
+                .collect();
+            let heard_ms = self
+                .heard
+                .iter()
+                .find(|(b, _)| *b == frag.block)
+                .map_or(0, |(_, ms)| *ms);
+            let (kept, rest) = cut_at_word(&text, heard_ms / UNSAID_MS_PER_CHAR);
+            blocks.push((frag.block, kept, rest));
+        }
+        blocks
+    }
+
+    /// The model's fragments cut to the words their audio carried (GH #1557,
+    /// review M3): what a delegation's history keeps of a turn whose part
+    /// was cut, so it never takes the unsaid rest for said. Each block keeps
+    /// the prefix of its fragments the turn kept; a fragment past it is gone.
+    fn heard_fragments(&self) -> Vec<Frag> {
+        let mut out = Vec::new();
+        for (block, kept, _) in self.heard_blocks() {
+            let mut left = kept.chars().count();
+            for frag in self.assistant.iter().filter(|f| f.block == block) {
+                if left == 0 {
+                    break;
+                }
+                let take = frag.text.chars().count().min(left);
+                left -= take;
+                let mut part = frag.clone();
+                part.text = frag.text.chars().take(take).collect();
+                out.push(part);
+            }
+        }
+        out
+    }
+
+    /// The turn as it goes on the wire; `trim` keeps only the model's words
+    /// its audio carried (GH #1557, [`TurnState::trims`]).
+    fn finish(&self, index: u64, trim: bool) -> FinishedTurn {
+        let (assistant, unsaid) = if trim {
+            self.split_heard()
+        } else {
+            (self.assistant_text(), None)
+        };
         FinishedTurn {
             index,
             user: self.user_text(),
-            assistant: self.assistant_text(),
+            assistant,
             happened_at_ms: fragment_end(&self.user).max(fragment_end(&self.assistant)),
             person_end_ms: self.person_end_ms,
             first_audio_ms: self.first_audio_ms,
             cut: false,
+            unsaid,
         }
     }
+}
+
+/// How many milliseconds of the model's speech one character of its
+/// transcript needs before it counts as said (GH #1557).
+///
+/// Measured against the SPAN of the speech that went out to the client:
+/// from its first audible window to its last, the pauses between counted
+/// (`model_heard_ms` of the connection). A measured German answer of a live
+/// model: 132 characters over 7.7 s from first to last audible window, 4.8 s
+/// of it audible -- 58 ms a character over the span, 36 over the audible
+/// windows alone. 30 ms leaves about twice that as reserve: an answer whose
+/// audio went out to its end is not cut by it, only a clear overhang is -- a
+/// live model's transcript runs seconds ahead of its audio, and the words
+/// past the audio that reached the client were never said.
+///
+/// The limit: what is measured is what went out to the client, not what it
+/// played. A client that buffers and drops its buffer at a barge-in keeps
+/// words in the turn it never played.
+pub const UNSAID_MS_PER_CHAR: u64 = 30;
+
+/// `text` cut to at most `budget` characters at the last word boundary, and
+/// the rest. Characters, not bytes. A text that fits stays whole; one with no
+/// boundary inside the budget is all rest.
+fn cut_at_word(text: &str, budget: u64) -> (String, String) {
+    let chars: Vec<char> = text.chars().collect();
+    let budget = usize::try_from(budget).unwrap_or(usize::MAX);
+    if chars.len() <= budget {
+        return (text.to_string(), String::new());
+    }
+    let at = (0..=budget)
+        .rev()
+        .find(|&i| chars[i].is_whitespace())
+        .unwrap_or(0);
+    let kept: String = chars[..at].iter().collect();
+    let rest: String = chars[at..].iter().collect();
+    (kept.trim_end().to_string(), rest.trim().to_string())
 }
 
 /// Whether a fragment of the model's that starts at `start_ms` opens a NEW
@@ -323,6 +462,21 @@ pub struct TurnState {
     /// The closed turns of the call, kept for a delegation's history where
     /// `duplex.delegation_history` asks for it; `None` keeps nothing.
     history: Option<CallHistory>,
+    /// How many model blocks this session has opened; the id of the last
+    /// one (GH #1557: audio is credited to a block, and a block can run on
+    /// into the turn a barge-in opens).
+    blocks: u64,
+    /// The running total of audible model audio the connection sent to the
+    /// client, as the last [`TurnInput::Heard`] reported it. `None` while it
+    /// never reported one: without audio there is no clock, and no model
+    /// text is ever cut (a transcript-only session stays as it was).
+    heard_total_ms: Option<u64>,
+    /// Whether the last [`TurnInput::Heard`] brought new audio: the model's
+    /// audio is still going out.
+    heard_flowing: bool,
+    /// Audio that went out while no block of the open turn was running (it
+    /// came before its own transcript): the next block takes it.
+    heard_pending_ms: u64,
 }
 
 /// The closed turns of one call, as fragments. Whole: this cell produces the
@@ -394,6 +548,14 @@ pub enum TurnInput {
         /// fragments' own stamps, to the millisecond.
         at_ms: u64,
     },
+    /// The running total of audible model audio the connection has sent to
+    /// the client in this session (GH #1557), counted after the opening guard
+    /// and the duck. The difference to the last total goes to the model's
+    /// running block: what its audio carried is what was said.
+    Heard {
+        /// Milliseconds of audible audio since the session opened.
+        total_ms: u64,
+    },
     /// The session is over; close what is open.
     Close,
     /// The connection is over: close what is open from what is held now,
@@ -450,9 +612,14 @@ pub struct FinishedTurn {
     /// out inside the turn.
     pub first_audio_ms: Option<u64>,
     /// Whether the end of the connection cut the model off inside this turn
-    /// ([`TurnInput::End`]): the model's part was not said to its end, so a
-    /// reader does not take it for a statement that was made.
+    /// ([`TurnInput::End`]), or the model's part was cut to the words its
+    /// audio carried (`unsaid` is set): either way it was not said to its
+    /// end, so a reader does not take it for a statement that was made.
     pub cut: bool,
+    /// The model's words whose audio never reached the caller (GH #1557):
+    /// left out of `assistant`, kept for the record only. `None` where the
+    /// audio carried everything or the session has no audio clock.
+    pub unsaid: Option<String>,
 }
 
 /// Feed one input to the machine and read its verdict.
@@ -482,6 +649,7 @@ pub fn step(
                 text,
                 start_ms,
                 end_ms,
+                block: 0,
             };
             match speaker {
                 Speaker::User => user_fragment(state, frag, gap_ms, backchannel_max_ms),
@@ -493,6 +661,10 @@ pub fn step(
             if let Some(open) = state.open.as_mut() {
                 open.audio_out(at_ms);
             }
+            Vec::new()
+        }
+        TurnInput::Heard { total_ms } => {
+            heard(state, total_ms);
             Vec::new()
         }
         TurnInput::Close => close(state).into_iter().collect(),
@@ -615,17 +787,27 @@ fn user_fragment(
                     open.agent_block_start_ms,
                     open.agent_block_end_ms,
                     open.user_run_ms,
+                    open.block_id,
                 ));
             }
         }
     }
-    if let Some((run, block_start, block_end, run_ms)) = barge {
+    if let Some((run, block_start, block_end, run_ms, block_id)) = barge {
         // The run stopped being a listener and became a speaker. The
         // announcement comes first: it is what cancels the audio already on its
         // way to the caller.
         out.push(TurnAction::BargeIn);
-        out.extend(close(state));
-        state.open = Some(OpenTurn::from_barge_in(run, block_start, block_end, run_ms));
+        // The model stops where the caller cut in: what its transcript ran
+        // ahead of its audio was never said, whether or not the audio is
+        // still trickling (GH #1557).
+        out.extend(close_as(state, false, true));
+        state.open = Some(OpenTurn::from_barge_in(
+            run,
+            block_start,
+            block_end,
+            run_ms,
+            block_id,
+        ));
     }
     if let Some(open) = state.open.as_ref() {
         out.push(TurnAction::Partial {
@@ -642,7 +824,12 @@ fn assistant_fragment(state: &mut TurnState, frag: Frag, gap_ms: u64) -> Vec<Tur
     // its own rather than being dropped, because a greeting the memory never
     // sees is a call that starts with a hole in it.
     let open = state.open.get_or_insert_with(OpenTurn::default);
-    open.push_assistant(frag, gap_ms);
+    let before = open.block_id;
+    open.push_assistant(frag, gap_ms, &mut state.blocks);
+    if open.block_id != before && state.heard_pending_ms > 0 {
+        let pending = std::mem::take(&mut state.heard_pending_ms);
+        open.credit_heard(pending);
+    }
     vec![TurnAction::Partial {
         speaker: Speaker::Assistant,
         text: open.assistant_text().unwrap_or_default(),
@@ -683,19 +870,50 @@ fn end(state: &mut TurnState, at_ms: u64, model_audible: bool) -> Option<TurnAct
     let cut = state.open.as_ref().is_some_and(|open| {
         !open.assistant.is_empty() && (model_audible || open.model_speaks_at(at_ms))
     });
-    close_as(state, cut)
+    close_as(state, cut, true)
+}
+
+/// Credit the audio the connection sent since the last report to the
+/// model's running block (GH #1557).
+fn heard(state: &mut TurnState, total_ms: u64) {
+    let delta = total_ms.saturating_sub(state.heard_total_ms.unwrap_or(0));
+    state.heard_total_ms = Some(total_ms.max(state.heard_total_ms.unwrap_or(0)));
+    state.heard_flowing = delta > 0;
+    if delta == 0 {
+        return;
+    }
+    let credited = state
+        .open
+        .as_mut()
+        .is_some_and(|open| open.credit_heard(delta));
+    if !credited {
+        state.heard_pending_ms += delta;
+    }
 }
 
 /// Rules 6 and 7: hand over what is open and count it.
+///
+/// A turn that closes on silence or on the caller's next words keeps only
+/// what its audio carried once that audio has stopped (GH #1557). While it
+/// still flows the answer is still being said: the call's clock runs on the
+/// transcript's stamps, which run ahead of the audio, so a tick can close a
+/// turn whose answer is audibly going out to its end.
 fn close(state: &mut TurnState) -> Option<TurnAction> {
-    close_as(state, false)
+    let trim = !state.heard_flowing;
+    close_as(state, false, trim)
 }
 
-/// [`close`], saying whether the end of the connection cut the model off.
-fn close_as(state: &mut TurnState, cut: bool) -> Option<TurnAction> {
-    let open = state.open.take()?;
-    let mut finished = open.finish(state.index);
-    finished.cut = cut;
+/// [`close`], saying whether the end of the connection cut the model off and
+/// whether the model's part is cut to the words its audio carried -- never
+/// in a session without an audio clock ([`TurnState::heard_total_ms`]).
+fn close_as(state: &mut TurnState, cut: bool, trim: bool) -> Option<TurnAction> {
+    let mut open = state.open.take()?;
+    let mut finished = open.finish(state.index, trim && state.heard_total_ms.is_some());
+    finished.cut = cut || finished.unsaid.is_some();
+    if finished.unsaid.is_some() {
+        // A delegation's history keeps what the turn lane reported (review M3).
+        open.assistant = open.heard_fragments();
+    }
     state.index += 1;
     if !finished.user.is_empty() {
         state.last_closed_user_text = Some(finished.user.clone());
@@ -860,6 +1078,185 @@ mod tests {
             .cut,
             "a provider's own close cuts nothing"
         );
+    }
+
+    fn heard(state: &mut TurnState, total_ms: u64) {
+        let _ = step(state, TurnInput::Heard { total_ms }, GAP, BACK);
+    }
+
+    const ANSWER: &str = "At ten you have the dentist and at noon lunch with Anna.";
+
+    /// GH #1557: the end of the connection keeps the words the audio carried
+    /// (600 ms = 20 characters), cut at a word boundary, and the rest is
+    /// unsaid.
+    #[test]
+    fn the_end_keeps_only_the_heard_words() {
+        let mut state = TurnState::new();
+        say(&mut state, Speaker::User, "What is on?", 0, 900);
+        say(&mut state, Speaker::Assistant, ANSWER, 1_000, 2_000);
+        heard(&mut state, 600);
+        let turn = closed(step(
+            &mut state,
+            TurnInput::End {
+                at_ms: 2_500,
+                model_audible: true,
+            },
+            GAP,
+            BACK,
+        ));
+        assert_eq!(turn.assistant.as_deref(), Some("At ten you have the"));
+        assert_eq!(
+            turn.unsaid.as_deref(),
+            Some("dentist and at noon lunch with Anna.")
+        );
+        assert!(turn.cut);
+    }
+
+    /// GH #1557 (review M3): a delegation's history holds the model's part
+    /// as the turn lane reported it -- the heard words, never the unsaid rest.
+    #[test]
+    fn the_history_keeps_only_the_heard_words() {
+        let mut state = TurnState::with_history();
+        say(&mut state, Speaker::User, "What is on?", 0, 900);
+        say(
+            &mut state,
+            Speaker::Assistant,
+            "At ten you have the",
+            1_000,
+            1_500,
+        );
+        say(
+            &mut state,
+            Speaker::Assistant,
+            " dentist and at noon lunch with Anna.",
+            1_500,
+            2_000,
+        );
+        heard(&mut state, 600);
+        heard(&mut state, 600);
+        let turn = closed(step(
+            &mut state,
+            TurnInput::Tick { now_ms: 9_000 },
+            GAP,
+            BACK,
+        ));
+        assert_eq!(turn.assistant.as_deref(), Some("At ten you have the"));
+        say(&mut state, Speaker::User, "And then?", 10_000, 10_500);
+        assert_eq!(
+            delegation_history(&state, 10_600),
+            Some(entries(&[
+                (Speaker::User, "What is on?"),
+                (Speaker::Assistant, "At ten you have the"),
+                (Speaker::User, "And then?"),
+            ]))
+        );
+    }
+
+    /// GH #1557: a whole answer with its whole audio stays whole.
+    #[test]
+    fn a_fully_heard_answer_stays_whole() {
+        let mut state = TurnState::new();
+        say(&mut state, Speaker::User, "What is on?", 0, 900);
+        say(&mut state, Speaker::Assistant, ANSWER, 1_000, 2_000);
+        heard(&mut state, 3_000);
+        heard(&mut state, 3_000);
+        let turn = closed(step(
+            &mut state,
+            TurnInput::Tick { now_ms: 9_000 },
+            GAP,
+            BACK,
+        ));
+        assert_eq!(turn.assistant.as_deref(), Some(ANSWER));
+        assert_eq!(turn.unsaid, None);
+        assert!(!turn.cut);
+    }
+
+    /// GH #1557: without any audio there is no clock, and nothing is cut.
+    #[test]
+    fn no_audio_no_clock_nothing_cut() {
+        let mut state = TurnState::new();
+        say(&mut state, Speaker::User, "What is on?", 0, 900);
+        say(&mut state, Speaker::Assistant, ANSWER, 1_000, 2_000);
+        let turn = closed(step(
+            &mut state,
+            TurnInput::End {
+                at_ms: 2_500,
+                model_audible: false,
+            },
+            GAP,
+            BACK,
+        ));
+        assert_eq!(turn.assistant.as_deref(), Some(ANSWER));
+        assert_eq!(turn.unsaid, None);
+    }
+
+    /// GH #1557: a tick closes a turn whose audio still flows without cutting
+    /// it (the clock runs ahead of the audio); once the audio stopped, the
+    /// overhang goes.
+    #[test]
+    fn a_tick_cuts_only_once_the_audio_stopped() {
+        let run = |second_total: u64| {
+            let mut state = TurnState::new();
+            say(&mut state, Speaker::User, "What is on?", 0, 900);
+            say(&mut state, Speaker::Assistant, ANSWER, 1_000, 2_000);
+            heard(&mut state, 300);
+            heard(&mut state, second_total);
+            closed(step(
+                &mut state,
+                TurnInput::Tick { now_ms: 9_000 },
+                GAP,
+                BACK,
+            ))
+        };
+        let flowing = run(600);
+        assert_eq!(flowing.assistant.as_deref(), Some(ANSWER));
+        assert!(!flowing.cut);
+        let stopped = run(300);
+        assert_eq!(stopped.assistant.as_deref(), Some("At ten you"));
+        assert!(stopped.cut);
+    }
+
+    /// GH #1557: at a barge-in the interrupted block keeps what its audio
+    /// carried before the split; the audio after the split belongs to the turn
+    /// the barge-in opened, with the trickle that block still sends.
+    #[test]
+    fn a_barge_in_splits_the_audio_with_the_block() {
+        let mut state = TurnState::new();
+        say(&mut state, Speaker::User, "What is on?", 0, 900);
+        say(&mut state, Speaker::Assistant, ANSWER, 1_000, 6_000);
+        heard(&mut state, 300);
+        let actions = step(
+            &mut state,
+            TurnInput::Fragment {
+                speaker: Speaker::User,
+                text: "Stop, stop.".into(),
+                start_ms: 2_000,
+                end_ms: 3_000,
+            },
+            GAP,
+            BACK,
+        );
+        assert!(actions.contains(&TurnAction::BargeIn));
+        let first = actions
+            .iter()
+            .find_map(|a| match a {
+                TurnAction::Emit(turn) => Some(turn.clone()),
+                _ => None,
+            })
+            .expect("the barge-in closes the turn");
+        assert_eq!(first.assistant.as_deref(), Some("At ten you"));
+        assert!(first.cut);
+        say(&mut state, Speaker::Assistant, " Okay then.", 3_100, 3_500);
+        heard(&mut state, 900);
+        heard(&mut state, 900);
+        let second = closed(step(
+            &mut state,
+            TurnInput::Tick { now_ms: 9_000 },
+            GAP,
+            BACK,
+        ));
+        assert_eq!(second.assistant.as_deref(), Some(" Okay then."));
+        assert_eq!(second.unsaid, None);
     }
 
     /// d54g callseam: the open turn's first-audio time is readable while the

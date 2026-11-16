@@ -723,6 +723,138 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(found[0]["tests"], names)
 
 
+class KeepGreenMapTest(unittest.TestCase):
+    """GH #1554: a build never replaces a GREEN map of the same rev with a RED or
+    INCOMPLETE one. The night rebuilt the map of a master tip that already had a
+    GREEN map, under load the rerun came out red (289 red tests, 5 binaries
+    without profiles), and `wave close` refused on a commit whose map had been
+    GREEN an hour before. The red result is still journaled and reported; the
+    GREEN map stays installed."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = pathlib.Path(tmp.name)
+        self.hosts = self.dir / "lanes"
+        self.hosts.write_text("lane-a user@lane-a.invalid\n")
+        self.out, self.maps, self.db = self.dir / "out", self.dir / "maps", self.dir / "p.db"
+        self.out.mkdir()
+        self.maps.mkdir()
+        self.parts = [{"binary": "alpha", "module": None, "files": {"a.rs": 1}}]
+
+    def green(self):
+        return coverage.coverage_map("r9", "lane-a", self.parts, 1.0, 1,
+                                     built_at="2026-11-16T00:00:00Z", expected_ids=["alpha"])
+
+    def build(self, lane_map):
+        """`coverage build` whose fake lane leaves `lane_map`; `(rc, stderr)`."""
+        import argparse
+        (self.out / "coverage.json").write_text(json.dumps(lane_map), encoding="utf-8")
+        parser = argparse.ArgumentParser()
+        coverage.register(parser.add_subparsers())
+        args = parser.parse_args(["coverage", "build", "--lane", "lane-a", "--out-dir",
+                                  str(self.out), "--db", str(self.db)])
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(self.hosts),
+                                          "MECLAW_PIPELINE_COVERAGE_DIR": str(self.maps)}), \
+                mock.patch.object(coverage, "lane_up", return_value=True), \
+                mock.patch.object(coverage, "resolve_rev", return_value="r9"), \
+                mock.patch.object(coverage.subprocess, "run",
+                                  side_effect=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0)), \
+                mock.patch.object(sys, "stdout", io.StringIO()), \
+                mock.patch.object(sys, "stderr", err):
+            rc = coverage._cmd_coverage(args)
+        return rc, err.getvalue()
+
+    def journal(self, event):
+        db = store.open_ro(self.db)
+        try:
+            return [json.loads(r[0]) for r in db.execute(
+                "SELECT data FROM journal WHERE event=?", (event,))]
+        finally:
+            store.close(db)
+
+    def installed(self):
+        cov, why = coverage.load_map(coverage.map_path("r9", self.maps))
+        self.assertIsNone(why)
+        return cov
+
+    def test_a_red_build_keeps_the_green_map_of_the_same_rev(self):
+        green = self.green()
+        coverage.map_path("r9", self.maps).write_text(json.dumps(green), encoding="utf-8")
+        red = coverage.coverage_map("r9", "lane-a", self.parts, 2.0, 1,
+                                    built_at="2026-11-16T02:00:00Z", run_ok=False,
+                                    expected_ids=["alpha"], nextest_exit=100,
+                                    red_tests=["alpha t::broken"])
+        rc, err = self.build(red)
+        self.assertEqual(coverage.RED_EXIT, rc, err)
+        self.assertEqual("GREEN", coverage.verdict_of(self.installed()))
+        self.assertEqual(green["built_at"], self.installed()["built_at"])
+        # reported and journaled as before; the red map stays where the lane left it
+        self.assertIn("alpha t::broken", err)
+        self.assertIn("GREEN map of r9 stays installed", err)
+        # the lane map is only there until the next build into the same --out-dir
+        self.assertIn("this run's map is at %s until the next build" % (self.out / "coverage.json"),
+                      err)
+        self.assertEqual("RED", coverage.verdict_of(json.loads(
+            (self.out / "coverage.json").read_text(encoding="utf-8"))))
+        self.assertEqual([("coverage_red", "r9", 1)],
+                         [(f["rule"], f["subject"], f["value"])
+                          for f in self.journal("process_finding")])
+        # no `coverage_built` claims a map the store does not hold
+        self.assertEqual([], self.journal("coverage_built"))
+
+    def test_an_incomplete_build_keeps_the_green_map_of_the_same_rev(self):
+        green = self.green()
+        coverage.map_path("r9", self.maps).write_text(json.dumps(green), encoding="utf-8")
+        partial = coverage.coverage_map("r9", "lane-a", self.parts, 2.0, 1,
+                                        built_at="2026-11-16T02:00:00Z",
+                                        expected_ids=["alpha", "beta"])
+        self.assertEqual("INCOMPLETE", coverage.verdict_of(partial))
+        rc, err = self.build(partial)
+        self.assertEqual(1, rc, err)
+        self.assertEqual(green["built_at"], self.installed()["built_at"])
+        self.assertIn("GREEN map of r9 stays installed", err)
+        self.assertEqual(["coverage_incomplete"],
+                         [f["rule"] for f in self.journal("process_finding")])
+        self.assertEqual([], self.journal("coverage_built"))
+
+    def test_without_a_green_map_a_red_build_is_installed_as_before(self):
+        red = coverage.coverage_map("r9", "lane-a", self.parts, 2.0, 1,
+                                    built_at="2026-11-16T02:00:00Z", run_ok=False,
+                                    expected_ids=["alpha"], nextest_exit=100,
+                                    red_tests=["alpha t::broken"])
+        old_red = dict(red, built_at="2026-11-15T02:00:00Z")
+        coverage.map_path("r9", self.maps).write_text(json.dumps(old_red), encoding="utf-8")
+        rc, err = self.build(red)
+        self.assertEqual(coverage.RED_EXIT, rc, err)
+        self.assertEqual(red["built_at"], self.installed()["built_at"])
+        self.assertNotIn("stays installed", err)
+        # review I1: without a kept GREEN map nothing is appended -- the line ends on
+        # the rdeps notice, not on a stray `False`
+        self.assertTrue(err.rstrip().splitlines()[-1].endswith(
+            "-- a finding (coverage_red), impact keeps rdeps"), err)
+        self.assertEqual(1, len(self.journal("coverage_built")))
+
+    def test_without_a_green_map_an_incomplete_build_line_ends_on_the_rdeps_notice(self):
+        partial = coverage.coverage_map("r9", "lane-a", self.parts, 2.0, 1,
+                                        built_at="2026-11-16T02:00:00Z",
+                                        expected_ids=["alpha", "beta"])
+        rc, err = self.build(partial)
+        self.assertEqual(1, rc, err)
+        self.assertEqual(partial["built_at"], self.installed()["built_at"])
+        self.assertTrue(err.rstrip().splitlines()[-1].endswith(
+            "(missing: beta)) -- impact keeps rdeps"), err)
+        self.assertEqual(1, len(self.journal("coverage_built")))
+
+    def test_a_green_build_replaces_a_green_map(self):
+        old = dict(self.green(), built_at="2026-11-15T00:00:00Z")
+        coverage.map_path("r9", self.maps).write_text(json.dumps(old), encoding="utf-8")
+        rc, err = self.build(self.green())
+        self.assertEqual(0, rc, err)
+        self.assertEqual("2026-11-16T00:00:00Z", self.installed()["built_at"])
+
+
 def _git(repo, *args):
     return subprocess.run(["git", "-C", str(repo)] + list(args), capture_output=True,
                           text=True, check=True).stdout.strip()

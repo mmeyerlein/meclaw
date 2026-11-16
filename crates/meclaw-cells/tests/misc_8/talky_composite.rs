@@ -911,6 +911,9 @@ async fn context_turns_answer_the_turn_with_the_persons_history() {
     patch(root, "main/talky/decide/config.json", |v| {
         v["params"]["base_url"] = json!(decide.base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
+        // GH #1558: without a curve the decider refuses before any request;
+        // the registry pushes it with the model row, here a curve of test data.
+        v["params"]["decision_calibration"] = json!({"yes_no": {"default": [[0, 0], [1, 1]]}, "choice": {"default": [[0, 0], [1, 1]]}});
     });
     patch(root, "main/talky/route/config.json", |v| {
         v["params"]["context_turns"] = json!(3);

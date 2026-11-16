@@ -248,6 +248,24 @@ harness = "curator_sections"
 match = "^gh_d583_raten_route_"
 harness = "assemble_judge"
 
+# GH #1556 (wave jevr): the route's pins of the decisions providers' form beside
+# the route's judge pins.
+[[rule]]
+match = "^gh1556_the_route_"
+harness = "assemble_judge"
+
+# GH #1558 (wave jevr, strand kalib): the route's pin of the uncalibrated
+# decider beside the route's judge pins; the cell's and the registry's pins of
+# the calibration beside the other llm pins (in `misc` they would open a ninth
+# part and move the files of other strands).
+[[rule]]
+match = "^gh1558_the_route_"
+harness = "assemble_judge"
+
+[[rule]]
+match = "^gh1558_"
+harness = "llm"
+
 # GH #1532 (strand raten, point 4): the push's pin of the row's image cost on
 # the memory ask beside grenzen's pin of its rate (curator_sections).
 [[rule]]

@@ -21,6 +21,7 @@ The runner halves (every case once, a red case) live beside the runners in
 
 Run: `python3 -m unittest scripts.tests.test_pipeline_lab_width` from the root.
 """
+import json
 import os
 import pathlib
 import sys
@@ -28,14 +29,14 @@ import tempfile
 import unittest
 from unittest import mock
 
-from scripts.tests import store_isolation
+from scripts.tests import kit_time, store_isolation
 from scripts.tests.test_pipeline_executor import ExecutorCase, station
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
 
 import gate_plan as gp  # noqa: E402
-from scripts.pipeline import executor, plan as pl, ports, schedule  # noqa: E402
+from scripts.pipeline import executor, flakes, plan as pl, ports, schedule  # noqa: E402
 
 SLOTS = "MECLAW_COLONY_SLOTS"
 
@@ -445,28 +446,29 @@ class TestBrowserParts(LabCase):
         self.assertEqual(["browser-chromium", "browser-webkit"], sorted(starts))
         self.assertNotEqual(0, rc)
 
-    def test_a_red_other_part_keeps_an_isolated_flaky_part_red(self):
-        """Fail-closed (GH #1161, re-check M-2): both parts red, the first one isolates
-        green. The isolation only speaks for the first part -- the second part's red
-        keeps the station RED ("later command red"), never FLAKY (greenish). Without
-        the guard in `_run_station` the station ended FLAKY with a red WebKit part.
-        Exit 100 is nextest's test-failure code: any other exit is `unexplained red`
-        before the guard is ever asked."""
+    def test_a_red_other_part_is_triaged_too_and_never_turns_the_station_green(self):
+        """Fail-closed (GH #1161, re-check M-2; #1519): both parts red, each isolates
+        FLAKY. The isolation of the first part speaks only for the first part, so
+        the second red part gets its OWN triage, and the station is judged on both:
+        FLAKY (a finding, counts red), never GREEN and never NOTE without a load
+        flake. Before #1519 only the first part was triaged and the second one's
+        red ended the station "later command red" -- also when every red test of
+        both parts was a load flake. Exit 100 is nextest's test-failure code."""
         self.write_exe(self.tree / "scripts" / "test-tier.sh",
                        "#!/bin/sh\nprintf 'start\\t%s\\n' \"$MECLAW_TIER_PROFILE\" "
                        ">> \"$TIER_CALLS\"\nexit 100\n")
         isolated = []
 
-        def green_isolation(run, st, cmd, log_path, started_wall, junits):
+        def green_isolation(run, st, cmd, log_path, started_wall, junits, share=None):
             isolated.append(cmd)
             return {"verdict": "FLAKY", "isolated": 1, "kind": "nextest", "events": []}
 
         with mock.patch.object(executor._Run, "_isolate", green_isolation):
             rc, evs = self.run_exec(self.dispatch([self.browser_station()]))
         ended = self.ended(evs)["browser:display"]
-        self.assertEqual(1, len(isolated), "only the first red part is isolated")
-        self.assertEqual("RED", ended["verdict"], ended)
-        self.assertIn("later command red", ended.get("reason") or "", ended)
+        self.assertEqual(2, len(isolated), "each red part is triaged, once")
+        self.assertEqual("FLAKY", ended["verdict"], ended)
+        self.assertTrue(executor.ends_red(ended), ended)
         self.assertNotEqual(0, rc)
         starts = [ln[1] for ln in self.tier_lines() if ln[0] == "start"]
         self.assertEqual(["browser-chromium", "browser-webkit"], sorted(starts),
@@ -492,6 +494,140 @@ class TestBrowserParts(LabCase):
             self.assertIn("& not (binary_id(=%s))" % st["parts"][0], args)
         self.assertIn("- %s" % gp.WEBKIT_TESTS, starts[0][1])
         self.assertIn("& %s" % gp.WEBKIT_TESTS, starts[1][1])
+
+
+# Each part leaves its own JUnit file (one nextest profile per part) and ends with
+# nextest's test-failure code: the JUnit of the part is `$JUNIT_SRC/<profile>.xml`.
+FAKE_TIER_JUNIT = """#!/bin/sh
+printf 'start\\t%s\\n' "$MECLAW_TIER_PROFILE" >> "$TIER_CALLS"
+d="$(dirname "$0")/../target/nextest/$MECLAW_TIER_PROFILE"
+mkdir -p "$d"
+cp "$JUNIT_SRC/$MECLAW_TIER_PROFILE.xml" "$d/junit.xml"
+exit 100
+"""
+
+LANE = "load1 3.5 of 12 vCPU + 1 busy loop"
+
+
+def junit(binary, red, green=()):
+    cases = "".join('<testcase name="%s" time="1.0"><failure type="test failure">'
+                    'driver timeout</failure></testcase>' % n for n in red)
+    cases += "".join('<testcase name="%s" time="1.0"/>' % n for n in green)
+    return ('<?xml version="1.0"?><testsuites><testsuite name="%s">%s</testsuite>'
+            '</testsuites>' % (binary, cases))
+
+
+class TestTwoPartLoadFlakes(LabCase):
+    """#1519: `browser:display` runs two parts, and both had red tests that the
+    triage found green in T1 and in T2 at about 30 % lane load. The runner triaged
+    the first part only, the second part's red ended the station RED ("isolated
+    flaky, later command red: exit 100"), and the receipt's `load_flake` stayed
+    empty. The triage here is a fake (no real runs): it answers per test name,
+    T1 red for the names in `t1_red`, otherwise green in every step with the lane
+    proven -- `load_flake: true`."""
+
+    BIN = "meclaw-cells::browser"
+    browser_station = TestBrowserParts.browser_station
+
+    def setUp(self):
+        super().setUp()
+        self.write_exe(self.bin / "node", "#!/bin/sh\nexit 0\n")
+        (self.tree / "workshop" / "tools" / "node_modules" / "playwright").mkdir(parents=True)
+        self.write_exe(self.tree / "scripts" / "test-tier.sh", FAKE_TIER_JUNIT)
+        self.src = self.root / "junit-src"
+        self.src.mkdir()
+        self.t1_red = set()
+        self.triaged = []
+
+    def fake_triage(self, station, kind, results, run_cmd, issues, cap=5, **kw):
+        cands, over = flakes.isolation_candidates(results, cap=cap, kind=kind)
+        self.triaged.append(sorted(c["name"] for c in cands))
+        if over:
+            return {"verdict": "RED", "isolated": 0, "reason": flakes.TOO_MANY, "events": []}
+        evs = []
+        for c in cands:
+            ev = {"station": station, "test": c["test"], "count": 2, "green": 2,
+                  "triage": {"t1": "GREEN", "t2": "GREEN"}, "t2_lane": LANE}
+            if c["name"] in self.t1_red:
+                ev.update(verdict="RED", count=1, green=0, triage={"t1": "RED"})
+                del ev["t2_lane"]
+            else:
+                ev.update(verdict="FLAKY", cause=flakes.CAUSE_NONE, load_flake=True)
+            evs.append(ev)
+        reds = [e for e in evs if e["verdict"] == "RED"]
+        if reds:
+            return {"verdict": "RED", "isolated": len(evs), "events": evs,
+                    "reason": "triage T1 red: %s, %d of %d" % (flakes.DEFECT, len(reds), len(evs)),
+                    "where": ", ".join(e["test"] for e in reds)}
+        return {"verdict": "FLAKY", "isolated": len(evs), "reason": flakes.PENDING,
+                "events": evs, "kind": kind, "cause": flakes.CAUSE_NONE, "load_flake": True}
+
+    def run_parts(self, chromium, webkit, triage=None, **kw):
+        (self.src / "browser-chromium.xml").write_text(junit(self.BIN, chromium, ["green_one"]))
+        (self.src / "browser-webkit.xml").write_text(junit(self.BIN, webkit))
+        d = self.dispatch([self.browser_station()])
+        d["+env"]["JUNIT_SRC"] = str(self.src)
+        with mock.patch.object(executor._Run, "_quarantine_argv",
+                               return_value=["--tool-config-file", "q"]), \
+                mock.patch.object(flakes, "triage_station",
+                                  side_effect=triage or self.fake_triage):
+            rc, evs = self.run_exec(d, **kw)
+        receipt = json.loads((self.ws / "receipt.json").read_text())
+        return rc, self.ended(evs)["browser:display"], receipt
+
+    def test_two_red_parts_of_load_flakes_end_note_and_the_receipt_lists_all(self):
+        rc, ended, receipt = self.run_parts(["sheet_a", "sheet_b"], ["sheet_in_webkit"])
+        self.assertEqual([["sheet_a", "sheet_b"], ["sheet_in_webkit"]], self.triaged,
+                         "each red part triaged once, on its own tests")
+        self.assertEqual("NOTE", ended["verdict"], ended)
+        self.assertTrue(ended["reason"].startswith(flakes.LOAD_FLAKE + ": "), ended)
+        want = ["%s::%s" % (self.BIN, n) for n in ("sheet_a", "sheet_b", "sheet_in_webkit")]
+        self.assertEqual(want, [e["test"] for e in ended["load_flake"]], ended)
+        self.assertEqual(want, [e["test"] for e in receipt["load_flake"]], receipt)
+        for e in receipt["load_flake"]:
+            self.assertEqual(({"t1": "GREEN", "t2": "GREEN"}, LANE), (e["triage"], e["t2_lane"]), e)
+        self.assertFalse(executor.ends_red(ended), ended)
+        self.assertEqual(0, rc, self.err_text)
+
+    def test_a_load_flake_and_a_test_red_in_t1_end_red(self):
+        for first_red in (False, True):
+            with self.subTest(t1_red_in_the_first_part=first_red):
+                self.triaged = []
+                self.t1_red = {"sheet_a"} if first_red else {"sheet_in_webkit"}
+                rc, ended, receipt = self.run_parts(["sheet_a"], ["sheet_in_webkit"])
+                self.assertEqual("RED", ended["verdict"], ended)
+                self.assertIn("triage T1 red", ended["reason"], ended)
+                # Issue pin 3: the run's load flake is in the receipt, the verdict
+                # stays. A first part red in T1 decides the station: the second part
+                # is not triaged (no lane time on a settled verdict), so no test of
+                # it was classified.
+                want = [] if first_red else ["%s::sheet_a" % self.BIN]
+                self.assertEqual(want, [e["test"] for e in receipt["load_flake"]], receipt)
+                self.assertEqual(1 if first_red else 2, len(self.triaged), self.triaged)
+                self.assertTrue(executor.ends_red(ended), ended)
+                self.assertNotEqual(0, rc)
+
+    def test_one_isolation_budget_holds_for_every_red_part(self):
+        """Delta I1 per station, not per part: each triage spends 36 s of the
+        station's 60 s on the fake clock (TV-K1), so the second part's triage finds
+        the budget spent -- a fresh budget per part would read 36 of 60."""
+        clock = kit_time.FakeClock()
+        seen = []
+
+        def timed(*a, **kw):
+            clock.advance(36)
+            seen.append(kw["expired"]())
+            return self.fake_triage(*a, **kw)
+        self.run_parts(["sheet_a"], ["sheet_in_webkit"], triage=timed, clock=clock.monotonic)
+        self.assertEqual([False, True], seen)
+
+    def test_the_cap_of_red_tests_holds_for_the_station(self):
+        """Six red tests over two parts are more than the station's cap of five:
+        RED, as when one part held all six -- the cap is not per part."""
+        rc, ended, receipt = self.run_parts(["a1", "a2", "a3", "a4"], ["w1_in_webkit", "w2_in_webkit"])
+        self.assertEqual("RED", ended["verdict"], ended)
+        self.assertIn(flakes.TOO_MANY, ended["reason"], ended)
+        self.assertEqual(4, len(receipt["load_flake"]), receipt)
 
 
 class TestBrowserColonyWidth(unittest.TestCase):

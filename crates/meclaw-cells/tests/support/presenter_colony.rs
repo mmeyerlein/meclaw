@@ -85,6 +85,11 @@ pub struct Dials {
     /// what the test hands it leaves as the talky's `verdict` and reaches the presenter as
     /// `in_verdict`. Off by default: every other lock keeps its wiring.
     pub stamp_way: bool,
+    /// GH #1558: the decider born with an identity curve of test data (`true`, every
+    /// lock's default, so a verdict keeps the probability the test answers with); `false`
+    /// births it without one, as the shipped template is born before the registry's push,
+    /// so it answers `decision_uncalibrated` before any request.
+    pub calibrated: bool,
 }
 
 impl Default for Dials {
@@ -98,6 +103,7 @@ impl Default for Dials {
             window_requires_star_data: Value::Null,
             decide_timeout_ms: 25_000,
             stamp_way: false,
+            calibrated: true,
         }
     }
 }
@@ -128,6 +134,16 @@ pub async fn boot(d: Dials) -> Stage {
             v["params"]["model"] = json!("mock-decider");
             v["params"]["api_key"] = json!("fake-key");
             v["params"]["base_url"] = json!(format!("http://{addr}"));
+            // GH #1558: without a curve the decider refuses before any request;
+            // the registry pushes it with the model row. An identity curve of test
+            // data keeps every verdict of these locks at the probability the test
+            // answers with.
+            if d.calibrated {
+                v["params"]["decision_calibration"] = json!({
+                    "yes_no": {"default": [[0, 0], [1, 1]]},
+                    "choice": {"default": [[0, 0], [1, 1]]}
+                });
+            }
             // The test HOLDS the decider until it has seen what it waits for; the
             // shipped 3 s backstop would fire first on a cold lane (a red run: the
             // held `t1` came back `error_code timeout` after 3002 ms). The verdict's
@@ -273,7 +289,9 @@ sys.stdout.write(json.dumps({
 ///
 /// OR-DP.P.3 / OR-DP-57: the shape is the hosted service's answer as strand E's
 /// `decisions` translate reads it back (`answers.<key>` = `{type, choice,
-/// probabilities, confidence}`); it is spelled once, here. A key the test does
+/// probabilities, confidence}`); it is spelled once, here, under the CELL keys
+/// (`topic`, `sample.lead`, ...). The wire carries neutral keys `q1..qN` (GH #1550):
+/// [`Held::release`] moves the answers onto them for the request it answers. A key the test does
 /// not name gets the quiet default of the one topic the locks use:
 /// `sample.lead` = the standard `brief`, `sample.also` = `none` -- an omitted
 /// key is a partial decision since GH #977, which `decision_without` says.
@@ -315,6 +333,112 @@ pub fn decision_without(answers: &[(&str, &str, f64)], omit: &[&str]) -> MockRes
         .to_string()
         .as_bytes(),
     )
+}
+
+/// A request the held decider waits on ([`Stage::ask`]); it reads like the
+/// [`HeldRequest`] it wraps.
+pub struct Held(HeldRequest);
+
+impl std::ops::Deref for Held {
+    type Target = HeldRequest;
+    fn deref(&self) -> &HeldRequest {
+        &self.0
+    }
+}
+
+impl Held {
+    /// Answer the held request with `response`, now. A verdict spelled under the cell
+    /// keys ([`decision`]) goes out under the wire keys of THIS request (GH #1550); a
+    /// body without `answers` (an error, a non-JSON body) goes out as it is.
+    pub fn release(self, response: MockResponse) {
+        let keys = wire_keys(&self.0.json());
+        self.0.release(onto_wire(response, &keys));
+    }
+}
+
+/// GH #1550: `(cell key, wire key)` of every question of a presenter's decisions
+/// request, rebuilt from the request alone. The translate numbers the questions
+/// `q1..qN` in the sorted order of the cell keys. The presenter asks `topic` over its
+/// topics plus `none`, per topic `t` the question `t.also` (its options end in `none`)
+/// and `t.lead` where `t` has more than one candidate (no `none` among its options).
+/// So the options of `topic` name every topic, the sorted key list is known up to the
+/// leads, and a question without a `none` option is a lead. Which question is `topic`
+/// is not read off its wording: exactly one question with a `none` option must make
+/// the whole list fit, or the request is no presenter's and the helper says so.
+pub fn wire_keys(request: &Value) -> Vec<(String, String)> {
+    let qs = request["questions"]
+        .as_object()
+        .unwrap_or_else(|| panic!("a decisions request carries questions: {request}"));
+    let wire: Vec<String> = (1..=qs.len()).map(|i| format!("q{i}")).collect();
+    for w in &wire {
+        assert!(
+            qs.contains_key(w),
+            "the wire numbers its questions q1..qN: {request}"
+        );
+    }
+    let has_none = |w: &String| qs[w]["criteria"].get("none").is_some();
+    let mut fits = Vec::new();
+    for (at, w) in wire.iter().enumerate().filter(|(_, w)| has_none(w)) {
+        let topics = qs[w]["criteria"]
+            .as_object()
+            .expect("choice criteria")
+            .keys();
+        let mut cells: Vec<String> = topics
+            .filter(|t| t.as_str() != "none")
+            .flat_map(|t| [format!("{t}.also"), format!("{t}.lead")])
+            .collect();
+        cells.push("topic".to_string());
+        cells.sort();
+        // Walk the sorted cell keys along q1..qN: a lead stands where the next
+        // question has no `none` option, every other key needs one that has.
+        let mut out = Vec::new();
+        let mut next = wire.iter().peekable();
+        let mut ok = true;
+        for cell in &cells {
+            let lead = cell.ends_with(".lead");
+            match next.peek() {
+                Some(w) if lead != has_none(w) => {
+                    out.push((cell.clone(), (*w).clone()));
+                    next.next();
+                }
+                _ if lead => {}
+                _ => ok = false,
+            }
+        }
+        let topic_at = out.iter().position(|(c, _)| c == "topic");
+        if ok && next.peek().is_none() && topic_at == Some(at) {
+            fits.push(out);
+        }
+    }
+    assert_eq!(
+        fits.len(),
+        1,
+        "one reading of the presenter's questions: {request}"
+    );
+    fits.remove(0)
+}
+
+/// `response` with its `answers` moved from the cell keys onto the wire keys of
+/// `keys`; an answer to a cell key the request did not ask goes nowhere, as the
+/// translate would ignore it.
+fn onto_wire(response: MockResponse, keys: &[(String, String)]) -> MockResponse {
+    let Ok(mut doc) = meclaw_core::serde_json::from_slice::<Value>(&response.body) else {
+        return response;
+    };
+    let Some(answers) = doc.get("answers").and_then(Value::as_object) else {
+        return response;
+    };
+    let mut wire = Map::new();
+    for (cell, w) in keys {
+        if let Some(a) = answers.get(cell) {
+            wire.insert(w.clone(), a.clone());
+        }
+    }
+    doc["answers"] = Value::Object(wire);
+    MockResponse {
+        body: doc.to_string().into_bytes(),
+        ..response
+    }
 }
 
 /// The generic topic `sample`: standard `brief` (a card), `rows` (a list), `steps`
@@ -667,13 +791,13 @@ impl Stage {
 
     /// The next request the decider holds.
     // no-settle: the event itself: the next request the decider holds
-    pub async fn ask(&mut self) -> HeldRequest {
+    pub async fn ask(&mut self) -> Held {
         // Re-check tv-bn M7b M1 (TV-S1): `recv` under the hang mark, not a `try_recv` polled
         // under `within_hang`. A hang names the routes that had left /alex when it began.
         let routes = routes_of(&self.held);
         let decider = self.decider.open_mut();
         let got = async move { decider.recv().await.expect("the decider stands") };
-        meclaw_testing::deadline::hang_with("the decider is asked", got, move || routes).await
+        Held(meclaw_testing::deadline::hang_with("the decider is asked", got, move || routes).await)
     }
 
     /// The journal rows `stage` wrote, oldest first (the store bundles at `store`).

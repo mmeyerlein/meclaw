@@ -402,11 +402,12 @@ fn what_the_recipe_announces_is_what_the_cell_states() {
             "presenter/decide",
             "simple-agent/brain",
             "simple-agent/strong",
-            "talky/brain"
+            "talky/brain",
+            "talky/decide"
         ],
         "the recipe announces the assistant's brains, its curator summarizers (GH #877), \
-         the member's memory cells, the presenter's decider (GH #963, PE-DP-11) and the \
-         simple-agent's two model cells (GH #1310)"
+         the member's memory cells, the presenter's decider (GH #963, PE-DP-11), the \
+         simple-agent's two model cells (GH #1310) and each talky's decider (GH #1559)"
     );
     for (cell, copy) in &copies {
         let cfg = read_json(&repo(&format!("templates/{cell}/config.json")));
@@ -835,13 +836,23 @@ fn a_catalogue_row_a_subscriber_cannot_take_is_refused() {
     foreign["model_id"] = json!("test/foreign-decider");
     foreign["base_url"] = json!("https://decide.example/api");
     let refused = push_refusals(&with_row(foreign));
+    // GH #1559: the deciders are the presenter's and each talky's, and no chat
+    // cell is among the refusing.
+    let decider = |r: &String| r.contains("presenter/decide") || r.contains("talky/decide");
     assert!(
         !refused.is_empty()
             && refused
                 .iter()
-                .all(|r| r.contains("presenter/decide") && r.contains("https://decide.example/api")),
-        "a decisions endpoint the decider does not admit is refused by the decider alone: {refused:?}"
+                .all(|r| decider(r) && r.contains("https://decide.example/api")),
+        "a decisions endpoint the deciders do not admit is refused by the deciders alone: {refused:?}"
     );
+    for cell in ["presenter/decide", "talky/decide"] {
+        assert!(
+            refused.iter().any(|r| r.contains(cell)),
+            "`{cell}` is an announced decisions subscriber and refuses the foreign endpoint: \
+             {refused:?}"
+        );
+    }
 }
 
 #[test]

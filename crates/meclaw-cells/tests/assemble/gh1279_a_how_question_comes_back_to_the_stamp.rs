@@ -610,10 +610,10 @@ fn hints_inside_the_budget_render_as_before() {
     let hints = long_hints();
     let lines: Vec<(String, usize)> = hints.as_array().unwrap().iter().map(hint_line).collect();
     let state = decide_state_within(judge_with(json!([]), hints), 1500);
-    // The screen line follows the hints in every judged state, as it always
-    // did in a colony (the curator always answered a screen, D58 GH #1480).
+    // The request follows the hints: no screen line, no screen state reaches the
+    // curator (GH #1556).
     let block = format!(
-        "How this person meant earlier requests when asked (newest first):\n{}\n{}\n{}\n\nOn the screen right now:\n- nothing\n\nThe request now:",
+        "How this person meant earlier requests when asked (newest first):\n{}\n{}\n{}\n\nThe request now:",
         lines[0].0, lines[1].0, lines[2].0
     );
     assert!(state.contains(&block), "{state}");

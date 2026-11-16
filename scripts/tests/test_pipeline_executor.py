@@ -857,7 +857,7 @@ class TestExecutorEvents(ExecutorCase):
         line books exactly the 137."""
         clock = kit_time.FakeClock()
 
-        def slow_isolation(run, st, cmd, log_path, started_wall, junits):
+        def slow_isolation(run, st, cmd, log_path, started_wall, junits, share=None):
             clock.advance(137)
             return {"verdict": "FLAKY", "isolated": 1, "kind": "unittest", "events": []}
 

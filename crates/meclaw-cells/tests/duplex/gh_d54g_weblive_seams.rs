@@ -158,6 +158,12 @@ fn frame(n: u8) -> Vec<u8> {
     vec![n; FRAME_BYTES]
 }
 
+/// Half of the audio of the answer `is held responsible because he controls
+/// the vehicle.`: 1.5 s, so the two halves carry its 52 characters at the
+/// fastest plausible speaking rate (GH #1557: a turn keeps only the words
+/// its audio carried, at most one character per 30 ms).
+const ANSWER_AUDIO_BYTES: usize = 48_000;
+
 /// `len` bytes of PCM16 at a steady 8 000: audible speech.
 fn speech(len: usize) -> Vec<u8> {
     (0..len / 2).flat_map(|_| 8_000i16.to_le_bytes()).collect()
@@ -451,7 +457,10 @@ async fn gh_d54g_weblive_seam_the_open_turn_closes_with_the_end_before_the_final
 }
 
 /// How many chunks of the model's answer the person hears before going.
-const SPOKEN_CHUNKS: usize = 3;
+/// One frame each, 20 ms: the 27 carry 540 ms, 18 characters of the answer
+/// at one per 30 ms (GH #1557) -- some words heard, the rest not. One frame per chunk,
+/// so each chunk the caller heard is one the connection counted.
+const SPOKEN_CHUNKS: usize = 27;
 
 /// `gh_d54g_callseam_a_sentence_cut_by_the_end_is_marked_cut`: the person
 /// goes while the model is in the middle of its answer, and the turn says the
@@ -503,7 +512,41 @@ async fn a_sentence_cut_by_the_end(access: Access) {
     assert_eq!(closed.len(), 1, "one turn: {:?}", routes(&seen));
     let turn = closed[0];
     assert_eq!(said_by(turn, "user"), ASKED, "{turn}");
-    assert_eq!(said_by(turn, "assistant"), ANSWER, "{turn}");
+    // GH #1557: the model's part holds only the words its audio carried,
+    // cut at a word boundary; the rest stands as `unsaid`, and together they
+    // are the whole answer.
+    // The cut part ends on the mark "\u{2026}" -- every reader sees the answer
+    // broke off there.
+    let marked = said_by(turn, "assistant");
+    assert!(
+        marked.len() > '\u{2026}'.len_utf8() && marked.ends_with('\u{2026}'),
+        "the heard words stand and end on the mark: {turn}"
+    );
+    let said = marked
+        .strip_suffix('\u{2026}')
+        .unwrap_or(&marked)
+        .to_string();
+    let unsaid = header(turn, "unsaid").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        !said.contains('\u{2026}') && (unsaid.trim().is_empty() || !marked.contains(unsaid.trim())),
+        "the mark stands once, and `unsaid` never reaches `messages`: {turn}"
+    );
+    assert!(
+        ANSWER.starts_with(&said)
+            && (said.is_empty() || ANSWER[said.len()..].starts_with(char::is_whitespace)),
+        "the model's part is a word-boundary prefix of its answer: {turn}"
+    );
+    assert!(
+        !unsaid.is_empty(),
+        "the unheard rest stands as `unsaid`: {turn}"
+    );
+    assert_eq!(
+        format!("{said} {unsaid}")
+            .split_whitespace()
+            .collect::<Vec<_>>(),
+        ANSWER.split_whitespace().collect::<Vec<_>>(),
+        "said and unsaid together are the answer: {turn}"
+    );
     assert_eq!(
         header(turn, "cut"),
         Some(&json!(true)),
@@ -1391,10 +1434,13 @@ async fn a_first_answer_ahead_of_its_audio(access: Access) {
     tokio::time::advance(Duration::from_millis(300)).await;
     session
         .audio_out
-        .send(speech(9_600))
+        .send(speech(ANSWER_AUDIO_BYTES))
         .await
         .expect("the connection takes model audio");
-    let _ = line.hear().await;
+    // Every frame of it reaches the caller.
+    for _ in 0..ANSWER_AUDIO_BYTES / FRAME_BYTES {
+        let _ = line.hear().await;
+    }
     says(
         &session,
         Speaker::Assistant,
@@ -1405,10 +1451,13 @@ async fn a_first_answer_ahead_of_its_audio(access: Access) {
     .await;
     session
         .audio_out
-        .send(speech(9_600))
+        .send(speech(ANSWER_AUDIO_BYTES))
         .await
         .expect("the connection takes model audio");
-    let _ = line.hear().await;
+    // Every frame of it reaches the caller.
+    for _ in 0..ANSWER_AUDIO_BYTES / FRAME_BYTES {
+        let _ = line.hear().await;
+    }
     says(&session, Speaker::User, "And when?", 6_000, 6_600).await;
     let answer = loop {
         let e = next_emission(&mut live, "the `turn` with the whole answer", &seen).await;

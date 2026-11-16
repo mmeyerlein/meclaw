@@ -660,7 +660,14 @@ fn a_brain_whose_announcement_is_no_literal_is_left_out_and_said() {
         3,
         "the curator summarizers keep their push edges: {road:?}"
     );
-    assert_eq!(pushes.len(), 4, "nothing else on the road: {road:?}");
+    // GH #1559: each talky's decider is born on no model and announced with
+    // none, so a start value of the ctx never takes it off the road.
+    assert_eq!(
+        aimed_at("decide").len(),
+        2,
+        "the talky deciders keep their push edges: {road:?}"
+    );
+    assert_eq!(pushes.len(), 6, "nothing else on the road: {road:?}");
     let announced = road
         .iter()
         .find(|e| e["to"] == ".")

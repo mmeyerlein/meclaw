@@ -71,18 +71,21 @@ catalog (`input_soft_fallback` {model_id: input_soft}), its `catalog` field
 instead (GH #1544): the hit `<key>.<model_id> = v` is justified exactly while
 the catalog row of `<model_id>` holds `v` in that field. A current render is
 green; a stale render, a model without a row and a missing catalog are not
-justified. The catalog is the file `--catalog` names, else `CATALOG_FILE` of
-the tree, else -- only in a tree without one (a repository whose catalog comes
-from a release asset) -- the file `FIXED_CAPS_CATALOG` names. A diff at the
-tree's catalog grades the whole scope: a new row value can stale a render.
+justified. The catalog is the file `--catalog` names, else the file the rules
+file names as `catalog_file` (repository-relative: a repository whose catalog
+comes from a release asset carries a snapshot of it beside its render, GH #1548),
+else `CATALOG_FILE` of the tree, else -- only in a tree without one -- the file
+`FIXED_CAPS_CATALOG` names. A diff at the catalog the tree reads grades the whole
+scope: a new row value can stale a render.
 
 Every rule carries its reason in English. The baseline is a count per
 fingerprint `<path>|<name>|<value>` (line numbers stay out, so moving code is
 no finding); one occurrence more than the baseline holds is RED.
 
 In the precheck the check grades the files of the diff. A diff that touches
-this module, the rules or the baseline grades the whole scope, and only then
-a baseline entry the tree no longer carries is a NOTE (`--write-baseline`).
+this module, the rules, the baseline or the catalog the tree reads grades the
+whole scope, and only then a baseline entry the tree no longer carries is a
+NOTE (`--write-baseline`).
 
 A FROZEN COPY is stock: a file that `git diff -C -C` against the merge base
 finds as a 100 % copy (`C100`) of a file of the base -- a template frozen as
@@ -119,6 +122,7 @@ import ast
 import collections
 import json
 import os
+import posixpath
 import re
 import sys
 import tokenize
@@ -709,6 +713,31 @@ def location(hit):
 
 # --- rules and baseline ----------------------------------------------------------
 
+# `catalog_file` names no usable file: a catalog rule then justifies nothing,
+# and `grade` reports the rules file (never a fallback to another catalog).
+INVALID_CATALOG = "\0invalid"
+
+
+def catalog_file(repo):
+    """The catalog the rules file names (`catalog_file`): the normalized
+    repository-relative path; None when the rules file names none;
+    `INVALID_CATALOG` when the value is no non-empty string or leaves the
+    repository (absolute, `..`) -- GH #1548."""
+    try:
+        doc = json.loads(_read(os.path.join(repo, RULES_FILE)) or "{}")
+    except ValueError:
+        return None                       # the rules file itself is reported by `grade`
+    if not isinstance(doc, dict) or "catalog_file" not in doc:
+        return None
+    named = doc["catalog_file"]
+    if not isinstance(named, str) or not named.strip():
+        return INVALID_CATALOG
+    norm = posixpath.normpath(named.strip())
+    if posixpath.isabs(norm) or norm in (".", "..") or norm.startswith("../"):
+        return INVALID_CATALOG
+    return norm
+
+
 def load_rules(repo):
     """The rules of the tree; none when it carries no rules file (every hit then
     needs the baseline)."""
@@ -723,12 +752,18 @@ def load_rules(repo):
 
 def load_catalog(repo, path=None):
     """model_id -> row of the catalog (`models.jsonl`, its schema line aside):
-    `path`, else `CATALOG_FILE` of the tree, else -- a tree without one -- the
-    file `FIXED_CAPS_CATALOG` names. Empty when no file is found: a catalog
-    rule then justifies nothing."""
+    `path`, else the rules file's `catalog_file`, else `CATALOG_FILE` of the
+    tree, else -- a tree without one -- the file `FIXED_CAPS_CATALOG` names.
+    Empty when no file is found: a catalog rule then justifies nothing."""
     own = os.path.join(repo, CATALOG_FILE)
+    named = catalog_file(repo)
     if not path:
-        path = own if os.path.isfile(own) else os.environ.get(CATALOG_ENV)
+        if named == INVALID_CATALOG:
+            return {}
+        if named:
+            path = os.path.join(repo, named)
+        else:
+            path = own if os.path.isfile(own) else os.environ.get(CATALOG_ENV)
     text = _read(path) if path else None
     rows = {}
     for line in (text or "").splitlines():
@@ -801,8 +836,15 @@ def rule_for(hit, rules, catalog=None):
 def grade(repo, paths, whole=False, copies=frozenset(), catalog=None):
     """The findings over `paths` (the whole scope with `whole`); a frozen copy
     of `copies` is stock and not graded; `catalog` names the catalog file."""
-    rules, base = load_rules(repo), load_baseline(repo)
+    try:
+        rules, base = load_rules(repo), load_baseline(repo)
+    except (ValueError, KeyError, TypeError, AttributeError, re.error) as e:
+        return [Finding("RED", CHECK, "%s or %s is unreadable (%s: %s); nothing is graded until it reads"
+                                      % (RULES_FILE, BASELINE_FILE, type(e).__name__, e))]
     rows = load_catalog(repo, catalog)
+    bad = [] if catalog or catalog_file(repo) != INVALID_CATALOG else [Finding(
+        "RED", CHECK, "%s names an invalid catalog_file (a non-empty repository-relative path, never absolute or "
+                      "outside the repository); the catalog rules justify nothing" % RULES_FILE)]
     by_fp = collections.OrderedDict()
     for path in paths:
         if path in copies:
@@ -810,7 +852,7 @@ def grade(repo, paths, whole=False, copies=frozenset(), catalog=None):
         for hit in hits_of(repo, path):
             if rule_for(hit, rules, rows) is None:
                 by_fp.setdefault(fingerprint(hit), []).append(hit)
-    out = []
+    out = list(bad)
     for fp, hits in by_fp.items():
         held = base.get(fp, 0)
         if len(hits) <= held:
@@ -858,7 +900,12 @@ def ratchet(repo, base):
         old = None
     if old is None:
         return unread
-    grown = [(fp, old.get(fp, 0), n) for fp, n in sorted(load_baseline(repo).items()) if n > old.get(fp, 0)]
+    try:
+        mine = load_baseline(repo)
+    except (ValueError, KeyError, TypeError) as e:
+        return [Finding("RED", CHECK, "%s is unreadable (%s: %s); its growth is not graded until it reads"
+                                      % (BASELINE_FILE, type(e).__name__, e))]
+    grown = [(fp, old.get(fp, 0), n) for fp, n in sorted(mine.items()) if n > old.get(fp, 0)]
     copies = copies_of(repo, base, {fp_path(fp) for fp, _, _ in grown})
     return [Finding("RED", CHECK, "the baseline grew against the merge base %s: %s (the base holds %d, the tree %d); "
                                   "the baseline only shrinks -- read the value from the model's catalog row, or "
@@ -879,8 +926,9 @@ def grade_tree(repo, base=tb._UNSET, catalog=None):
 
 def scan(files, repo, base=tb._UNSET):
     """The precheck station: the files of the diff, the whole scope when the
-    diff touches the check, its rules or its baseline; a diff at the baseline
-    is held against the baseline of the merge base."""
+    diff touches the check, its rules, its baseline or the catalog the tree
+    reads (`CATALOG_FILE`, the rules file's `catalog_file`); a diff at the
+    baseline is held against the baseline of the merge base."""
     if base is tb._UNSET:
         base = tb.merge_base(repo)
     out = []
@@ -890,7 +938,7 @@ def scan(files, repo, base=tb._UNSET):
         else:
             out.append(Finding("NOTE", CHECK, "no merge base with master or main -- the baseline cannot be "
                                               "held against its base, its growth is not graded"))
-    if any(f in SELF_FILES for f in files):
+    if any(f in SELF_FILES for f in files) or catalog_file(repo) in {posixpath.normpath(f) for f in files}:
         paths = scope_files(repo)
         return grade(repo, paths, whole=True, copies=copies_of(repo, base, paths)) + out
     paths = [f for f in files if in_scope(f)]
@@ -920,8 +968,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    ap.add_argument("--catalog", help="the catalog file the catalog rules read (default: %s of the tree)"
-                    % CATALOG_FILE)
+    ap.add_argument("--catalog", help="the catalog file the catalog rules read (default: the rules file's "
+                    "catalog_file, else %s of the tree, else $%s)" % (CATALOG_FILE, CATALOG_ENV))
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--write-baseline", action="store_true", help="write the baseline from the tree")
     mode.add_argument("--list", action="store_true", help="every finding with its verdict")

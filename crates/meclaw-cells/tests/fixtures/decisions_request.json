@@ -2,7 +2,7 @@
   "model": "vendor/decider",
   "state": "The user said: Will it rain in the city tomorrow afternoon?",
   "questions": {
-    "topic": {
+    "q1": {
       "type": "choice",
       "instructions": "Which topic does the request belong to?",
       "criteria": {
@@ -11,14 +11,9 @@
         "none": "Fits none of the topics"
       }
     },
-    "wants_screen": {
+    "q2": {
       "type": "noul",
       "instructions": "Would the person benefit from seeing the answer on a screen?"
-    },
-    "urgency": {
-      "type": "score",
-      "instructions": "How urgent is the request?",
-      "criteria": ["low", "medium", "high"]
     }
   }
 }

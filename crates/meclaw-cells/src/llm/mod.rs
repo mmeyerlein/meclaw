@@ -4,6 +4,7 @@
 //! surface is documented in `docs/cell-types.md` § `llm`.
 
 pub mod auth;
+pub mod calibration;
 pub mod cell;
 pub(crate) mod continuation;
 pub mod factory;
