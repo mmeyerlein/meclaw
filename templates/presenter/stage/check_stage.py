@@ -617,6 +617,13 @@ def t_partial(s, t):
     t.check("missing read", s.missing_of({"decision": {"missing": ["b", 3, "a", "a"]}}),
             ["a", "b"])
     t.check("missing absent", s.missing_of({"decision": {}}), [])
+    # GH #1561: a question the decider has no curve for is named in `uncalibrated`,
+    # never answered; it falls back like a missing answer, read the same way
+    t.check("uncalibrated read as missing",
+            s.missing_of({"decision": {"missing": ["b"], "uncalibrated": ["topic", 3, "a"]}}),
+            ["a", "b", "topic"])
+    t.check("uncalibrated topic: no topic",
+            s.topic_missing({"decision": {"answers": {}, "uncalibrated": ["topic"]}}), True)
     # a late, partial verdict changes nothing on the screen
     c.run({"route": "turn", "turn_id": "m6"}, {"messages": [{"type": "text", "text": "x"}]})
     c.tick(s.DEFAULTS["budget_ms"])

@@ -533,6 +533,11 @@ fn only_the_bound_ingress_names_a_speaker_and_only_a_close_drops_it() {
     // firewall's warden hands a RELEASED turn back the speaker its own ingress
     // stamped (`hop.ctx_speaker`, carried out of the parked row by the warden
     // itself) -- or none -- instead of the speaker of whoever released it.
+    // GH #1564 (OR-54g-274/275): the living collector's `clock` hands a woken
+    // turn back its own speaker the same way. Its park is bound to the turn's
+    // `turn_id`, taken only from the wiring's own context, and dropped with
+    // the turn (`gh1564_the_order_hands_on_only_its_own_turns_park`,
+    // `gh1564_the_park_comes_off_the_turns_own_context`). No further edge.
     let setters: Vec<String> = all
         .iter()
         .filter(|(_, e)| e["modifier"]["set_context"].get("speaker").is_some())
@@ -546,8 +551,10 @@ fn only_the_bound_ingress_names_a_speaker_and_only_a_close_drops_it() {
     assert_eq!(
         setters,
         vec![
+            "collector/config.json: \"./clock\" -> \"./assemble\" = \"has(hop.ctx_speaker) ? hop.ctx_speaker : ''\""
+                .to_string(),
             "firewall/config.json: \"./warden\" -> \".\" = \"has(hop.ctx_speaker) ? hop.ctx_speaker : ''\""
-                .to_string()
+                .to_string(),
         ],
         "a shipped edge names a speaker without a sender proof"
     );

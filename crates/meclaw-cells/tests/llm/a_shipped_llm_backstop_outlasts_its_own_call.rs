@@ -323,3 +323,33 @@ fn the_test_backstop_clears_the_test_product_wait() {
         "the process's helpers are the walked ones at its own factor"
     );
 }
+
+/// GH #1563: a set gives talky's decider `external_timeout_ms` 5000. The
+/// shipped `talky/decide` backstop must clear that call by the rule on its
+/// own, so the spawn does not raise it and writes no GH #1099 WARN at every
+/// birth: 5000 + max(10 s, 10 %) = 15 000 ms.
+#[test]
+fn talky_decide_clears_the_call_a_set_gives_it() {
+    const SET_EXTERNAL_MS: u64 = 5_000;
+    let raw = std::fs::read_to_string(repo("templates/talky/decide/config.json"))
+        .expect("templates/talky/decide/config.json is readable");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&raw).expect("talky/decide config parses");
+    config["params"]["external_timeout_ms"] = serde_json::json!(SET_EXTERNAL_MS);
+    let continuations = serde_json::from_value::<LlmParams>(config["params"].clone())
+        .expect("talky/decide params parse")
+        .length_continuations;
+    let d = deadlines_of(&config).expect("talky/decide deadlines resolve");
+    assert_eq!(d.external_ms, SET_EXTERNAL_MS);
+    assert_eq!(
+        meclaw_cells::llm::params::effective_backstop_ms(
+            d.external_ms,
+            continuations,
+            d.backstop_ms
+        ),
+        (d.backstop_ms, None),
+        "talky/decide backstop {:?} ms is raised at spawn under a {SET_EXTERNAL_MS} ms call \
+         (GH #1099 WARN at every birth)",
+        d.backstop_ms
+    );
+}

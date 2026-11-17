@@ -170,6 +170,16 @@ harness = "curator_live"
 match = "^gh_d54g_stamp_route"
 harness = "assemble_judge"
 
+# d54g latesafe (GH #1562): the late-stamp pins sit beside the stamp-route pins.
+[[rule]]
+match = "^gh1562_"
+harness = "assemble_judge"
+
+# d54g decidebs (GH #1564): the wake of the one bound sits beside the late-stamp pins.
+[[rule]]
+match = "^gh1564_"
+harness = "assemble_judge"
+
 # d54g listennote: the pin of the collector seam sits beside the stamp-route pins; in `assemble` it would shift every later file one part further.
 [[rule]]
 match = "^gh_d54g_listennote_seam"

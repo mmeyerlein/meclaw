@@ -1,4 +1,4 @@
-# `talky@8.0.1`
+# `talky@8.0.2`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -74,13 +74,13 @@ The five sub-units are **references**, not copies. Each of the five directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@7.0.0"}}
+{"cell": {"type": "ref", "template": "collector@7.1.0"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@8.0.1` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@8.0.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -508,11 +508,17 @@ the hint the curator scopes a quick round's tools by. `intent` is one of `intent
 hop of the call (`asked_at`), into context on the way to `./decide` (`route_asked_at`)
 and back onto the hop of the answer, so `./route` keeps no state.
 
-**Unsure, broken or late is `talk`.** A chosen class below `threshold`, an error of the
-decider (no model, a timeout, a refused credential), an answer later than `late_ms` or
-a turn without text all stamp `fallback_class` (`talk`) with `p` 0, no needs and no
-families, and say which of the four it was in `hop.fallback` (`unsure`, `error`, `late`,
-`no_text`). `unsure_families` `"1"` ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)) lets an
+**Unsure or broken is `talk`.** A chosen class below `threshold`, an error of the
+decider (no model, a timeout, a refused credential) or a turn without text all stamp
+`fallback_class` (`talk`) with `p` 0, no needs and no families, and say which it was in
+`hop.fallback` (`unsure`, `error`, `no_text`; `late` only for a sharpened turn, below).
+**A slow verdict is not cut here (GH #1562).** `./route` stamps every verdict when it
+comes; the ONE bound of the wait is `route_wait_ms` of `./collector`. A stamp inside it
+cuts the turn; a stamp past it reaches no part of the turn, which left without it -- the
+collector marks the stamp a turn fired with, and only that one reaches a later seam of
+the round or a delegation the turn opens -- and travels on to the guard as the rim copy
+(`stamp_out`) alone, its choices and notes whole. The answer never waits for it.
+`late_ms` is deprecated: still accepted, ignored, and a set that names it gets the stderr line `route: late_ms is ignored; route_wait_ms is the one bound` on every verdict. `unsure_families` `"1"` ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)) lets an
 `unsure` stamp keep the families the decider said yes to -- they are their own yes/no questions, like
 `choices` -- while its needs stay empty; off as shipped. `stamp_needs_yes` `"1"`
 ([#1466](https://github.com/mmeyerlein/meclaw/issues/1466)) adds an eighth key to a judged stamp,
@@ -542,8 +548,8 @@ off, and off the stamp and the decide call are the bytes above.
 - `choices` -- `{<name>: {question, options: {<option>: describe}, fallback, threshold?, notes?}}`
   -- are asked in the SAME decide call as `path`, as `choices.<name>`. A choice needs two options
   or more and a `fallback` that is NOT one of them; the model is never offered it, and a choice
-  that breaks either rule is not asked. Each choice falls back on its own: an unsure `path` keeps
-  it, while an error, a late answer or a choice below its own `threshold` (default: `threshold`)
+  that breaks either rule is not asked. Each choice falls back on its own: an unsure `path` keeps it,
+  while an error or a choice below its own `threshold` (default: `threshold`)
   gives the fallback. The stamp then has nine keys: `choices{<name>: {value, p, source:
   model|fallback}}`, never empty, and `turn_notes`, the note under `notes` of every value the
   model chose (`id` and `source` `route.<name>`, `scope` `turn`, `priority` 0). The collector
@@ -568,7 +574,7 @@ off, and off the stamp and the decide call are the bytes above.
   `history_read`), sized by the curator as a share of the decide target's window
   (`./history`'s `view_share`, [#1526](https://github.com/mmeyerlein/meclaw/issues/1526); the
   view says its budget back as `budget_tokens`); the turn's text rides out and back in `context.route_state`. The read hop counts in
-  `late_ms`. At 0 there is no read hop.
+  the stamp's `duration`. At 0 there is no read hop.
 
 
 **Screen and partials (#1279, [#1279](https://github.com/mmeyerlein/meclaw/issues/1279)).** All off as
@@ -654,7 +660,8 @@ decides the rest:
 | `sure` | `{}` | the bar of each steering statement, `{path, move, second}`; a statement without an entry stands at `threshold`. Under its bar a statement is not in the stamp. |
 | `sharpen` | `[]` | the statements a second judge sharpens; read today: `path`. With `path` listed, `clarify` is never stamped by the first verdict, however sure -- not on a partial's stamp either, and `notes_class` never steers a stamp onto it: only the second judge's sure word does. |
 | `second_judge` | `""` | the route the call to the second judge leaves on; this composite wires `second_judge` to `./second_judge`. `""`: nobody is asked, the unsure statement is dropped. |
-| `second_wait_ms` | `5000` | the bound a sharpened turn waits for the second judge, from the moment the sharpening began; it counts instead of `late_ms` while a turn is sharpened. It is the one wait of a sharpened turn; `./second_judge` ships its operation timeout, the bound of its one call, under it (`4000`), so a judge that does not answer reports its error before the bound -- a set that gives the judge more time raises both and keeps the timeout under the bound. `0` or less: no bound of `./route`. |
+| `second_wait_ms` | `5000` | the bound a sharpened turn waits for the second judge, from the moment the sharpening began. It is the one wait of a sharpened turn; `./second_judge` ships its operation timeout, the bound of its one call, under it (`4000`), so a judge that does not answer reports its error before the bound -- a set that gives the judge more time raises both and keeps the timeout under the bound. `0` or less: no bound of `./route`. |
+| `route_wait_ms` | `0` | the ONE bound of the wait, the same param as `./collector`'s: it must equal collector/assemble `route_wait_ms`, and the set writes one value into both. `./route` sharpens a verdict only while `now - asked_at` is under it; a later verdict belongs to a turn that has left and is stamped at once, without view, second judge or route-hold notice (below). `0`: no bound, sharpened as before. |
 | `moves` | `{}` | the moves the composition offers for HOW the speaker answers a turn, `{<name>: when it fits}`. With the list set the same decide call asks `move`, a choice over the list plus `none`; a move named at `sure.move` stands on the stamp as `move`. `./route` knows no move by name. |
 
 The road of a sharpened turn, all of it on lanes of `./route` (it keeps no state: the first
@@ -702,8 +709,13 @@ tool and changes no way, and the question to `./lead` never carries it. The name
 the notes are the composition's: the installing set writes `moves` on `./route` and the
 `<class>/<move>` entries on its curator node.
 
-The wait (written turns): `late_ms` judges the first verdict alone. From the second
-judge's `view_ask` on, the bound is `second_wait_ms`, counted from `hop.second_at`: a view
+The wait (written turns): the collector's `route_wait_ms` is the one bound of the wait
+(GH #1562), and `./route` carries the same value. A verdict that comes when
+`now - asked_at` has reached it belongs to a turn that has left: `./route` sharpens
+nothing for it -- no `view_ask`, no second judge, no route-hold notice -- and stamps it at
+once as an unsure verdict without a second judge, its choices (the risk) and their notes
+whole, `hop.fallback` `late`; the rim copy carries it to the guard, the collector drops it
+for the fired turn. At `0` (shipped) `./route` has no bound and sharpens as before. From the second judge's `view_ask` on, the bound is `second_wait_ms`, counted from `hop.second_at`: a view
 or an answer that reaches `./route` after it is not the turn's verdict, and the turn
 closes with ONE stamp without the unsure statement, `hop.fallback` `late`. That
 `view_ask` carries the bound as `hop.wait_ms`, and a second edge hands it to
@@ -1134,7 +1146,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@8.0.1",
+{"add_nodes": [{"name": "scribe", "template": "talky@8.0.2",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1851,7 +1863,7 @@ below names the CELL the knob belongs to, because that is what an
 | `conversation_events` | param | `"0"` | session-keeper/stamp, curator/writer, dispatcher (GH #1305) -- `"1"` on the stamp sends `opened`, on the writer `closed`, on the dispatcher `inner_silent`; each is its own knob, so a parent switches on exactly the lanes it wires. Off, every byte of today stays |
 | `inner_header` | param | `"[event from {source} -- not something the person said; decide whether and how to bring it up now, or say nothing]"` | curator/intake (GH #1305) -- the frame an inner turn's words stand under in the window; `{source}` is `hop.inner_source` |
 | `reasoning_effort` | param | `"medium"` | brain -- how long the model deliberates before it answers, in the provider's shorthand (`low`, `medium`, `high`, `none`), since `6.7.2` ([#1087](https://github.com/mmeyerlein/meclaw/issues/1087)); ships `medium` like every shipped `llm` cell ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300)). It reaches the provider as `"reasoning": {"effort": ...}` (under the default `reasoning_wire`). A parent addresses it as `brain` (an assistant: `talky/brain`, `talky-chat/brain`) |
-| `classes`, `intents`, `needs`, `families`, `threshold`, `yes_threshold`, `late_ms`, `fallback_class` | param | four classes `talk`/`simple`/`complex`/`research`; four intents; needs `tool`/`reasoning`/`research`; families `web`/`history`; `0.6`; `0.5`; `1500`; `"talk"` | route -- the route question of every turn and when its answer counts (GH #1247). See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
+| `classes`, `intents`, `needs`, `families`, `threshold`, `yes_threshold`, `fallback_class` | param | four classes `talk`/`simple`/`complex`/`research`; four intents; needs `tool`/`reasoning`/`research`; families `web`/`history`; `0.6`; `0.5`; `"talk"` | route -- the route question of every turn and when its answer counts (GH #1247). See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `choices`, `stamp_out`, `context_turns` | param | `{}`; `"0"`; `0` | route -- a product's own questions in the same decide call, the stamp out of the rim on `stamp`, and the person's last turns for the decider (GH #1304); all off as shipped. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `unsure_families` | param | `"0"` | route -- `"1"` lets an unsure stamp keep the families the decider said yes to, its needs stay empty ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `family_threshold` | param | `""` | route -- the bar of the families alone (OR-583-70): a number names a family the decider said yes to at that value or more, the needs stay at `yes_threshold`; `""` (shipped, or any value that is no number) is `yes_threshold`, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
@@ -1890,7 +1902,7 @@ curl -s -X POST http://127.0.0.1:PORT/colony/mutations -H 'Content-Type: applica
         "add_edges":[ ... the four ports plus the tool lanes, in the SAME mutation ... ]}}'
 ```
 
-The composite comes up with all thirty-five cells (plus five hive markers); the two `timer`s
+The composite comes up with all thirty-six cells (plus five hive markers); the three `timer`s
 spawn as soon as the crossing edge makes the subtree active, and the `store`/`llm` cells report
 `active=true` + `NotYetSpawned`, which is the correct hot/cold form for a stateful cell.
 Two things to have ready before the mutation:

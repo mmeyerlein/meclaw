@@ -564,10 +564,11 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
     build_root(&td, &mock.base_url);
 
     // No `timer` cell anywhere on the live path but the keeper's night close,
-    // the screen's due clock (GH #679) and the curator's clock (GH #889) -- and
-    // the last two are no poll: they carry no schedule of their own and strike
-    // only on a named one-shot somebody orders for a moment something is due
-    // (for the curator: the end of a model's prompt cache).
+    // the screen's due clock (GH #679), the curator's clock (GH #889) and the
+    // collector's clock (GH #1564) -- and the last three are no poll: they carry
+    // no schedule of their own and strike only on a named one-shot somebody
+    // orders for a moment something is due (for the curator: the end of a
+    // model's prompt cache; for the collector: the end of `route_wait_ms`).
     let mut timers: Vec<String> = config_paths(td.path().join("main").as_path())
         .into_iter()
         .filter(|rel| read_json(&td.path().join("main").join(rel))["cell"]["type"] == "timer")
@@ -576,6 +577,7 @@ async fn the_boot_receipt_fills_the_screen_and_a_mutation_refreshes_both() {
     assert_eq!(
         timers,
         vec![
+            "agent/collector/clock/config.json".to_string(),
             "agent/curator/clock/config.json".to_string(),
             "agent/session-keeper/night/config.json".to_string(),
             "screen/clock/config.json".to_string(),

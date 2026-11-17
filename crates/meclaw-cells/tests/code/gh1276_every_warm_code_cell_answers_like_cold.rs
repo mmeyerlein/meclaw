@@ -251,6 +251,10 @@ warm_cells! {
     coder_pipeline_taskarchive: "coder-pipeline/taskarchive",
     cogny_ask: "cogny/ask",
     collector_assemble: "collector/assemble",
+    // The frozen `collector@7.0.1` (GH #1564), byte-equal to 7.0.1 of the
+    // living line, which its fixture was taken from: the same fixture under
+    // its own directory.
+    collector_7_assemble: "collector@7.0.1/assemble",
     curator_reader: "curator/reader",
     curator_writer: "curator/writer",
     // The frozen `curator@1.25.0` (GH #1473), byte-equal to 1.25.0 of the

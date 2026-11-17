@@ -88,6 +88,36 @@ impl Asked {
             (q.key.as_str(), kind)
         })
     }
+
+    /// GH #1561: the same call without the questions under `drop` (cell
+    /// keys) -- what the lane sends when some questions have no calibration
+    /// curve. The remaining questions keep their sorted order and are
+    /// renumbered `q1`..`qn` (GH #1550: the wire numbering follows the sorted
+    /// cell keys of the questions actually sent, never a gap).
+    pub(crate) fn without(&self, drop: &[&str]) -> Asked {
+        let mut wire = Map::new();
+        let mut questions = Vec::with_capacity(self.questions.len());
+        for q in self
+            .questions
+            .iter()
+            .filter(|q| !drop.contains(&q.key.as_str()))
+        {
+            let wire_key = wire_key(questions.len());
+            if let Some(form) = self.wire.get(&q.wire) {
+                wire.insert(wire_key.clone(), form.clone());
+            }
+            questions.push(Question {
+                key: q.key.clone(),
+                wire: wire_key,
+                kind: q.kind.clone(),
+            });
+        }
+        Asked {
+            state: self.state.clone(),
+            wire,
+            questions,
+        }
+    }
 }
 
 /// The wire key of the question at `index` (0-based) in the sorted order of

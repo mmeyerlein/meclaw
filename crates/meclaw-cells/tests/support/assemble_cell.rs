@@ -172,6 +172,47 @@ pub fn bundle_reply(phase: &str, turn_id: &str, legs: &[(&str, Value)]) -> Value
     })
 }
 
+/// Re-check m3 (GH #1564): a complete set past `route_wait_ms` without a stamp
+/// first takes the strike's claim (`collect-age-claim`). This answers that
+/// claim as the store does when it lands (rows_affected 1, `rows` read back
+/// together with the `leg-wake` row the claim just inserted, in the read's
+/// columns -- Re-check 2 m-D) and returns what the fan-in then emits; any other
+/// output comes back as is.
+pub fn then_age_claim(over: &[(&str, Value)], out: Vec<Value>, rows: Value) -> Vec<Value> {
+    let Some(claim) = out
+        .iter()
+        .find(|m| m["header"]["phase"] == "collect-age-claim")
+    else {
+        return out;
+    };
+    let tid = claim["header"]["turn_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let mut read = rows.as_array().cloned().unwrap_or_default();
+    let calls = calls_of(claim);
+    let row = &calls
+        .iter()
+        .find(|(id, _)| id == "c-wake-claim")
+        .expect("the claim inserts its row")
+        .1["row"];
+    read.push(json!({
+        "turn_id": row["turn_id"], "iter": row["iter"], "role": row["role"],
+        "turn": row["turn"], "fired": row["fired"], "recorded_at": row["recorded_at"],
+    }));
+    let mut doc = bundle_reply(
+        "collect-age-claim",
+        &tid,
+        &[
+            ("c-wake-claim", json!([])),
+            ("c-wake-read", Value::Array(read)),
+        ],
+    );
+    doc["results"][0]["operation"] = json!("insert");
+    doc["results"][0]["rows_affected"] = json!(1);
+    assemble(over, doc)
+}
+
 /// Every `(tool_call_id, store args)` of one `cstore` emission, in order.
 pub fn calls_of(msg: &Value) -> Vec<(String, Value)> {
     msg["messages"]

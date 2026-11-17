@@ -514,8 +514,14 @@ async fn installing_an_app_refuses_a_privileged_contract() {
     );
 }
 
-/// The warden is the one shipped cell that parks a turn's context and hands it
-/// back as `ctx_<key>` hop keys, so it is the one that declares it.
+/// The warden parks a turn's context and hands it back as `ctx_<key>` hop
+/// keys, so it declares it. Since GH #1564 (OR-54g-274/275) the living
+/// collector's `clock` declares it too, and only that one: its park is bound
+/// to the turn's `turn_id`, is taken only from the wiring's own context (never
+/// from hop or body), and is dropped with the turn
+/// (`gh1564_the_order_hands_on_only_its_own_turns_park`,
+/// `gh1564_the_park_comes_off_the_turns_own_context`). The frozen
+/// `collector@7.0.1` has no clock and declares nothing. No further cell.
 #[test]
 fn only_the_warden_declares_parks_context() {
     if !shipped() {
@@ -540,5 +546,12 @@ fn only_the_warden_declares_parks_context() {
             }
         }
     }
-    assert_eq!(found, vec!["firewall/warden/config.json".to_string()]);
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            "collector/clock/config.json".to_string(),
+            "firewall/warden/config.json".to_string(),
+        ]
+    );
 }

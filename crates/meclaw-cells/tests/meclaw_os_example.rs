@@ -158,7 +158,10 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 5] = [
 /// d58-3 ballast (GH #1528): the curator's ballast judge (`curator/relevance`),
 /// a model cell beside the summarizer -- forty-seven. MEASURED (47 against 46
 /// in the strand's run).
-const CELLS_AFTER_GROW: usize = 47;
+/// D54g (GH #1564): the collector's clock (`collector/clock`), the one-shot
+/// that ends the wait for the route stamp -- forty-eight. MEASURED (48 against
+/// 47 in the strand's gate).
+const CELLS_AFTER_GROW: usize = 48;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -207,7 +210,11 @@ const CELLS_AFTER_GROW: usize = 47;
 /// every curator -- talky's in [`CELLS_AFTER_GROW`], cogny's (a reference to
 /// the same `curator` template) one more -- sixty-seven. COMPUTED in the
 /// strand (65 + 2); the run behind the first assertion measures it.
-const CELLS_AFTER_COGNY: usize = 67;
+/// D54g (GH #1564): the collector's clock (`collector/clock`) grows in every
+/// collector -- talky's in [`CELLS_AFTER_GROW`], cogny's one more: +2 = the
+/// clock cell of the talky and the cogny collector -- sixty-nine (70 with the
+/// probe).
+const CELLS_AFTER_COGNY: usize = 69;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));

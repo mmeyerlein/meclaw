@@ -117,10 +117,12 @@ fn memory() -> Value {
 
 /// The collector's fan-in over the round rows `rows`.
 fn collect(rows: Value) -> Vec<Value> {
-    assemble(
+    let out = assemble(
         &waiting(),
-        assemble_cell::bundle_reply("collect", TURN, &[("c-collect-read", rows)]),
-    )
+        assemble_cell::bundle_reply("collect", TURN, &[("c-collect-read", rows.clone())]),
+    );
+    // An aged fire takes the strike's claim first (GH #1564, re-check m3).
+    assemble_cell::then_age_claim(&waiting(), out, rows)
 }
 
 /// The seam of a fan-in that fired, None while the turn waits.
@@ -723,7 +725,8 @@ fn gh_d54g_stamp_a_silent_second_judge_closes_the_turn_at_the_wait_bound() {
     assert_eq!(got["trail"]["sharpened"], json!(false), "{out:?}");
 
     // 3. The ask that opens the sharpening names the bound the turn now
-    // waits under (`second_wait_ms`, not `late_ms`); without a bound it
+    // waits under (`second_wait_ms`; the first verdict has no bound in the
+    // route cell, GH #1562); without a bound it
     // names none.
     let ask = on(&asked, "view_ask");
     assert_eq!(ask["header"]["wait_ms"], json!("5000"), "{asked:?}");
@@ -848,8 +851,8 @@ fn gh_d54g_stamp_a_silent_second_judge_closes_the_turn_at_the_wait_bound() {
     assert_eq!(stamp_of(&out)["path"], json!("simple"), "{out:?}");
     assert_eq!(stamp_of(&out)["trail"]["sharpened"], json!(true), "{out:?}");
     assert_eq!(fallback_of(&out), "", "{out:?}");
-    // Without a bound nothing is late here, and `late_ms` (1500 as shipped)
-    // does not judge a sharpened turn: asked and begun in the year 2000, the
+    // Without a bound nothing is late here, and no other bound of the cell
+    // judges a sharpened turn (GH #1562: there is none): asked and begun in the year 2000, the
     // second judge's word still stands.
     let out = answer(&unbound, OLD_MS, OLD_MS);
     assert_eq!(stamp_of(&out)["path"], json!("simple"), "{out:?}");

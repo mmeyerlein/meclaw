@@ -18,7 +18,9 @@
 //!    exactly the four classes of the shipped params, plus the needs and the families;
 //! 3. a sure verdict becomes the seven-key stamp, the needs and families it said yes to,
 //!    under the channel turn it answers;
-//! 4. unsure, an error of the decider or a verdict that came too late: `talk`.
+//! 4. unsure or an error of the decider: `talk`;
+//! 5. a slow verdict is judged like a fast one (GH #1562: the one bound is the
+//!    collector's `route_wait_ms`, route has no late cut).
 
 // harness_fold: #[path = "support/assemble_cell.rs"]
 #[allow(unused_imports)]
@@ -180,6 +182,12 @@ fn every_turn_leaves_with_one_route_stamp() {
     let s = stamp(failed);
     assert_eq!(s["path"], "talk", "error: {s}");
     assert_eq!(s["p"], 0.0, "error: {s}");
+    // 5. slow (GH #1562): route has no late cut; a verdict after a long wait
+    // still leaves as exactly one stamp, judged like a fast one. Whether it
+    // acts on the turn is the collector's one bound (`route_wait_ms`).
     let s = stamp(decision(now_ms() - 600_000, sure));
-    assert_eq!(s["path"], "talk", "late: {s}");
+    assert_eq!(s["path"], "simple", "slow: {s}");
+    assert_eq!(s["p"], 0.91, "slow: {s}");
+    assert_eq!(s["needs"], json!(["tool"]), "slow: {s}");
+    assert_eq!(s["families"], json!(["web"]), "slow: {s}");
 }

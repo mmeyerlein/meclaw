@@ -123,7 +123,10 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// d58-3 ballast (GH #1528): the curator's ballast judge (`curator/relevance`),
 /// a model cell beside the summarizer -- thirty-five from `talky`, forty in
 /// all. MEASURED (40 against 39 in the strand's run).
-const CELLS_AFTER_GROW: usize = 40;
+/// D54g (GH #1564): the collector's clock (`collector/clock`), the one-shot
+/// that ends the wait for the route stamp -- thirty-six from `talky`,
+/// forty-one in all. MEASURED (41 against 40 in the strand's gate).
+const CELLS_AFTER_GROW: usize = 41;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

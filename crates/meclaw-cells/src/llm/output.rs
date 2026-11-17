@@ -416,6 +416,7 @@ pub(crate) async fn emit_decision(
     raw: Map<String, Value>,
     calibration: &str,
     missing: &[String],
+    uncalibrated: &[String],
     usage: HopUsage,
     model: &str,
     response_id: &str,
@@ -436,6 +437,17 @@ pub(crate) async fn emit_decision(
         decision.insert(
             "missing".into(),
             Value::Array(missing.iter().cloned().map(Value::String).collect()),
+        );
+    }
+    // GH #1561: the questions the model has no calibration curve for were
+    // never asked; they are named here, sorted, like `missing` -- and only
+    // when there are any, so a fully calibrated decision keeps its shape.
+    if !uncalibrated.is_empty() {
+        let mut keys = uncalibrated.to_vec();
+        keys.sort();
+        decision.insert(
+            "uncalibrated".into(),
+            Value::Array(keys.into_iter().map(Value::String).collect()),
         );
     }
     decision.insert("model".into(), Value::String(model.to_string()));
@@ -1036,6 +1048,7 @@ mod tests {
             Map::new(),
             "",
             &[],
+            &[],
             full,
             "vendor/decider",
             "id-1",
@@ -1118,6 +1131,7 @@ mod tests {
             raw.clone(),
             "0123456789ab",
             &[],
+            &[],
             HopUsage::default(),
             "vendor/decider",
             "id-1",
@@ -1142,6 +1156,7 @@ mod tests {
             raw,
             "0123456789ab",
             &["a.lead".to_string(), "topic".to_string()],
+            &[],
             HopUsage::default(),
             "vendor/decider",
             "id-2",

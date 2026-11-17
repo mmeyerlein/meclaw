@@ -10,6 +10,11 @@
 //! fetched recall out of the call, as a judged one does, and books the same
 //! mark. A late stamp with a high yes keeps it.
 //!
+//! GH #1562: the route cell no longer cuts a slow decider's answer -- it is
+//! stamped judged, and the control below is that stamp. A `late` stamp with
+//! yes-values still reaches this rule from a route cell before 0.89.1 and
+//! keeps the rule's word; the curator reads the seam, not the route version.
+//!
 //! Runs the shipped curator hive (`support/curator_hive.rs`); no model.
 
 // harness_fold: #[path = "support/curator_hive.rs"]

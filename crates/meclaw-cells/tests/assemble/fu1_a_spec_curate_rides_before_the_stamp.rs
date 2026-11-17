@@ -158,8 +158,14 @@ fn spec_curate_fires_once_before_the_stamp() {
 
     // The memory leg lands after the spec curate, before the stamp: no second
     // spec-fire, and the turn still waits for its stamp.
+    // The wait has its wake now (GH #1564): the one order of the clock leaves,
+    // nothing else.
     let out = collect(&knob("1"), json!([window(), spec_mark(), memory()]));
-    assert!(out.is_empty(), "one speculation per turn: {out:?}");
+    assert!(
+        spec_fire(&out).is_none(),
+        "one speculation per turn: {out:?}"
+    );
+    assert_eq!(wake_orders(&out), 1, "one speculation per turn: {out:?}");
 
     // The stamp lands: the normal seam leaves with its path, byte for byte the
     // seam of a collector without the param (the mark row is invisible to it).
@@ -235,9 +241,10 @@ fn spec_off_is_byte_identical() {
         let base = run_cell_stdout(ASSEMBLE, &today(), doc.clone()).0;
         assert_eq!(off, base, "off is today's bytes for {doc}");
     }
-    // The window alone waits, as today: nothing leaves.
+    // The window alone waits, as today: nothing leaves but the order of its
+    // wake (GH #1564).
     let out = collect(&knob("0"), json!([window()]));
-    assert!(out.is_empty(), "off speculates nothing: {out:?}");
+    assert_eq!(wake_orders(&out), 1, "off speculates nothing: {out:?}");
 
     // The knob ships off and says so in all three places.
     let cfg = config_of(ASSEMBLE);
@@ -264,4 +271,14 @@ fn quick_speculative_reads_json_true() {
     ];
     let out = collect(&on, json!([window()]));
     assert!(spec_fire(&out).is_some(), "true is on: {out:?}");
+}
+
+/// GH #1564: every message is the clock's `add` order of the turn's wake;
+/// the count of them, or a panic when anything else left.
+fn wake_orders(out: &[Value]) -> usize {
+    for m in out {
+        assert_eq!(m["header"]["route"], "clock", "only the wake leaves: {m}");
+        assert_eq!(m["op"], "add", "only the wake leaves: {m}");
+    }
+    out.len()
 }

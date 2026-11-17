@@ -832,12 +832,17 @@ def missing_of(body, asked=None):
     read as a list of strings and nothing more -- and, given the keys of the questions
     that were `asked`, only those: a foreign body would otherwise carry any text into the
     journal's column (E2 review m-3).
+
+    GH #1561: a question the decider has no calibration curve for is never asked and
+    never answered; the cell names it in `uncalibrated` beside `missing`. For the stage
+    both mean the same -- no answer for that key -- so both lists are read as one.
     """
     d = body.get("decision") if isinstance(body.get("decision"), dict) else body
-    m = d.get("missing") if isinstance(d, dict) else None
-    if not isinstance(m, list):
-        return []
-    keys = {k for k in m if isinstance(k, str) and k}
+    keys = set()
+    for field in ("missing", "uncalibrated"):
+        m = d.get(field) if isinstance(d, dict) else None
+        if isinstance(m, list):
+            keys |= {k for k in m if isinstance(k, str) and k}
     if asked is not None:
         keys &= set(asked)
     return sorted(keys)

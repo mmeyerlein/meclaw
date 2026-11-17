@@ -44,7 +44,8 @@ use std::path::{Path, PathBuf};
 /// `display/judge` keeps its 8 s (a screen verdict later than that is about a
 /// screen the member no longer sees, commit e8add4ead).
 /// `talky/decide` (GH #1247) is the same decisions road on every turn: its
-/// `./route` reads a verdict after `late_ms` as `talk`, so its 3 s is a deadline.
+/// `./collector` stops waiting for the route stamp after `route_wait_ms` (the one
+/// bound of the wait, GH #1562), so its 3 s is a deadline.
 /// `talky/screen_model` (#1279) judges the screen form beside the route stamp: a
 /// form later than the turn is about a screen the person no longer sees.
 /// `talky/second_judge` (D54g GH #1506) sharpens an unsure route stamp: its

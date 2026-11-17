@@ -1364,15 +1364,40 @@ impl LlmCell {
             return;
         }
         // GH #1558: the lane answers on the one calibrated scale or not at
-        // all. A model without its curves, or a question whose kind has none,
-        // is a loud configuration error before any request -- never a default
-        // and never the raw numbers, which mean something else per model.
-        let curves = match calibration::covering(
+        // all -- never an implicit default and never the raw numbers, which
+        // mean something else per model. GH #1561: judged per question. A
+        // model without its curves, or a call in which no question has one,
+        // is a loud configuration error before any request; otherwise the
+        // questions without a curve are left out of the request, named in
+        // `decision.uncalibrated` and in a WARN line, and their calibrated
+        // neighbours are answered (live: one choice question without a curve
+        // refused the whole lane, or rode silently on `choice.default`).
+        let covered = calibration::covering(
             &self.params.model,
             self.params.decision_calibration.as_ref(),
             &asked,
-        ) {
-            Ok(c) => c.clone(),
+        )
+        .map(|(c, uncal)| {
+            let keys: Vec<String> = uncal.iter().map(|(k, _)| k.to_string()).collect();
+            let mut kinds: Vec<&str> = uncal.iter().map(|(_, kind)| *kind).collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            (c.clone(), keys, kinds.join(","))
+        });
+        let (curves, uncalibrated) = match covered {
+            Ok((c, keys, kinds)) => {
+                if !keys.is_empty() {
+                    tracing::warn!(
+                        target: "meclaw::llm::decisions",
+                        "decision questions uncalibrated at {}: model '{}' has no {} curve for kind(s) {kinds} (questions {}); asked only the rest",
+                        sink.sender_path().as_str(),
+                        self.params.model,
+                        calibration::PARAM,
+                        keys.join(", ")
+                    );
+                }
+                (c, keys)
+            }
             Err(detail) => {
                 tracing::warn!(
                     target: "meclaw::llm::decisions",
@@ -1393,6 +1418,12 @@ impl LlmCell {
                 .await;
                 return;
             }
+        };
+        let asked = if uncalibrated.is_empty() {
+            asked
+        } else {
+            let drop: Vec<&str> = uncalibrated.iter().map(String::as_str).collect();
+            asked.without(&drop)
         };
         let mut request_json = translate_decisions::build_request(&self.params.model, &asked);
         // GH #1085 (R-IG-1): the bound is the catalog row of the model asked
@@ -1490,8 +1521,9 @@ impl LlmCell {
             tokens_cache_write: None,
             cost: decided.cost,
         };
-        // GH #1558: `covering` passed above, so every answer has its curve;
-        // the raw answers ride beside the calibrated ones for the audit.
+        // GH #1558: `covering` passed above and the uncalibrated questions
+        // were never asked (GH #1561), so every answer has its curve; the raw
+        // answers ride beside the calibrated ones for the audit.
         let answers = calibration::calibrated(&curves, &asked, &decided.answers);
         let stamp = curves.sha12();
         let raw = decided.answers;
@@ -1502,6 +1534,7 @@ impl LlmCell {
             raw,
             &stamp,
             &decided.missing,
+            &uncalibrated,
             usage,
             &model,
             decided.response_id.as_deref().unwrap_or_default(),

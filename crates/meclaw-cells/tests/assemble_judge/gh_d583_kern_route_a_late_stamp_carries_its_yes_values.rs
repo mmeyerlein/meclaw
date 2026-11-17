@@ -13,6 +13,14 @@
 //! from the route cell to the curator holds for `late` too. Shipped (knob
 //! off), the late stamp is the stamp of before.
 //!
+//! GH #1562: the route cell cuts no verdict as late any more (`late_ms` is
+//! gone; the collector's `route_wait_ms` is the one bound of the wait). The
+//! subject of this file -- a slow decider's yes-values reach the curator --
+//! now holds as a JUDGED stamp: answered an hour after the ask, the stamp is
+//! the stamp of a fast answer, yes-values and named needs alike, and an unsure
+//! path is `unsure`, not `late`. Whether it still reaches the turn is the
+//! collector's word (`gh1562_a_stamp_after_the_fire_acts_on_nothing`).
+//!
 //! Runs the shipped `talky/route` and `collector/assemble` scripts
 //! (`support/assemble_cell.rs`).
 
@@ -45,7 +53,7 @@ fn decision(ago_ms: i64, hop: Value, answers: Value) -> Value {
     doc
 }
 
-/// An hour after the ask: past any `late_ms`.
+/// An hour after the ask: past any bound a route cell ever had.
 fn late(answers: Value) -> Value {
     decision(3_600_000, json!({}), answers)
 }
@@ -133,42 +141,45 @@ fn gh_d583_kern_route_a_late_stamp_carries_its_yes_values() {
     let on = [("needs", four_needs()), ("stamp_needs_yes", json!("1"))];
     let all = json!({"memory": 0.05, "reasoning": 0.45, "research": 0.0, "tool": 0.9});
 
-    // On: the late stamp carries the yes-values of its answers, its needs stay
-    // empty -- a sure path (0.91) and an unsure one (0.3) alike: late is late.
-    for p in [0.91, 0.3] {
-        let m = stamp_of(&on, late(answers(p)));
-        assert_eq!(m["header"]["fallback"], "late", "{m}");
-        assert_eq!(
-            m["stamp"]["needs_yes"], all,
-            "the late stamp carries the yes-values its decider answered (p {p}): {m}"
-        );
-        assert_eq!(
-            m["stamp"]["needs"],
-            json!([]),
-            "no tool duty on a fallback: {m}"
-        );
-    }
-
-    // The whole way: parked with the leg, on the seam beside the fallback.
+    // On: an hour after the ask the stamp is judged -- no fallback, the
+    // yes-values of its answers and the needs they name.
     let m = stamp_of(&on, late(answers(0.91)));
+    assert!(
+        m["header"].get("fallback").is_none(),
+        "a slow verdict is no fallback any more (GH #1562): {m}"
+    );
+    assert_eq!(
+        m["stamp"]["needs_yes"], all,
+        "the slow stamp carries the yes-values its decider answered: {m}"
+    );
+    assert_eq!(m["stamp"]["needs"], json!(["tool"]), "{m}");
+    // An unsure path, slow or not, is `unsure` -- the fallback of a fast one.
+    let u = stamp_of(&on, late(answers(0.3)));
+    assert_eq!(u["header"]["fallback"], "unsure", "{u}");
+    let mut slow = u["stamp"].clone();
+    let mut fast = stamp_of(&on, decision(0, json!({}), answers(0.3)))["stamp"].clone();
+    slow["duration"] = json!(0);
+    fast["duration"] = json!(0);
+    assert_eq!(slow, fast, "slow and fast unsure stamps are one stamp: {u}");
+
+    // The whole way: parked with the leg, on the seam, no fallback beside it.
     let leg = parked(&m);
     assert_eq!(leg["needs_yes"], all, "the leg keeps the yes-values: {leg}");
-    assert_eq!(leg["fallback"], json!("late"), "and the fallback: {leg}");
+    assert!(leg.get("fallback").is_none(), "and has no fallback: {leg}");
     let seam = seam_of(leg);
     let text = hop_str(&seam, "needs_yes");
     let back: Value = serde_json::from_str(&text).expect("needs_yes is JSON text");
     assert_eq!(
         back, all,
-        "the late stamp's yes-values reach the seam: {text}"
+        "the slow stamp's yes-values reach the seam: {text}"
     );
-    assert_eq!(
-        hop_str(&seam, "fallback"),
-        "late",
-        "beside its fallback: {}",
+    assert!(
+        seam["header"].get("fallback").is_none(),
+        "{}",
         seam["header"]
     );
 
-    // Off (shipped): the late stamp of before.
+    // Off (shipped): no yes-values.
     let off = stamp_of(&[("needs", four_needs())], late(answers(0.91)));
     assert!(
         off["stamp"].get("needs_yes").is_none(),

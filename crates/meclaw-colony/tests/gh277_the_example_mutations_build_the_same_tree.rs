@@ -540,7 +540,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// Moved 109 -> 112 with d58-3 (GH #1528, the judge of what was only
 /// asked): every `curator` grew the cell `relevance` (3 x 1). Measured with
 /// `print_the_measurement` on build03 after the rebase onto 0.87.0.
-const TEMPLATE_BORN_ROWS: usize = 112;
+///
+/// Moved 112 -> 115 with d54g (GH #1564, the end of the route wait): every
+/// `collector` grew the cell `clock` (3 x 1). Measured in the strand's gate
+/// on build03.
+const TEMPLATE_BORN_ROWS: usize = 115;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -1079,7 +1083,13 @@ const REFERENCED_SUB_UNITS: [&str; 5] = [
 /// Moved 758 -> 760 with D54g b3err (GH #1536), merged in d58-3 stapel:
 /// every `talky` one edge more (the failed bridge call of a delegated turn
 /// `./quick_bridge -> ./errors`, talky 153 -> 154). Two talkies: 2 x 1.
-const EDGES: usize = 760;
+///
+/// Moved 760 -> 769 with d54g (GH #1564, the end of the route wait): every
+/// `collector` grew three internal edges around its clock (the order
+/// `./assemble -> ./clock`, the strike `./clock -> ./assemble` and the
+/// clock's error answer `./clock -> ./assemble`), and three collectors are
+/// instantiated (two talkies, one cogny): +9 = 3 x 3.
+const EDGES: usize = 769;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

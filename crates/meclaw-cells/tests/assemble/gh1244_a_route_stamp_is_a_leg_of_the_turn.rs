@@ -51,10 +51,12 @@ fn route(path: &str) -> Value {
 }
 
 fn collect(over: &[(&str, Value)], rows: Value) -> Vec<Value> {
-    assemble(
+    let out = assemble(
         over,
-        bundle_reply("collect", TURN, &[("c-collect-read", rows)]),
-    )
+        bundle_reply("collect", TURN, &[("c-collect-read", rows.clone())]),
+    );
+    // An aged fire takes the strike's claim first (GH #1564, re-check m3).
+    then_age_claim(over, out, rows)
 }
 
 fn seam(out: &[Value]) -> Option<&Value> {

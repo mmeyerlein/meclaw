@@ -111,8 +111,8 @@ fn delegation_round_inherits_stamp_of_open_turn() {
     assert_eq!(ask["table"], "round", "{ask}");
     assert_eq!(
         ask["where"],
-        json!({"turn_id": OPEN_TURN, "role": "leg-route"}),
-        "{ask}"
+        json!({"turn_id": OPEN_TURN, "role": "leg-route", "fired": 1}),
+        "GH #1562: only the stamp the turn fired with is inherited: {ask}"
     );
 
     // The reply parks the stamp as the round's own leg, in the window leg's

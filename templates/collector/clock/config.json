@@ -1,0 +1,89 @@
+{
+  "cell": {
+    "type": "timer",
+    "timeout": -1
+  },
+  "params": {
+    "query_timeout_ms": 5000
+  },
+  "contract": {
+    "version": "1.0.0",
+    "parks_context": true,
+    "settings": {},
+    "consumes": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        }
+      },
+      "hop": {
+        "event_id": {
+          "type": "string",
+          "required": false
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": false
+        },
+        "schedule_name": {
+          "type": "string",
+          "required": false
+        },
+        "scheduled_at": {
+          "type": "string",
+          "required": false
+        },
+        "fired_at": {
+          "type": "string",
+          "required": false
+        },
+        "msg_type": {
+          "type": "string",
+          "required": false
+        },
+        "op": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "turn_id": {
+          "type": "string",
+          "required": false
+        },
+        "session_id": {
+          "type": "string",
+          "required": false
+        },
+        "wake_ctx": {
+          "type": "object",
+          "required": false
+        },
+        "late": {
+          "type": "boolean",
+          "required": false
+        },
+        "ctx_speaker": {
+          "type": "string",
+          "required": false
+        },
+        "ctx_turn_round": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "db:own"
+    ]
+  },
+  "description": {
+    "purpose": "The end of the wait for a turn's route stamp (GH #1564). It carries no schedule of its own: `./assemble` orders one one-shot named `route_wait` per turn that waits for its stamp, at the window leg + `route_wait_ms` (or the end of a route-hold notice), re-armed in place (`rearm`) and taken back (`remove`) when the stamp lands or the turn fires first.",
+    "use_when": "Always, as part of the collector. It is not a poll (GH #553): every strike has a name and a time, and with `route_wait_ms` 0 nothing is ever ordered.",
+    "not_in_scope": "No cron, no recurring schedule. What a strike means is the `in_route_wake` lane the hive's edge stamps on it; a strike for a turn that already fired finds its window leg fired and does nothing."
+  }
+}

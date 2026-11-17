@@ -114,6 +114,10 @@ fn model_upsert_takes_a_calibration_and_refuses_a_malformed_one() {
     };
     let taken = upsert(calibration());
     assert_eq!(rejection(&taken), None, "{taken:?}");
+    // GH #1561: the cell's form (`calibration::checked`) takes a kind of
+    // prefix curves alone; the registry's copy of the check takes it too.
+    let by_prefix_only = upsert(json!({"choice": {"by_prefix": {"path": [[0, 0], [1, 1]]}}}));
+    assert_eq!(rejection(&by_prefix_only), None, "{by_prefix_only:?}");
     for (bad, why) in [
         (
             json!({"yes_no": {"default": [[0, 0], [0.5, 0.6], [1, 0.5]]}}),
@@ -135,9 +139,10 @@ fn model_upsert_takes_a_calibration_and_refuses_a_malformed_one() {
             json!({"scale": {"default": [[0, 0], [1, 1]]}}),
             "an unknown kind",
         ),
+        (json!({"yes_no": {}}), "a kind without any curve"),
         (
-            json!({"yes_no": {"by_prefix": {"a.": [[0, 0], [1, 1]]}}}),
-            "no default",
+            json!({"yes_no": {"by_prefix": {}}}),
+            "neither a default nor a prefix curve",
         ),
         (json!({}), "no kind"),
         (json!([[0, 0], [1, 1]]), "no object"),

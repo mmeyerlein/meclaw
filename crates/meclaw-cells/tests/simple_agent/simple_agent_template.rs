@@ -708,3 +708,57 @@ fn simple_agent_runs_its_rare_code_cells_cold_and_its_turn_road_as_shipped() {
         );
     }
 }
+
+/// GH #1564, OR-54g-275 (A): the clock that wakes a turn short of its route
+/// stamp hands back `speaker` and `turn_round`, so it declares
+/// `contract.parks_context` -- a privilege no app may carry (OR-NL-187), and
+/// apps embed simple-agent. simple-agent therefore pins the collector without
+/// the clock (`collector@7.0.1`, frozen beside the living one): its turns never
+/// wait for a stamp, so nothing has to wake them.
+#[test]
+fn simple_agent_keeps_the_collector_without_the_wake() {
+    if !shipped() {
+        return;
+    }
+    let (_td, agent) = instantiated();
+    let cells = cells_of(&agent);
+    let assemble = cells
+        .iter()
+        .find(|(rel, _)| rel == "collector/assemble")
+        .map(|(_, cfg)| cfg)
+        .expect("collector/assemble: a cell of the agent");
+    assert_eq!(
+        assemble["params"]["route_wait_ms"],
+        json!(0),
+        "collector/assemble: a turn of simple-agent never waits for its route stamp"
+    );
+    assert!(
+        !cells.iter().any(|(rel, _)| rel == "collector/clock"),
+        "simple-agent carries no `collector/clock`"
+    );
+    let hive = cells
+        .iter()
+        .find(|(rel, _)| rel == "collector")
+        .map(|(_, cfg)| cfg)
+        .expect("collector: the hive of the agent");
+    let edges = hive["params"]["graph"]["edges"]
+        .as_array()
+        .expect("the collector hive draws edges");
+    let on_clock: Vec<&Value> = edges
+        .iter()
+        .filter(|e| e["from"] == "./clock" || e["to"] == "./clock")
+        .collect();
+    assert!(
+        on_clock.is_empty(),
+        "simple-agent's collector draws no edge at a clock: {on_clock:?}"
+    );
+    let privileged: Vec<&String> = cells
+        .iter()
+        .filter(|(_, cfg)| cfg["contract"]["parks_context"] == json!(true))
+        .map(|(rel, _)| rel)
+        .collect();
+    assert!(
+        privileged.is_empty(),
+        "no cell of simple-agent declares `contract.parks_context` (OR-NL-187): {privileged:?}"
+    );
+}

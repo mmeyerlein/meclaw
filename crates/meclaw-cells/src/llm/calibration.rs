@@ -20,10 +20,18 @@
 //! to exactly 1, p never falls and stays inside [0, 1]; between two knots the
 //! mapping is linear. A curve that never falls never reverses the order of two
 //! answers, so the service's argmax stays an argmax; a flat stretch can make
-//! two different raw values equal (a tie, never a reversal). `by_prefix` is
-//! optional; the longest prefix of the question's cell key wins, else
-//! `default`. A missing calibration, or a missing curve for the asked kind,
-//! is no default: the lane answers `decision_uncalibrated`.
+//! two different raw values equal (a tie, never a reversal). `default` and
+//! `by_prefix` are each optional, but a kind carries at least one curve; the
+//! longest prefix of the question's cell key wins, else a DECLARED `default`,
+//! else the question has no curve.
+//!
+//! GH #1561: calibration is judged per question. A question without a curve
+//! is never sent and never answered -- not raw, not on another curve (the
+//! live case: a decider whose `choice` curves named `path` answered `move`
+//! silently on `choice.default`, a curve fitted to another question). Its
+//! calibrated neighbours are asked and answered, and the answer names it in
+//! `decision.uncalibrated`. Only a missing calibration, or a call in which no
+//! question has a curve, is `decision_uncalibrated` before any request.
 
 use std::collections::BTreeMap;
 
@@ -43,8 +51,12 @@ pub type Curve = Vec<[f64; 2]>;
 /// The curves of one kind of question.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct KindCurves {
-    /// The curve of every question no prefix names.
-    pub default: Curve,
+    /// The curve of every question no prefix names, when the kind declares
+    /// one (GH #1561: optional; without it such a question is uncalibrated).
+    /// Skipped when absent, so a form WITH a default serializes -- and stamps
+    /// ([`DecisionCalibration::sha12`]) -- byte for byte as under 0.89.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Curve>,
     /// Curves by prefix of the question's cell key; the longest match wins.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub by_prefix: BTreeMap<String, Curve>,
@@ -65,7 +77,8 @@ pub struct DecisionCalibration {
 impl DecisionCalibration {
     /// The curve that maps the answers of question `key` of `kind`
     /// (`"yes_no"` or `"choice"`): the longest prefix of `key` under
-    /// `by_prefix`, else `default`. `None` when the kind has no curves.
+    /// `by_prefix`, else the declared `default`. `None` when neither names
+    /// the question -- never another question's curve (GH #1561).
     pub fn curve_for(&self, kind: &str, key: &str) -> Option<&Curve> {
         let curves = match kind {
             "yes_no" => self.yes_no.as_ref(),
@@ -78,7 +91,7 @@ impl DecisionCalibration {
             .filter(|(prefix, _)| key.starts_with(prefix.as_str()))
             .max_by_key(|(prefix, _)| prefix.len())
             .map(|(_, curve)| curve)
-            .or(Some(&curves.default))
+            .or(curves.default.as_ref())
     }
 
     /// The first 12 hex digits of the sha256 of the calibration's canonical
@@ -91,31 +104,37 @@ impl DecisionCalibration {
     }
 }
 
-/// GH #1558: the calibration that covers every question of `asked`, or the
-/// detail of a `decision_uncalibrated` answer. Checked before any
-/// request: an answer the lane cannot map is not worth a paid call. Without a
-/// calibration the detail names the model; without a curve for a kind it
-/// names the kind and the first question of it (a `scale` question never has
-/// one -- the form carries no curve for it).
-pub(crate) fn covering<'a>(
+/// GH #1558, split per question by GH #1561: the calibration of the lane and
+/// the asked questions it has NO curve for, as `(cell key, kind)` in the
+/// sorted order of the cell keys -- or the detail of a `decision_uncalibrated`
+/// answer. Checked before any request: an answer the lane cannot map is not
+/// worth a paid call. Without a calibration the detail names the model; when
+/// no asked question has a curve it names the kind and the first question (a
+/// `scale` question never has one -- the form carries no curve for it). Any
+/// other split leaves the uncalibrated questions to the caller, which asks
+/// only the rest and names these in `decision.uncalibrated`.
+#[allow(clippy::type_complexity)]
+pub(crate) fn covering<'a, 'b>(
     model: &str,
     calibration: Option<&'a DecisionCalibration>,
-    asked: &crate::llm::translate_decisions::Asked,
-) -> Result<&'a DecisionCalibration, String> {
+    asked: &'b crate::llm::translate_decisions::Asked,
+) -> Result<(&'a DecisionCalibration, Vec<(&'b str, &'static str)>), String> {
     let Some(cal) = calibration else {
         return Err(format!(
             "model '{model}' has no {PARAM} in its package: its probabilities have no common scale"
         ));
     };
-    match asked
+    let uncalibrated: Vec<(&str, &str)> = asked
         .kinds()
-        .find(|(key, kind)| cal.curve_for(kind, key).is_none())
-    {
-        Some((key, kind)) => Err(format!(
-            "model '{model}' has no {PARAM} curve for '{kind}' (question '{key}')"
-        )),
-        None => Ok(cal),
+        .filter(|(key, kind)| cal.curve_for(kind, key).is_none())
+        .collect();
+    if uncalibrated.len() == asked.kinds().count() {
+        let (key, kind) = uncalibrated[0];
+        return Err(format!(
+            "model '{model}' has no {PARAM} curve for '{kind}' (question '{key}') nor for any other question asked"
+        ));
     }
+    Ok((cal, uncalibrated))
 }
 
 /// GH #1558: `answers` mapped through `calibration` -- the yes-probability of
@@ -175,8 +194,9 @@ fn map(curve: &Curve, raw: f64) -> f64 {
 
 /// GH #1558: `decision_calibration` as the cell takes it, checked by name
 /// before serde sees it: an object naming at least one of the kinds, each
-/// kind an object with a `default` curve and an optional `by_prefix` object
-/// of non-empty prefixes, every curve in form. `null` is no calibration and
+/// kind an object with an optional `default` curve and an optional
+/// `by_prefix` object of non-empty prefixes -- at least one curve between
+/// them (GH #1561) --, every curve in form. `null` is no calibration and
 /// stays `null`. Every refusal starts with the param's name.
 pub fn checked(value: &Value) -> Result<Value, String> {
     let refuse = |why: String| format!("{PARAM} {why}");
@@ -205,10 +225,21 @@ pub fn checked(value: &Value) -> Result<Value, String> {
         if let Some(k) = c.keys().find(|k| *k != "default" && *k != "by_prefix") {
             return Err(refuse(format!("{kind} names an unknown key '{k}'")));
         }
-        let default = c
-            .get("default")
-            .ok_or_else(|| refuse(format!("{kind} needs a default curve")))?;
-        curve_ok(default).map_err(|why| refuse(format!("{kind}.default {why}")))?;
+        let by_prefix_empty = c
+            .get("by_prefix")
+            .and_then(Value::as_object)
+            .is_none_or(|by| by.is_empty());
+        match c.get("default") {
+            Some(default) => {
+                curve_ok(default).map_err(|why| refuse(format!("{kind}.default {why}")))?
+            }
+            None if by_prefix_empty => {
+                return Err(refuse(format!(
+                    "{kind} needs at least one curve (a default or a by_prefix curve)"
+                )));
+            }
+            None => {}
+        }
         if let Some(by) = c.get("by_prefix") {
             let by = by
                 .as_object()
@@ -310,5 +341,34 @@ mod tests {
         assert_eq!(a.sha12(), b.sha12());
         assert_ne!(a.sha12(), c.sha12());
         assert_eq!(a.sha12().len(), 12);
+    }
+
+    /// GH #1561: a kind may carry its curves by prefix alone; it must carry
+    /// at least one curve, else the kind names nothing to map with.
+    #[test]
+    fn a_kind_without_a_default_is_in_form_but_not_an_empty_one() {
+        let c = calib(json!({"choice": {"by_prefix": {"path": [[0, 0], [1, 1]]}}}));
+        assert!(c.curve_for("choice", "path").is_some());
+        assert!(
+            c.curve_for("choice", "move").is_none(),
+            "no own curve and no declared default: no curve at all"
+        );
+        for bad in [json!({"choice": {}}), json!({"choice": {"by_prefix": {}}})] {
+            let err = checked(&bad).expect_err("a kind without any curve");
+            assert!(err.starts_with(PARAM), "{err}");
+        }
+    }
+
+    /// GH #1561: `default` became optional, but a form that declares one keeps
+    /// the stamp it had under 0.89.0 byte for byte (the literal is the sha12 of
+    /// this form as 0.89.0 serialized it) -- every journal line before the fix
+    /// still names the same calibration.
+    #[test]
+    fn a_form_with_a_default_keeps_its_stamp_of_0_89_0() {
+        let c = calib(json!({
+            "yes_no": {"default": [[0, 0], [0.5, 0.2], [1, 1]],
+                       "by_prefix": {"needs.": [[0, 0], [1, 0.5]]}},
+            "choice": {"default": [[0, 0.1], [1, 0.9]]}}));
+        assert_eq!(c.sha12(), "05f980f2019b");
     }
 }

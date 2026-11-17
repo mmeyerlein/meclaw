@@ -1,0 +1,103 @@
+{
+  "source": "tests: the message shapes of the template's own tests (misc_3/gh420_the_shipped_assembler_is_the_same_resident.rs), ids and text as placeholders",
+  "probes": [
+    {
+      "hop": {
+        "route": "in_turn"
+      },
+      "context": {
+        "session_id": "s1",
+        "turn_id": "t1",
+        "iter": "0",
+        "channel": "c1",
+        "audience_set": "a1",
+        "speaker": "sp"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "first question"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "operation": "bundle",
+        "rows_affected": 1,
+        "bundle_errors": 0
+      },
+      "context": {
+        "session_id": "s1",
+        "turn_id": "t1",
+        "iter": "0",
+        "col_phase": "collect",
+        "store_origin": "collector"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "tool",
+            "type": "tool_result",
+            "id": "c-collect-read",
+            "text": "[{\"turn_id\":\"t1\",\"iter\":0,\"role\":\"leg-window\",\"fired\":0,\"turn\":\"{\\\"turns\\\":[{\\\"role\\\":\\\"user\\\",\\\"text\\\":\\\"first question\\\"}],\\\"deferred\\\":0,\\\"deferred_turns\\\":[]}\"}]"
+          }
+        ],
+        "results": [
+          {
+            "tool_call_id": "c-collect-read",
+            "operation": "select",
+            "rows_affected": 1,
+            "duration_ms": 0
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_answer"
+      },
+      "context": {
+        "session_id": "s1",
+        "turn_id": "t1",
+        "iter": "0",
+        "channel": "c1",
+        "audience_set": "a1",
+        "speaker": "sp"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "assistant",
+            "type": "text",
+            "text": "an answer"
+          }
+        ]
+      }
+    },
+    {
+      "hop": {
+        "route": "in_turn"
+      },
+      "context": {
+        "session_id": "s1",
+        "turn_id": "t1",
+        "iter": "0",
+        "channel": "c1",
+        "audience_set": "a1",
+        "speaker": "sp"
+      },
+      "body": {
+        "messages": [
+          {
+            "origin": "user",
+            "type": "text",
+            "text": "second question"
+          }
+        ]
+      }
+    }
+  ]
+}

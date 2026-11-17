@@ -11,7 +11,8 @@
 //! 1. `choices` are asked in the SAME decide call as `path`, the fallback of a
 //!    choice is never offered to the model;
 //! 2. each choice falls back on its own: an unsure path keeps the choice, an
-//!    error or a late stamp gives every choice its declared fallback;
+//!    error gives every choice its declared fallback; a slow verdict keeps
+//!    its choices (GH #1562: route has no late cut);
 //! 3. a chosen value with a note puts the note on the stamp as a turn note,
 //!    the collector carries it to the seam and talky lifts it into
 //!    `context.turn_notes` on its curate edge -- the same turn, no round trip;
@@ -196,7 +197,10 @@ fn gh1304_an_error_stamp_takes_the_declared_fallback() {
 }
 
 #[test]
-fn gh1304_a_late_stamp_takes_the_declared_fallback() {
+fn gh1304_a_slow_stamp_keeps_its_choices() {
+    // GH #1562: route has no late cut; a verdict after a long wait keeps every
+    // choice and its note. Whether it acts on the turn is the collector's one
+    // bound (`route_wait_ms`); after the fire it reaches only the edge.
     let out = run_cell(
         ROUTE,
         &[("choices", choices())],
@@ -204,8 +208,12 @@ fn gh1304_a_late_stamp_takes_the_declared_fallback() {
     )
     .0;
     let s = &on(&out, "stamp")["stamp"];
-    assert_eq!(s["choices"]["topic"]["value"], "unknown", "{s}");
-    assert_eq!(s["turn_notes"], json!([]), "late: the round is gone: {s}");
+    assert_eq!(s["choices"]["topic"]["value"], "health", "{s}");
+    assert_eq!(s["choices"]["topic"]["source"], "model", "{s}");
+    assert_eq!(
+        s["turn_notes"][0]["source"], "route.topic",
+        "slow: the note rides with the stamp: {s}"
+    );
 }
 
 #[test]

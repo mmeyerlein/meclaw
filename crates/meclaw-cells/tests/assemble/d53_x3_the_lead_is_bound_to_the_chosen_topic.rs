@@ -159,11 +159,16 @@ fn a_timer_without_family_is_stamped_timer() {
     );
     assert_eq!(s["families"], json!([]), "{s}");
 
-    // Late: the round is on its way, the knob changes nothing.
-    let mut late = decision(timer_unsure());
-    late["header"]["hop"]["asked_at"] = json!((now_ms() - 600_000).to_string());
-    let s = stamp_of(&run_cell(ROUTE, &on, late).0);
-    assert_eq!(s["families"], json!([]), "late: {s}");
+    // Slow (GH #1562): route has no late cut any more; a verdict that comes
+    // after a long wait is stamped like a fast one, timer family included.
+    // Whether it still acts on the turn is the collector's one bound
+    // (`route_wait_ms`); after the fire it reaches only the edge.
+    let mut slow = decision(timer_unsure());
+    slow["header"]["hop"]["asked_at"] = json!((now_ms() - 600_000).to_string());
+    let s = stamp_of(&run_cell(ROUTE, &on, slow).0);
+    assert_eq!(s["path"], "talk", "slow: {s}");
+    assert_eq!(s["families"], json!(["set_timer"]), "slow: {s}");
+    assert_eq!(s["needs"], json!([]), "slow: {s}");
 }
 
 const TODAY_UNSURE: &str = r#"{"header": {"route": "stamp", "turn_id": "c-1", "path": "talk", "fallback": "unsure"}, "messages": [], "stamp": {"turn_id": "c-1", "path": "talk", "p": 0.0, "intent": "question", "needs": [], "families": [], "duration": 0}}"#;

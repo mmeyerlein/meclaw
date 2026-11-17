@@ -104,7 +104,7 @@ async fn send_mutation(h: &ColonyHandle, payload: Value) -> MutationOutcome {
     ack_rx.await.unwrap()
 }
 
-/// The shipped collector as a hive of its own, with a caller beside it. The two
+/// The shipped collector as a hive of its own, with a caller beside it. The three
 /// interior cells are stand-ins (see the module note); the hive file is real.
 fn write_collector_topology(root: &std::path::Path) {
     write(
@@ -121,6 +121,8 @@ fn write_collector_topology(root: &std::path::Path) {
         Some("answer"),
     );
     echo_cell(root, "main/collector/window", "/collector", None);
+    // GH #1564: the hive file wires its clock; a stand-in keeps those edges whole.
+    echo_cell(root, "main/collector/clock", "/collector", None);
 }
 
 /// The caller addresses the HIVE and names a lane — no cell of the hive appears

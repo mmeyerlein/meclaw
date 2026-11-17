@@ -5,8 +5,8 @@
 //! Pinned here, against the in-process HTTP mock (no network, no cost):
 //!
 //! 1. **The form.** `decision_calibration` is a package key with a fixed form:
-//!    per kind (`yes_no`, `choice`) a `default` curve and optional curves
-//!    `by_prefix` of the cell key; a curve is a list of knots `[raw, p]`, raw
+//!    per kind (`yes_no`, `choice`) an optional `default` curve and optional
+//!    curves `by_prefix` of the cell key, at least one of them (GH #1561); a curve is a list of knots `[raw, p]`, raw
 //!    rising strictly from 0 to 1, p not falling and inside [0, 1]. Anything
 //!    else is refused loudly by the param's name, at birth and on a push.
 //! 2. **The mapping.** The yes-probability of a `yes_no` answer and every
@@ -17,10 +17,13 @@
 //!    sha256 (12 hex digits) of the calibration that applied.
 //! 3. **The switch.** A params-only push of a new model package changes the
 //!    model and the curve together; the next answer carries both.
-//! 4. **No calibration is loud.** Without the key, without a curve for the
-//!    asked kind, or for a `scale` question (the form has no curve for it) the
-//!    answer is `decision_uncalibrated`, naming the model -- no request, no
-//!    default, no identity curve.
+//! 4. **No calibration is loud, per question.** Without the key, or when no
+//!    asked question has a curve, the answer is `decision_uncalibrated`,
+//!    naming the model -- no request, no identity curve. A question without a
+//!    curve of its own and without a declared `default` (and every `scale`
+//!    question: the form has no curve for it) is never sent and never
+//!    answered on another curve; its calibrated neighbours are asked and
+//!    answered, and it is named in `decision.uncalibrated` (GH #1561).
 
 // harness_fold: #[path = "mock_openai.rs"]
 #[allow(unused_imports)]
@@ -175,6 +178,10 @@ fn the_calibration_is_a_package_key_of_a_fixed_form() {
     let only_yes_no = json!({"yes_no": {"default": [[0, 0], [1, 1]]}});
     LlmParams::parse(&raw_params("https://d.example", "m", Some(only_yes_no)))
         .expect("one kind alone is a form");
+    // GH #1561: a kind may carry its curves by prefix alone, without a default.
+    let by_prefix_only = json!({"choice": {"by_prefix": {"path": [[0, 0], [1, 1]]}}});
+    LlmParams::parse(&raw_params("https://d.example", "m", Some(by_prefix_only)))
+        .expect("a kind of prefix curves alone is a form");
     let null = raw_params("https://d.example", "m", Some(Value::Null));
     LlmParams::parse(&null).expect("null is no calibration");
 
@@ -199,9 +206,10 @@ fn the_calibration_is_a_package_key_of_a_fixed_form() {
         (curve(json!([[0, 0, 0], [1, 1]])), "a knot of three numbers"),
         (curve(json!([[0, "0"], [1, 1]])), "a knot that is no number"),
         (curve(json!({"0": 0})), "a curve that is no list"),
+        (json!({"yes_no": {}}), "a kind without any curve"),
         (
-            json!({"yes_no": {"by_prefix": {"a": [[0, 0], [1, 1]]}}}),
-            "no default",
+            json!({"yes_no": {"by_prefix": {}}}),
+            "a kind with neither a default nor a prefix curve",
         ),
         (
             json!({"yes_no": {"default": [[0, 0], [1, 1]], "extra": 1}}),
@@ -433,20 +441,26 @@ async fn a_decider_without_a_calibration_answers_uncalibrated_and_asks_nobody() 
     );
 }
 
+/// The questions of a recorded request, as the wire carries them.
+fn wire_questions(body: &Value) -> meclaw_core::serde_json::Map<String, Value> {
+    body["questions"].as_object().cloned().unwrap_or_default()
+}
+
+/// GH #1561 (OR-54g-250): a call in which NO asked question has a curve is
+/// refused whole, before any request, as before -- naming the model, the
+/// kind and the question.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_kind_without_its_curve_answers_uncalibrated() {
+async fn a_call_without_any_calibrated_question_answers_uncalibrated() {
     let only_yes_no = json!({"yes_no": {"default": [[0, 0], [1, 1]]}});
     let scale = json!({"messages": [], "decide": {"state": "s", "questions": {
         "urgency": {"kind": "scale", "instructions": "How urgent?",
                     "levels": ["low", "high"]}}}});
-    // OR-JEVR-o1-23: a `scale` question beside calibrated ones is no reason
-    // to pass it through raw -- the whole call is refused.
-    let mut mixed = five_questions();
-    mixed["decide"]["questions"]["urgency"] = scale["decide"]["questions"]["urgency"].clone();
-    for (calib, body, kind) in [
-        (only_yes_no, five_questions(), "choice"),
-        (calibration(), scale, "scale"),
-        (calibration(), mixed, "scale"),
+    let choice = json!({"messages": [], "decide": {"state": "s", "questions": {
+        "path": {"kind": "choice", "instructions": "Which way?",
+                 "options": {"simple": "a quick answer", "talk": "small talk"}}}}});
+    for (calib, body, kind, key) in [
+        (calibration(), scale, "scale", "urgency"),
+        (only_yes_no, choice, "choice", "path"),
     ] {
         let mock = MockOpenAI::start(vec![five_answers()]).await;
         let base = format!("{}/api", mock.base_url);
@@ -464,7 +478,105 @@ async fn a_kind_without_its_curve_answers_uncalibrated() {
             all.contains(kind),
             "{kind}: the detail names the kind: {all}"
         );
+        assert!(
+            all.contains(key),
+            "{kind}: the detail names the question: {all}"
+        );
     }
+}
+
+/// GH #1561 (OR-54g-250, replaces the mixed case of GH #1558): an
+/// uncalibrated question no longer refuses its calibrated neighbours. The
+/// lane asks only the calibrated questions (wire keys renumbered q1..qn over
+/// the remaining cell keys, GH #1550), answers them on their curves, and
+/// names the others in `decision.uncalibrated` -- never sent, never answered
+/// raw (OR-JEVR-o1-23 holds: no raw value of an uncalibrated question).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uncalibrated_question_is_named_and_its_neighbours_answered() {
+    // A `scale` question beside the five calibrated ones: `urgency` sorts
+    // between `topic` and `wants`, so without it the five keep q1..q5.
+    let mut mixed = five_questions();
+    mixed["decide"]["questions"]["urgency"] = json!({"kind": "scale",
+        "instructions": "How urgent?", "levels": ["low", "high"]});
+    let mock = MockOpenAI::start(vec![five_answers()]).await;
+    let base = format!("{}/api", mock.base_url);
+    let (mut cell, _td, mut db) =
+        cell_of(&raw_params(&base, "vendor/decider-a", Some(calibration())));
+    let (sink, mut rx) = mk_sink();
+    cell.handle(msg(mixed), &sink, &mut db).await;
+
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(reqs.len(), 1, "one call");
+    let wire = wire_questions(&reqs[0].body);
+    let keys: Vec<&str> = wire.keys().map(String::as_str).collect();
+    assert_eq!(keys.len(), 5, "only the calibrated questions: {wire:?}");
+    for q in ["q1", "q2", "q3", "q4", "q5"] {
+        assert!(wire.contains_key(q), "{q}: {wire:?}");
+    }
+    assert!(
+        wire.values().all(|q| q["type"] != "score"),
+        "the scale question is never sent: {wire:?}"
+    );
+    assert_eq!(wire["q5"]["type"], "noul", "q5 is `wants`: {wire:?}");
+    let ems = drain(&mut rx);
+    assert_eq!(ems.len(), 1, "one emission: {ems:?}");
+    let d = &ems[0].content["decision"];
+    assert_eq!(d["uncalibrated"], json!(["urgency"]), "{d}");
+    assert!(d["answers"].get("urgency").is_none(), "{d}");
+    assert!(d["raw"].get("urgency").is_none(), "{d}");
+    assert!(d.get("missing").is_none(), "nothing was left out: {d}");
+    assert!(close(&d["answers"]["wants"]["yes"], 0.6), "{d}");
+    assert!(close(&d["answers"]["topic"]["p"]["weather"], 0.8), "{d}");
+    assert!(is_sha12(&d["calibration"]), "{d}");
+}
+
+/// GH #1561: a kind without a curve of its own for a question and without a
+/// DECLARED default is uncalibrated for that question alone -- it is never
+/// answered on another curve (the live case: a decider whose `choice` curves
+/// named `path` but not `move`, answered `move` silently on `choice.default`).
+/// The yes/no questions and `path` are answered; `move` is named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_question_without_its_group_curve_is_not_answered_on_another() {
+    let calib = json!({
+        "yes_no": {"default": [[0, 0], [1, 1]]},
+        "choice": {"by_prefix": {"path": [[0, 0], [0.5, 0.25], [1, 1]]}}
+    });
+    let body = json!({"messages": [], "decide": {"state": "s", "questions": {
+        "move": {"kind": "choice", "instructions": "Which move?",
+                 "options": {"stay": "stay", "go": "go"}},
+        "path": {"kind": "choice", "instructions": "Which way?",
+                 "options": {"simple": "a quick answer", "talk": "small talk"}},
+        "wants": {"kind": "yes_no", "instructions": "Show it?"}
+    }}});
+    // Sorted without `move`: q1 path, q2 wants.
+    let mock = MockOpenAI::start(vec![answer(json!({"answers": {
+        "q1": {"type": "choice", "choice": "simple",
+               "probabilities": {"simple": 0.75, "talk": 0.25}},
+        "q2": {"type": "noul", "noul": 0.75}
+    }}))])
+    .await;
+    let base = format!("{}/api", mock.base_url);
+    let (mut cell, _td, mut db) = cell_of(&raw_params(&base, "vendor/decider-g", Some(calib)));
+    let (sink, mut rx) = mk_sink();
+    cell.handle(msg(body), &sink, &mut db).await;
+
+    let reqs = mock.recorded_requests().await;
+    assert_eq!(reqs.len(), 1, "one call");
+    let wire = wire_questions(&reqs[0].body);
+    assert_eq!(wire.len(), 2, "`move` is never sent: {wire:?}");
+    assert_eq!(wire["q1"]["type"], "choice", "{wire:?}");
+    assert!(
+        wire["q1"]["criteria"].get("simple").is_some(),
+        "q1 is `path`: {wire:?}"
+    );
+    assert_eq!(wire["q2"]["type"], "noul", "{wire:?}");
+    let ems = drain(&mut rx);
+    assert_eq!(ems.len(), 1, "one emission: {ems:?}");
+    let d = &ems[0].content["decision"];
+    assert_eq!(d["uncalibrated"], json!(["move"]), "{d}");
+    assert!(d["answers"].get("move").is_none(), "{d}");
+    assert!(close(&d["answers"]["path"]["p"]["simple"], 0.625), "{d}");
+    assert!(close(&d["answers"]["wants"]["yes"], 0.75), "{d}");
 }
 
 /// A push of a row without a calibration resets the key: the next call is

@@ -1,9 +1,11 @@
-# `collector@7.0.0`
+# `collector@7.1.0`
 
-Context assembly as a hive of existing cell types -- no new cell type, no Rust. Two cells:
-`assemble` (a `code` cell, the state machine) and `window` (a `store` cell, the state). The
+Context assembly as a hive of existing cell types -- no new cell type, no Rust. Three cells:
+`assemble` (a `code` cell, the state machine), `window` (a `store` cell, the state) and `clock`
+(a `timer` cell, the end of the route wait, [#1564](https://github.com/mmeyerlein/meclaw/issues/1564)). The
 one question this hive asks of its own accord -- the tool menu -- is asked on `mutation_committed`,
-the mutation receipt the level above carries in; since `4.0.0` there is no timer in here.
+the mutation receipt the level above carries in; since `4.0.0` no timer polls in here. The one
+clock, `./clock`, holds nothing but the end of `route_wait_ms` for a turn that waits for its route stamp.
 
 The collector is the orchestrator of one agent's context window. It decides **what enters
 the window**, in one place, and hands the result to the curator over **one** message on
@@ -62,7 +64,8 @@ the window**, in one place, and hands the result to the curator over **one** mes
 
 | cell | type | what it holds |
 |---|---|---|
-| `assemble` | `code` | the whole state machine: ten entry lanes plus the internal `in_menu_tick`, the fan-in gate, the seam, the round-robustness exits |
+| `assemble` | `code` | the whole state machine: ten entry lanes plus the internal `in_menu_tick`, the fan-in gate, the seam, the round-robustness exits; since #1564 also the internal `in_route_wake` and `in_route_wake_error` from `./clock` |
+| `clock` | `timer` | at most one one-shot per turn that waits for its route stamp, named `route_wait`, id derived from the turn (uuid5), ordered with `rearm` at the window leg + `route_wait_ms` (or the end of a route-hold notice) and taken back with `remove` when the stamp lands or the turn fires first ([#1564](https://github.com/mmeyerlein/meclaw/issues/1564)). Only with `route_wait_ms` above 0. |
 | `window` | `store` | `turns` (the turns of the running round and the ones deferred behind it) and `round` (the per-turn slate: the assembled legs plus the tool round) -- since `collector@5.0.0` (GH #889) no history: the rows of a round fall when its answer leaves, and `batched` is gone. Since `3.4.0` also `menu`, one row per answerer, which is the memory the tool menu is merged out of (GH #529). Since `4.4.0` also `session` (the channel's tool scope, one row per session, GH #845) and `roster` (the legend of a channel, one row per participant, GH #847), and `turns` names the speaker of a `peer` row. |
 
 ## Ports
@@ -216,7 +219,7 @@ for how to retune one, and for what `override_params` can and cannot do).
 | `hint_own_op` | `"0"` | `"1"` keeps every tool that stays single for its own `op` (the tools hive's `file`, `edit`) at hint level and names them on every seam as `hop.tools_hinted` ([#1272](https://github.com/mmeyerlein/meclaw/issues/1272)); only with `fold_tools` `"1"`. talky sets it. See "Folded menu and route stamp". |
 | `turn_answerers` | `[]` | the answerers whose menu row holds for one turn ([#1292](https://github.com/mmeyerlein/meclaw/issues/1292)): their tools never fold and an empty answer of theirs is written, so a turn without them empties their row. The simple agent sets `["client"]`. See "Folded menu and route stamp". |
 | `fold_families` | `["file_ws"]` | family names longer than the first name segment; every other tool folds by its first segment, so a new hive folds without an entry. |
-| `route_wait_ms` | `0` | how long the first assembly of a turn waits for its route stamp on `in_route`, in ms ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)). `0` = no route leg. A notice on `in_route` (`hop.wait_ms`, [#1506](https://github.com/mmeyerlein/meclaw/issues/1506)) holds a turn for its stamp that long from `hop.wait_from` (else from the notice on), whatever the age of its window leg; after it this bound decides again. |
+| `route_wait_ms` | `0` | how long the first assembly of a turn waits for its route stamp on `in_route`, in ms ([#1244](https://github.com/mmeyerlein/meclaw/issues/1244)). `0` = no route leg. A notice on `in_route` (`hop.wait_ms`, [#1506](https://github.com/mmeyerlein/meclaw/issues/1506)) holds a turn for its stamp that long from `hop.wait_from` (else from the notice on), whatever the age of its window leg; after it this bound decides again. The bound is kept by `./clock` ([#1564](https://github.com/mmeyerlein/meclaw/issues/1564)), not by a later leg: a turn that waits for its stamp orders a one-shot at the window leg's `recorded_at` + `route_wait_ms`, or at the end of the notice when that is later, and the strike fires the turn without the stamp. The order carries the turn's context (`wake_ctx`), which the edge `./clock -> ./assemble` lifts back; a notice that comes after the order moves the strike to its end; the order is `catch_up`, so a strike missed while the colony was down still comes. The timer strikes on the millisecond; the latest release is that point plus the hops of the strike (timer, assemble, store, assemble, curate), with or without `spec_ahead`. |
 | `route_no_recall` | `["simple"]` | the stamped paths whose turn does not wait for the memory leg; read only while `route_wait_ms` is above 0. |
 | `needs_wait_recall` | `"0"` | `"1"` or true: a turn whose route stamp names a need of `recall_needs` waits for the memory leg even on a path listed in `route_no_recall` ([#1435](https://github.com/mmeyerlein/meclaw/issues/1435)); read only while `route_wait_ms` is above 0. `"0"` = the fan-in of before. |
 | `needs_no_recall` | `"0"` | `"1"` or true: a turn whose route stamp names no need of `recall_needs` stops waiting for the memory leg on any path; a stamp that names `memory` and a fallback stamp (its `hop.fallback`: no judgement of the needs) wait as before, and the seam of a fallback stamp carries `hop.fallback` ([#1441](https://github.com/mmeyerlein/meclaw/issues/1441)); read only while `route_wait_ms` is above 0. `"0"` = the fan-in and the seam of before. |
@@ -256,7 +259,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@7.0.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@7.1.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -492,7 +495,7 @@ ANNOTATE EVERY TURN, including the turns that changed nothing. [...]
 {"memory":{"facts":[{"subject":"","predicate":"","claim":"","quote":"<the words of its source this fact rests on, copied exactly>","fact_kind":"world|experience|foresight","valid_from":"<RFC3339|null>","source":"<person|peer:<ref>|agent:<name>>"}],"topic":{"movement":"start|continue|end","name":"","source":"<person|peer:<ref>|agent:<name>>"}}}
 ```
 
-**The contract goes whole (since `collector@7.0.0`, R-IG-1, GH #1085).** Until 5.1.0 this cell
+**The contract goes whole (since `collector@7.0.1`, R-IG-1, GH #1085).** Until 5.1.0 this cell
 bounded the composed text at `sidecar_max_chars` (6000) and dropped OPTIONAL sections from the
 back with a warn line on stderr alone. What fits the model's window is decided where the window
 is known: the curator in front of the model (`curator/policy`) takes the contract as its slot
@@ -538,7 +541,7 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
-and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@7.0.0` (the curator decides what fits, R-IG-1).
+and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@7.0.1` (the curator decides what fits, R-IG-1).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 
@@ -648,8 +651,38 @@ the stamp is a leg of the turn, parked beside the window, memory and brief legs,
   from the delta's stamp like its `move`). No knob
   of this cell: without the field the seam is the one of before, byte for byte.
 - no stamp yet, and the window leg is older than `route_wait_ms`: the turn stops waiting for it. The check
-  runs when a leg lands, so the route cell answers every turn (`talk` when unsure, failed or late) and its
-  stamp is the occasion that ends a longer wait.
+  runs when a leg lands and when `./clock` strikes ([#1564](https://github.com/mmeyerlein/meclaw/issues/1564)).
+  A fan-in that waits only for the stamp orders one one-shot of `./clock` (`route_wait`, `rearm`) at the
+  window leg's `recorded_at` + `route_wait_ms`, rounded up to the millisecond, or at the end of a route-hold
+  notice when that is later. Its strike (`in_route_wake`) reads the round back and fires the turn without the
+  stamp, under the turn's context the order carried (`emit_headers.wake_ctx`, lifted back on the clock
+  edge). A strike for a turn that has fired, or that finds the stamp, does nothing; under a route-hold notice
+  that is still running it orders anew at the notice's end. Otherwise it claims the wake in the store (row
+  `leg-wake`, insert if absent, in one bundle with the read): of stamp and strike exactly one fires. The order
+  is `catch_up`. The stamp that lands first, or a fire the strike did
+  not cause, takes the order back (`remove`); a `remove` that comes after the strike is answered
+  `schedule_not_found` on `in_route_wake_error` and parked. No order outlives its turn. Before #1564 nothing
+  ran the check once every other leg was in -- under `spec_ahead` the turn waited for a 5 s decider.
+  A leg that lands past the bound and completes the set does not fire on the window leg's age alone: it
+  takes the same claim first (`collect-age-claim`), so of it and a strike at the same moment exactly one fires;
+  its won claim takes the order back.
+
+  The context of a woken turn. The strike comes through the timer's origin, a fresh chain with an empty
+  context, so the turn keeps what it needs in its window leg: the keys of `WAKE_CTX_KEYS` (channel, call,
+  audience, tools, ...) as `ctx`, lifted back as `wake_ctx`. The stamped keys `speaker` and `turn_round` (GH #972),
+  which no config edge may write, take the one sanctioned road, `contract.parks_context`, as the firewall's
+  warden does for a held turn: the window leg parks them off the turn's own context (never off the hop or the
+  body) together with its `turn_id`; the order hands them on as `ctx_speaker`/`ctx_turn_round` only for that
+  turn; `./clock` declares `contract.parks_context`, so the colony lets them pass, and the edge restores them
+  (`has(hop.ctx_<key>) ? hop.ctx_<key> : ''`) and drops the hop keys. The park lives in the round's rows and
+  goes with them, the order with the strike or its `remove`; with `route_wait_ms` 0 nothing is parked.
+  Because the clock holds that privilege, an app (`privileged: false`) cannot bring this collector.
+  A window leg written without `ctx` (before #1564, e.g. an in-place update mid-turn) still orders a strike;
+  the collector writes a WARN line and the turn fires without its channel context. Two limits stay: the
+  return keys of the recall leg (`recall_caller`, `audience_now`) are not restored -- the member's recall edge
+  derives `audience_now` afresh from `audience_set`; and a woken turn runs on a trace of its own from the
+  strike on (fresh `trace_id`, no parent, default TTL): its chain correlates by `turn_id`/`session_id`, but log
+  and display show the turn as two traces.
 
 The path rides on every seam of the round (`curate`, `answer`) as `hop.path`, the stamp's families beside it
 as `hop.families` and its needs as `hop.needs` (GH #1260; comma lists in stamp order), all empty without a

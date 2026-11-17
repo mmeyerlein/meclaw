@@ -206,7 +206,7 @@ const SHARED: [&str; 40] = [
 /// it ([#528](https://github.com/mmeyerlein/meclaw/issues/528)): the core has one
 /// brain, so no edge inside it decides anything on a class and there is no key to
 /// carry across the rim.
-const CARRIED: [(&str, &str, &str); 5] = [
+const CARRIED: [(&str, &str, &str); 11] = [
     (
         "assistant",
         "tool_caller",
@@ -241,6 +241,36 @@ const CARRIED: [(&str, &str, &str); 5] = [
          and `./quick` set `silence_ok` on it, so a turn that recalled or \
          called a tool first could not stay silent any more. Every other exit \
          clears it, held edge by edge in `gh1316_an_inner_turn_crosses_the_member_to_its_channel`",
+    ),
+    (
+        "collector",
+        "assistant",
+        "the turn's own key, restored by the wake (GH #1564, OR-54g-274): a woken turn fires on the clock's strike, a fresh chain with an empty context, so `./clock -> ./assemble` lifts back what the turn carried in (the window leg's snapshot; `speaker`/`turn_round` through `contract.parks_context`). It entered with the turn and leaves on `./assemble -> .` as an unwoken turn does -- cleared there, every turn would lose it",
+    ),
+    (
+        "collector",
+        "counterpart_name",
+        "GH #1564, OR-54g-274 -- see `assistant` above",
+    ),
+    (
+        "collector",
+        "inner_source",
+        "GH #1564, OR-54g-274 -- see `assistant` above",
+    ),
+    (
+        "collector",
+        "tools_allow",
+        "GH #1564, OR-54g-274 -- see `assistant` above",
+    ),
+    (
+        "collector",
+        "tools_deny",
+        "GH #1564, OR-54g-274 -- see `assistant` above",
+    ),
+    (
+        "collector",
+        "turn_round",
+        "GH #1564, OR-54g-274 -- see `assistant` above",
     ),
     (
         "meclaw-os",
