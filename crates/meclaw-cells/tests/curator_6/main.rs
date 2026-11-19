@@ -9,6 +9,7 @@ pub mod curator_hive;
 pub mod curator_profiles;
 #[path = "../support/curator_target.rs"]
 pub mod curator_target;
+pub mod gh_d58_form_after_a_round_without_an_answer_the_rebuild_is_applied;
 pub mod gh_d58_form_an_older_recall_block_goes_only_in_a_rebuild;
 pub mod gh_d58_form_left_out_ends_where_the_summary_covers_the_pair;
 pub mod gh_d58_form_mutant_a_cut_per_call_trips_the_watch;

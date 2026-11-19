@@ -2427,7 +2427,7 @@ impl Outcome {
         let (id, text) = (p.id(), p.text());
         let mut found = Shown::Absent;
         for m in self.next.messages() {
-            let t = m["text"].as_str().unwrap_or("");
+            let t = without_carried(m["text"].as_str().unwrap_or(""));
             let named = t.starts_with(&format!("[#{id}] ")) || t.starts_with(&format!("[#{id} "));
             // Whole: the text as it was written, or behind its id -- and in
             // front of the id whatever frame the window sets there (the
@@ -3302,4 +3302,23 @@ impl Run {
         self.patches.push((cell, script));
         self
     }
+}
+
+/// GH #1566: the frame of an own answer that follows stands as the last
+/// line(s) of the element before it -- `[your answer right after this: ...]`,
+/// one line each (`ANSWER_CARRIED`, `OTHER_ANSWER_CARRIED`,
+/// `WITHDRAWN_CARRIED`). The words of that element stand in front of them,
+/// as written; only the curator's own lines are taken off before the
+/// comparison.
+pub fn without_carried(t: &str) -> &str {
+    let mut t = t;
+    while let Some(at) = t.rfind("\n[your answer right after this: ") {
+        let line = &t[at + 1..];
+        if line.ends_with(']') && !line.contains('\n') {
+            t = &t[..at];
+        } else {
+            break;
+        }
+    }
+    t
 }

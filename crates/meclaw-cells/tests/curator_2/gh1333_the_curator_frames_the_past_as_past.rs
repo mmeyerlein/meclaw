@@ -679,9 +679,7 @@ mod session {
         for line in [DOCTOR, CRISIS] {
             let m = msgs
                 .iter()
-                .find(|m| {
-                    kind(m) == "user/text" && m["text"].as_str().unwrap_or("").ends_with(line)
-                })
+                .find(|m| kind(m) == "user/text" && m["text"].as_str().unwrap_or("").contains(line))
                 .unwrap_or_else(|| panic!("{line:?} stays in the window: {msgs:#?}"));
             let t = m["text"].as_str().unwrap_or("");
             assert!(
@@ -690,15 +688,17 @@ mod session {
             );
         }
         // d58-3 treue T1: each own answer of s1 stays, as the model's, in its
-        // place -- after the person line it answers, before the next one --
-        // and opens with the frame of an own answer of an earlier session.
+        // place -- after the person line it answers, before the next one.
+        // GH #1566: its own text stays bare (a frame in it is copied into new
+        // answers); the frame of an own answer of an earlier session stands
+        // as the last line of the element right before it.
         let answer_frame = format!(
-            "[your own answer in an earlier session, since {} -- said then, not now]\n",
+            "\n[your answer right after this: your own, in an earlier session, since {} -- said then, not now]",
             base.format("%Y-%m-%d %H:%M UTC")
         );
         let at = |line: &str| {
             msgs.iter()
-                .position(|m| m["text"].as_str().unwrap_or("").ends_with(line))
+                .position(|m| m["text"].as_str().unwrap_or("").contains(line))
                 .unwrap_or_else(|| panic!("{line:?} stays in the window: {msgs:#?}"))
         };
         let order = [
@@ -708,15 +708,22 @@ mod session {
         for (asked, answer, next) in order {
             let i = msgs
                 .iter()
-                .position(|m| {
-                    m["text"]
+                .position(|m| bare(m) == answer)
+                .unwrap_or_else(|| panic!("{answer:?} stays, bare: {msgs:#?}"));
+            assert_eq!(kind(&msgs[i]), "assistant/text", "{answer:?}: {msgs:#?}");
+            assert!(
+                !msgs[i]["text"].as_str().unwrap_or("").contains("your own"),
+                "{answer:?}: no frame in the model's own text: {msgs:#?}"
+            );
+            assert!(
+                i > 0
+                    && msgs[i - 1]["origin"] != "assistant"
+                    && msgs[i - 1]["text"]
                         .as_str()
                         .unwrap_or("")
-                        .strip_prefix(&answer_frame)
-                        .is_some_and(|rest| bare(&json!({"text": rest})) == answer)
-                })
-                .unwrap_or_else(|| panic!("{answer:?} stays, framed: {msgs:#?}"));
-            assert_eq!(kind(&msgs[i]), "assistant/text", "{answer:?}: {msgs:#?}");
+                        .ends_with(&answer_frame),
+                "{answer:?}: the element before it carries its frame: {msgs:#?}"
+            );
             assert!(
                 at(asked) < i && i < next,
                 "{answer:?} stays in its place: {msgs:#?}"
@@ -819,9 +826,7 @@ mod session {
         let since = base.format("%Y-%m-%d %H:%M UTC").to_string();
         let text_of = |line: &str| -> String {
             msgs.iter()
-                .find(|m| {
-                    kind(m) == "user/text" && m["text"].as_str().unwrap_or("").ends_with(line)
-                })
+                .find(|m| kind(m) == "user/text" && m["text"].as_str().unwrap_or("").contains(line))
                 .unwrap_or_else(|| panic!("{line:?} stays in the window: {msgs:#?}"))["text"]
                 .as_str()
                 .unwrap_or("")
@@ -848,7 +853,7 @@ mod session {
         }
         for m in &msgs {
             let t = m["text"].as_str().unwrap_or("");
-            if t.ends_with(DOCTOR) || t.ends_with(CRISIS) {
+            if t.contains(DOCTOR) || t.contains(CRISIS) {
                 assert!(!t.contains("not said now"), "{t:?}");
             }
         }
@@ -897,7 +902,7 @@ mod session {
         assert!(
             msgs.iter().any(|m| {
                 let t = m["text"].as_str().unwrap_or("");
-                t.starts_with("[earlier session, since ") && t.ends_with(DOCTOR)
+                t.starts_with("[earlier session, since ") && t.contains(DOCTOR)
             }),
             "the earlier line stays, framed as past: {msgs:#?}"
         );

@@ -2004,21 +2004,26 @@ fn a_window_shows_an_earlier_session_only_to_a_round_it_was_present_for() {
     assert_eq!(shown.len(), 3, "{shown:?}");
     assert!(
         shown[0].starts_with("[earlier session, since ")
-            && shown[0].ends_with("not said now]\nasked by e, a and b"),
+            && shown[0].contains("not said now]\nasked by e, a and b\n"),
         "{shown:?}"
     );
     // d58-3 treue T1: the own answer of the earlier session stays in its
-    // place and opens with the frame of an own answer, since the same start.
+    // place, framed as an own answer since the same start -- GH #1566: the
+    // frame is the last line of the element before it, the answer is bare.
     let since = |t: &str| {
         t.split("since ")
             .nth(1)
             .and_then(|r| r.split(" --").next())
             .map(str::to_string)
     };
+    let carried = shown[0]
+        .rsplit_once("\n[your answer right after this: your own, in an earlier session, since ")
+        .map(|(_, f)| format!("since {f}"))
+        .unwrap_or_default();
     assert!(
-        shown[1].starts_with("[your own answer in an earlier session, since ")
-            && shown[1].ends_with(" -- said then, not now]\ntold e, a and b")
-            && since(&shown[1]) == since(&shown[0]),
+        carried.ends_with(" -- said then, not now]")
+            && since(&carried) == since(&shown[0])
+            && shown[1] == "told e, a and b",
         "{shown:?}"
     );
     assert!(

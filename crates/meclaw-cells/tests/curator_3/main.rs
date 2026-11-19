@@ -11,6 +11,7 @@ pub mod gh1436_h_a_fresh_stamp_of_the_source_shows_its_own_note_not_the_carried;
 pub mod gh1436_i_the_carried_note_ends_at_its_until;
 pub mod gh1436_j_without_carry_notes_every_window_is_byte_identical;
 pub mod gh1436_k_a_carried_note_born_in_a_running_call_moves_no_feed;
+pub mod gh916_a_pin_source_is_replaced;
 pub mod gh926_a_curator_counts_its_own_ledger;
 pub mod gh932_the_curator_pages_only_over_visible_rows;
 pub mod gh935_the_identity_budget_splits_the_pack;
@@ -62,7 +63,6 @@ pub mod gh_d38_k3_the_gc_knobs_are_declared_and_preset;
 pub mod gh_d38_k5_a_window_over_the_price_step_rebuilds_sooner;
 pub mod gh_d38_k5_the_rebuild_counts_the_cache_write;
 pub mod gh_d38_k6_a_token_budget_keeps_the_youngest_rounds_raw;
-pub mod gh_d38_k6_keep_recent_stays_the_floor;
 #[path = "../gh927/harness.rs"]
 pub mod harness;
 #[path = "../support/history_judge.rs"]

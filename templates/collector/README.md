@@ -1,4 +1,4 @@
-# `collector@7.1.0`
+# `collector@7.1.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Three cells:
 `assemble` (a `code` cell, the state machine), `window` (a `store` cell, the state) and `clock`
@@ -82,7 +82,7 @@ message context.
 
 | lane | who sends it | what it does |
 |---|---|---|
-| `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory; a turn without the person's words (empty `user`, an agent text) is held as a deferred `assistant` row and opens nothing (GH #1378) |
+| `in_turn` | the inbound surface (proxy, intake) | writes the turn, opens the assembly, asks memory; a turn without the person's words (empty `user`, an agent text) opens nothing (GH #1378): the agent's text goes to the curator at once, as a `curate` of its own turn with `hop.line_only` `"1"` and one `assistant` text, which the curator files without a model call -- held for the next round, it never reached the wall when the caller hung up first (GH #1567) |
 | `in_advice` | an async tool's return lane (an advisor core), carrying `context.consult_id` | the SAME chain as `in_turn`, filed under role `advice`: an event that arrives after its turn ended and opens a fresh round. Since `collector@4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)) in two stages when it carries a `consult_id`: the advice row is parked and the `depart` row the consult left behind is looked up by that id, and the round opens under a key that carries the member turn which asked (see "A late answer never invents an identity") |
 | `in_delegation` | the duplex `voice` cell, carrying `context.delegation_id` | the SECOND event lane (`collector@4.2.0`), filed under role `delegation`: in a duplex call the model speaks to the caller itself and hands the backend an errand of its own accord while it keeps talking. Assembled exactly like `in_advice` -- it belongs to a turn on the MODEL's clock, so it opens a fresh round with the whole budget -- and, like it, never drained into a memory. **Since #1504 the whole body travels:** the last message with text is the task, as before, and every message in front of it (the conversation so far, when the sender carries it) leaves on each `curate` of the round as body `history` (`[{origin, type, text, turn_id?}]`, whole, in order, each entry in the `origin` it came in -- #1507: not only `user` and `assistant`) beside `messages`; nothing is cut here, and a delegation that carries its task alone has no `history`. |
 | `in_bundle` | the memory hive's recall port | becomes the memory leg of this turn. ONE meaning since `4.0.0` -- it carried a second, the tool result of a `memory_recall` call, told apart by a `memory_call_id` the request carried out ([#552](https://github.com/mmeyerlein/meclaw/issues/552)) |
@@ -259,7 +259,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@7.1.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@7.1.1",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 

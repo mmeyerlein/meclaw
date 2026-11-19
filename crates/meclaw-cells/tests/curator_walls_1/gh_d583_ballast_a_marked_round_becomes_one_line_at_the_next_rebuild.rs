@@ -181,14 +181,14 @@ fn a_marked_round_becomes_one_line_at_the_next_rebuild() {
         if round[0] > 0 && o.shown(&wall, round[0] - 1) == Shown::Whole {
             let before = &wall.pieces[round[0] - 1];
             let b = (0..window.len())
-                .find(|m| window[*m].ends_with(before.text()))
+                .find(|m| without_carried(&window[*m]).ends_with(before.text()))
                 .expect("the round before stands");
             assert!(b < at, "{}: {key} stands after {}", o.who(), before.key);
         }
         if last + 1 < wall.pieces.len() && o.shown(&wall, last + 1) == Shown::Whole {
             let after = &wall.pieces[last + 1];
             let a = (0..window.len())
-                .find(|m| window[*m].ends_with(after.text()))
+                .find(|m| without_carried(&window[*m]).ends_with(after.text()))
                 .expect("the round after stands");
             assert!(at < a, "{}: {key} stands before {}", o.who(), after.key);
         }

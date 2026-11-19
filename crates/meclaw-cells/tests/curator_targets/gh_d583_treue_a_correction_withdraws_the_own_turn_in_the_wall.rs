@@ -24,8 +24,9 @@ use meclaw_core::serde_json::{Value, json};
 
 const FISH: &str = "Yesterday I went fishing and pulled an old bicycle out of the lake.";
 const CORRECTING: &str = "I have to take something back.\n\n```sidecar\n{\"correction\": \"The fishing story at the start of this conversation was made up. Do not repeat it.\"}\n```";
-const WITHDRAWN: &str =
-    "[withdrawn -- said before in this conversation and taken back as wrong; do not repeat it]\n";
+/// GH #1566, the same class: the frame stands on the element before the
+/// withdrawn answer (the person's words), never inside the model's own text.
+const WITHDRAWN: &str = "\n[your answer right after this: withdrawn -- said before in this conversation and taken back as wrong; do not repeat it]";
 
 fn assistant_texts(msgs: &[Value]) -> Vec<String> {
     msgs.iter()
@@ -76,10 +77,30 @@ fn gh_d583_treue_a_correction_withdraws_the_own_turn_in_the_wall() {
     let said_now = assistant_texts(&msgs);
     let fish: Vec<&String> = said_now.iter().filter(|t| t.contains(FISH)).collect();
     assert_eq!(fish.len(), 1, "the turn keeps its place: {msgs:#?}");
-    assert!(
-        fish[0].starts_with(WITHDRAWN) && fish[0].ends_with(FISH),
-        "the withdrawn turn stands framed, its words after the frame: {:?}",
+    assert_eq!(
+        fish[0].as_str(),
+        FISH,
+        "the withdrawn turn keeps its words, no frame in its own text: {:?}",
         fish[0]
+    );
+    let carrier: Vec<&Value> = msgs
+        .iter()
+        .filter(|m| {
+            m["origin"] == "user"
+                && m["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("How was your weekend?")
+        })
+        .collect();
+    assert_eq!(carrier.len(), 1, "{msgs:#?}");
+    assert!(
+        carrier[0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .ends_with(WITHDRAWN),
+        "the element before the withdrawn turn ends with its frame: {:?}",
+        carrier[0]["text"]
     );
     // Order and roles stay: the person's question, the withdrawn answer,
     // the next question, the correcting answer, the running turn.

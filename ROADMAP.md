@@ -101,6 +101,8 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.89.2: this patch keeps a duty from losing its tool and keeps the curator's frames out of the words a model
+  says.
 - v0.89.1: this patch makes the decisions of a talky composite fail small and keeps a slow decider from costing a
   turn its safety or its time.
 - v0.89.0: this release calibrates the decisions of a talky composite: every decider's answer lands on one

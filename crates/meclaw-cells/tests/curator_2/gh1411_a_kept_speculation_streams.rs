@@ -933,6 +933,47 @@ fn gh1411_speculation_off_moves_no_byte() {
         }
     }
     assert_eq!(rate_lifted, 8, "the model call edges that lift the rate");
+    // GH #1568 (d54g peerfix): the route's owed families ride its round trips --
+    // every edge that parks the route's hop in the context parks `owed` as
+    // `route_owed`, every edge back hands it on, and every exit edge of talky
+    // drops it (GH #494). Those keys are the owed families', not this pin's;
+    // a modifier has no form that leaves a key out when it is empty, so the
+    // edges carry them whatever `owed_families` holds. Shipped (`{}`) the
+    // route finds no family in an empty `owed` and its emissions stay as they
+    // were (gh_d54g_stamp_route_an_owed_family_stands_on_the_stamp); every
+    // other byte stays locked.
+    let owed_park = "has(hop.owed) ? hop.owed : ''";
+    let owed_hand = "has(context.route_owed) ? context.route_owed : ''";
+    let (mut parked, mut handed_on, mut owed_dropped) = (0, 0, 0);
+    for e in old.iter_mut() {
+        let Some(m) = e.get_mut("modifier").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if let Some(sc) = m.get_mut("set_context").and_then(Value::as_object_mut)
+            && sc.get("route_owed") == Some(&json!(owed_park))
+        {
+            sc.remove("route_owed");
+            parked += 1;
+        }
+        if let Some(sh) = m.get_mut("set_hop").and_then(Value::as_object_mut)
+            && sh.get("owed") == Some(&json!(owed_hand))
+        {
+            sh.remove("owed");
+            handed_on += 1;
+        }
+        for (list, key) in [("delete_context", "route_owed"), ("delete_hop", "owed")] {
+            if let Some(keys) = m.get_mut(list).and_then(Value::as_array_mut) {
+                let before = keys.len();
+                keys.retain(|k| k != key);
+                owed_dropped += before - keys.len();
+            }
+        }
+    }
+    assert_eq!(
+        (parked, handed_on, owed_dropped),
+        (5, 5, 46),
+        "the edges that carry the owed families"
+    );
     assert_eq!(
         digest(&Value::Array(old)),
         TALKY_EDGES_SHA256,

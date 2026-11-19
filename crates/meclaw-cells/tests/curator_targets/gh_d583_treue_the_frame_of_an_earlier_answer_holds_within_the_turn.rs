@@ -24,13 +24,22 @@ const ASK: &str = "How is the weather in Berlin today?";
 const WEATHER: &str = "In Berlin it is 12 degrees and sunny today.";
 const AGAIN: &str = "Hello again from the other phone.";
 
+/// The earlier answer and the element right before it, which carries its
+/// frame (GH #1566: never the model's own text), joined as they stand.
 fn framed_answer(msgs: &[Value]) -> String {
-    msgs.iter()
-        .find(|m| m["text"].as_str().unwrap_or("").ends_with(WEATHER))
-        .unwrap_or_else(|| panic!("the earlier answer stays: {msgs:#?}"))["text"]
-        .as_str()
-        .unwrap_or("")
-        .to_string()
+    let i = msgs
+        .iter()
+        .position(|m| m["text"].as_str().unwrap_or("").ends_with(WEATHER))
+        .unwrap_or_else(|| panic!("the earlier answer stays: {msgs:#?}"));
+    assert!(
+        i > 0,
+        "something stands before the earlier answer: {msgs:#?}"
+    );
+    format!(
+        "{}\u{0}{}",
+        msgs[i - 1]["text"].as_str().unwrap_or(""),
+        msgs[i]["text"].as_str().unwrap_or("")
+    )
 }
 
 #[test]
@@ -46,14 +55,15 @@ fn gh_d583_treue_the_frame_of_an_earlier_answer_holds_within_the_turn() {
     t.h.row(at(0), "s0", "t1", "user", &user(ASK), 0);
     t.h.row(at(10), "s0", "t1", "assistant", &said(WEATHER), 1);
     let since = base.format("%Y-%m-%d %H:%M UTC").to_string();
-    let frame =
-        format!("[your own answer in an earlier session, since {since} -- said then, not now]\n");
+    let frame = format!(
+        "\n[your answer right after this: your own, in an earlier session, since {since} -- said then, not now]\u{0}{WEATHER}"
+    );
 
     let id = "call_tool_treue_0001";
     let first = t.call("t1", 0, json!([user("Read the file, please.")]));
     let before = framed_answer(&first.messages());
     assert!(
-        before.starts_with(&frame),
+        before.ends_with(&frame),
         "the first call of the turn frames the earlier answer: {before:?}"
     );
     t.answer(&first, "tool_calls", json!([tool_call(id, "read_file")]));
@@ -74,7 +84,7 @@ fn gh_d583_treue_the_frame_of_an_earlier_answer_holds_within_the_turn() {
     assert!(
         msgs.iter().any(|m| {
             let t = m["text"].as_str().unwrap_or("");
-            t.starts_with("[other session, since ") && t.ends_with(AGAIN)
+            t.starts_with("[other session, since ") && t.contains(AGAIN)
         }),
         "check of the setup: the new line of the earlier session stands as said meanwhile: {msgs:#?}"
     );

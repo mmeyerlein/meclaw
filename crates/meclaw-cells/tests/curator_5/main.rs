@@ -17,6 +17,7 @@ pub mod curator_moveout;
 pub mod curator_profiles;
 #[path = "../support/curator_target.rs"]
 pub mod curator_target;
+pub mod gh_d583_nachlese_a_late_recall_pair_never_lands_before_the_turns_words;
 pub mod gh_d583_nachlese_a_mixed_recall_block_sends_no_quote_of_the_wall;
 pub mod gh_d583_nachlese_a_mostly_rejected_brief_leaves_the_old_window;
 pub mod gh_d583_nachlese_a_pair_the_first_call_left_out_stays_out;
@@ -68,4 +69,3 @@ pub mod gh_d58_form_a_recall_block_is_decided_once_at_the_tail;
 pub mod gh_d58_form_a_summarised_round_is_not_lost;
 pub mod gh_d58_form_a_tool_round_never_changes_its_prefix;
 pub mod gh_d58_form_a_warm_call_only_appends;
-pub mod gh_d58_form_after_a_round_without_an_answer_the_rebuild_is_applied;

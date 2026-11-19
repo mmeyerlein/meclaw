@@ -1,4 +1,4 @@
-# `talky@8.0.2`
+# `talky@8.1.0`
 
 A whole conversational agent as one template. Four referenced units under one hive:
 [`session-keeper`](../session-keeper/), [`collector`](../collector/),
@@ -74,13 +74,13 @@ The five sub-units are **references**, not copies. Each of the five directories 
 one `config.json` and nothing else:
 
 ```json
-{"cell": {"type": "ref", "template": "collector@7.1.0"}}
+{"cell": {"type": "ref", "template": "collector@7.1.1"}}
 ```
 
 At instantiation the referenced template's tree takes that position, so the instance is
 byte-for-byte the tree the copies used to produce -- and every cell inside it now records
 the template it really came from: `collector/assemble` is stamped with the `collector` version it was grown from, with
-`talky@8.0.2` above it in its provenance chain. `5.2.2` moves the `collector` pin to
+`talky@8.1.0` above it in its provenance chain. `5.2.2` moves the `collector` pin to
 `4.2.1` ([#728](https://github.com/mmeyerlein/meclaw/issues/728)): the answer of an advice or a
 delegation round carries the member's turn, and `hop.late` beside it. The same version gives
 `brain` the OpenRouter app attribution (`http_referer` / `x_title`, overridable by
@@ -503,7 +503,10 @@ for a question that needs what the person said earlier -- their people, their li
 and `families` the names of `families` (`web`, `history`: the tool families of this
 composite's menu) the decider said yes to at `yes_threshold` or more -- the families at
 `family_threshold` when a set gives it a number ("" as shipped: `yes_threshold`); the families are
-the hint the curator scopes a quick round's tools by. `intent` is one of `intents`, or
+the hint the curator scopes a quick round's tools by. A family a turn owes (`owed_families`,
+[#1568](https://github.com/mmeyerlein/meclaw/issues/1568)) stands among them whatever the decider said: a turn with a
+message of an origin the param names carries a duty, and the tool that fulfils it is offered; the
+owed names ride out and back on the hop (`owed`, in context `route_owed`) like the moment of the ask. `intent` is one of `intents`, or
 `""`. `duration` is how long the decider took, in ms: the moment of the ask rides on the
 hop of the call (`asked_at`), into context on the way to `./decide` (`route_asked_at`)
 and back onto the hop of the answer, so `./route` keeps no state.
@@ -1146,7 +1149,7 @@ names its own curator answers, `["*"]` for everything a tools hive has -- and th
 behind those names are asked for:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "talky@8.0.2",
+{"add_nodes": [{"name": "scribe", "template": "talky@8.1.0",
                 "override_params": {"collector/assemble": {"tools": ["web_search", "bash"]}}}]}
 ```
 
@@ -1867,6 +1870,7 @@ below names the CELL the knob belongs to, because that is what an
 | `choices`, `stamp_out`, `context_turns` | param | `{}`; `"0"`; `0` | route -- a product's own questions in the same decide call, the stamp out of the rim on `stamp`, and the person's last turns for the decider (GH #1304); all off as shipped. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `unsure_families` | param | `"0"` | route -- `"1"` lets an unsure stamp keep the families the decider said yes to, its needs stay empty ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `family_threshold` | param | `""` | route -- the bar of the families alone (OR-583-70): a number names a family the decider said yes to at that value or more, the needs stay at `yes_threshold`; `""` (shipped, or any value that is no number) is `yes_threshold`, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
+| `owed_families` | param | `{}` | route -- `{<origin>: [<family>, ...]}`: a turn with a message of that origin owes those families; an owed family `families` offers stands on every stamp of the turn, judged, unsure, failed or late -- the tool for a duty the turn carries, a composition setting and no model parameter ([#1568](https://github.com/mmeyerlein/meclaw/issues/1568)); `{}` (shipped): nothing owed |
 | `stamp_needs_yes` | param | `"0"` | route -- `"1"` adds `needs_yes` to a judged stamp: the yes-value of every asked need the decider answered, also below `yes_threshold` ([#1466](https://github.com/mmeyerlein/meclaw/issues/1466)); never on a fallback stamp or the rim copy; off, today's bytes. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |
 | `partial_unit`, `partial_min_chars` | param | `"off"`; `12` | quick, brain -- `sentence` streams the answer and emits each finished sentence on the lane `partial` before the final answer, a sentence shorter than `partial_min_chars` waits for the next boundary (GH #1410); declared so a set can switch it on ([#1412](https://github.com/mmeyerlein/meclaw/issues/1412)); off, today's bytes |
 | `notes_class` | param | `"talk"` | route -- the class a stamp with a choice's note leaves on, since only the `brain` way shows turn notes (GH #1340); `""` keeps the decider's path. See [The route stamp](#the-route-stamp-route-and-decide-gh-1247) |

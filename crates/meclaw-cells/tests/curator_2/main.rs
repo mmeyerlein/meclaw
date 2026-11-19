@@ -55,12 +55,12 @@ pub mod gh1436_b_a_renewed_mention_keeps_the_topic;
 pub mod gh1436_c_the_switch_off_reads_byte_identical;
 pub mod gh1436_d_one_aging_function_in_history_and_policy;
 pub mod gh1436_e_an_aged_seed_is_not_fed_back;
+pub mod gh1566_a_copied_frame_of_an_own_answer_is_not_filed;
 pub mod gh892_the_window_follows_its_role_and_the_models_trim;
 pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;
 pub mod gh901_the_hook_register_parses_three_languages;
 pub mod gh904_the_curator_clock_keeps_one_row;
-pub mod gh916_a_pin_source_is_replaced;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;
 #[path = "../mock_openai.rs"]

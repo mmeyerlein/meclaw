@@ -77,7 +77,11 @@ fn bytes(run: &Run) -> Vec<(Value, Value)> {
 /// `j-withdrawn` (the `withdrawn` marks of the scope, so a withdrawn own answer is no said line);
 /// the only moved bytes: the stack with that read taken back gives the digest before, old
 /// `16c8c9454b3b2990a955547d36f5c6f1d1fc948eb53e11f49263c335267038e0`.
-const MASTER_OFF_DIGEST: &str = "6527ae6f6f23c18efba607d50c9c6ec388632e1747a3ce15a43ba976e925e9c9";
+/// Re-blessed for GH #1567 (d54g curwall): the seed reads one leg more, `s-closed` (the newest
+/// `session_closed` marks, so the open end of a closed earlier session is said to be over); no
+/// session is closed here, so the answer is the one of before -- the only moved bytes are the read.
+/// Old `6527ae6f6f23c18efba607d50c9c6ec388632e1747a3ce15a43ba976e925e9c9`.
+const MASTER_OFF_DIGEST: &str = "206901d15afe65b5b8d49e2bc402d9ceac6563b2b723e8d1b730c139894f5def";
 
 fn digest(runs: &[&Run]) -> String {
     let all: Vec<Value> = runs

@@ -680,6 +680,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "spec",
@@ -800,6 +801,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -835,6 +837,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -870,6 +873,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1056,6 +1060,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1088,6 +1093,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1198,6 +1204,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1233,6 +1240,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1268,6 +1276,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1303,6 +1312,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1365,6 +1375,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1397,6 +1408,7 @@
               "tools_refused",
               "inner_source",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "turn_notes",
@@ -1434,6 +1446,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1466,6 +1479,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1519,6 +1533,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "spec",
@@ -1556,6 +1571,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "spec",
@@ -1587,6 +1603,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1619,6 +1636,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1652,6 +1670,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1684,6 +1703,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1719,6 +1739,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1751,6 +1772,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1789,6 +1811,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "spec",
@@ -1820,6 +1843,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1862,6 +1886,7 @@
               "tools_refused",
               "inner_source",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "turn_notes",
@@ -1894,6 +1919,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1926,6 +1952,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -1998,6 +2025,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2030,6 +2058,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2062,6 +2091,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2126,7 +2156,8 @@
           "condition": "has(hop.route) && hop.route == 'decide' && !has(hop.state)",
           "modifier": {
             "set_context": {
-              "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''"
+              "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
+              "route_owed": "has(hop.owed) ? hop.owed : ''"
             }
           }
         },
@@ -2138,11 +2169,13 @@
             "set_hop": {
               "route": "'in_decision'",
               "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
-              "state": "has(context.route_state) ? context.route_state : ''"
+              "state": "has(context.route_state) ? context.route_state : ''",
+              "owed": "has(context.route_owed) ? context.route_owed : ''"
             },
             "delete_context": [
               "route_asked_at",
-              "route_state"
+              "route_state",
+              "route_owed"
             ]
           }
         },
@@ -2153,7 +2186,8 @@
           "modifier": {
             "set_context": {
               "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
-              "route_state": "hop.state"
+              "route_state": "hop.state",
+              "route_owed": "has(hop.owed) ? hop.owed : ''"
             }
           }
         },
@@ -2165,11 +2199,13 @@
             "set_hop": {
               "route": "'in_decision'",
               "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
-              "state": "has(context.route_state) ? context.route_state : ''"
+              "state": "has(context.route_state) ? context.route_state : ''",
+              "owed": "has(context.route_owed) ? context.route_owed : ''"
             },
             "delete_context": [
               "route_asked_at",
-              "route_state"
+              "route_state",
+              "route_owed"
             ]
           }
         },
@@ -2196,6 +2232,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2231,6 +2268,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2266,6 +2304,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2308,7 +2347,8 @@
             },
             "set_context": {
               "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
-              "route_state": "has(hop.state) ? hop.state : ''"
+              "route_state": "has(hop.state) ? hop.state : ''",
+              "route_owed": "has(hop.owed) ? hop.owed : ''"
             }
           }
         },
@@ -2325,7 +2365,8 @@
               "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
               "route_state": "has(hop.state) ? hop.state : ''",
               "route_first": "hop.first",
-              "route_second_at": "has(hop.second_at) ? hop.second_at : ''"
+              "route_second_at": "has(hop.second_at) ? hop.second_at : ''",
+              "route_owed": "has(hop.owed) ? hop.owed : ''"
             }
           }
         },
@@ -2342,7 +2383,8 @@
               "state",
               "first",
               "second_at",
-              "asked_at"
+              "asked_at",
+              "owed"
             ]
           }
         },
@@ -2354,11 +2396,13 @@
             "set_hop": {
               "route": "'in_view'",
               "state": "has(context.route_state) ? context.route_state : ''",
-              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''"
+              "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
+              "owed": "has(context.route_owed) ? context.route_owed : ''"
             },
             "delete_context": [
               "route_state",
-              "route_asked_at"
+              "route_asked_at",
+              "route_owed"
             ]
           }
         },
@@ -2372,14 +2416,16 @@
               "state": "has(context.route_state) ? context.route_state : ''",
               "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
               "first": "has(context.route_first) ? context.route_first : ''",
-              "second_at": "has(context.route_second_at) ? context.route_second_at : ''"
+              "second_at": "has(context.route_second_at) ? context.route_second_at : ''",
+              "owed": "has(context.route_owed) ? context.route_owed : ''"
             },
             "delete_context": [
               "route_state",
               "route_asked_at",
               "route_first",
               "route_second_at",
-              "judge_for"
+              "judge_for",
+              "route_owed"
             ]
           }
         },
@@ -2435,7 +2481,8 @@
             "set_context": {
               "route_asked_at": "has(hop.asked_at) ? hop.asked_at : ''",
               "route_first": "has(hop.first) ? hop.first : ''",
-              "route_second_at": "has(hop.second_at) ? hop.second_at : ''"
+              "route_second_at": "has(hop.second_at) ? hop.second_at : ''",
+              "route_owed": "has(hop.owed) ? hop.owed : ''"
             }
           }
         },
@@ -2448,12 +2495,14 @@
               "route": "'in_second'",
               "asked_at": "has(context.route_asked_at) ? context.route_asked_at : ''",
               "first": "has(context.route_first) ? context.route_first : ''",
-              "second_at": "has(context.route_second_at) ? context.route_second_at : ''"
+              "second_at": "has(context.route_second_at) ? context.route_second_at : ''",
+              "owed": "has(context.route_owed) ? context.route_owed : ''"
             },
             "delete_context": [
               "route_asked_at",
               "route_first",
-              "route_second_at"
+              "route_second_at",
+              "route_owed"
             ]
           }
         },
@@ -2483,6 +2532,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2518,6 +2568,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2550,6 +2601,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2643,6 +2695,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2678,6 +2731,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2713,6 +2767,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2745,6 +2800,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",
@@ -2828,6 +2884,7 @@
               "tools_refused",
               "turn_notes",
               "route_state",
+              "route_owed",
               "route_second_at",
               "route_first",
               "inner_source",

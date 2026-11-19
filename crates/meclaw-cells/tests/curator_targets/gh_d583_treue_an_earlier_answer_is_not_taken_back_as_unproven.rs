@@ -46,19 +46,23 @@ fn gh_d583_treue_an_earlier_answer_is_not_taken_back_as_unproven() {
         "check of the setup: no tool result of the earlier session in the window: {msgs:#?}"
     );
     let since = base.format("%Y-%m-%d %H:%M UTC").to_string();
-    let answer = msgs
+    let at_answer = msgs
         .iter()
-        .find(|m| text(m).ends_with(ANSWER))
+        .position(|m| text(m).ends_with(ANSWER))
         .unwrap_or_else(|| panic!("the own earlier answer stays: {msgs:#?}"));
+    let answer = &msgs[at_answer];
     assert_eq!(
         answer["origin"], "assistant",
         "the earlier answer stays the model's own: {answer:#?}"
     );
+    // GH #1566: the frame is the last line of the element before the answer;
+    // the answer keeps its own words.
+    assert_eq!(text(answer), ANSWER, "no frame in the model's own text");
     assert!(
-        text(answer).starts_with(&format!(
-            "[your own answer in an earlier session, since {since} -- said then, not now]\n"
+        text(&msgs[at_answer - 1]).ends_with(&format!(
+            "\n[your answer right after this: your own, in an earlier session, since {since} -- said then, not now]"
         )),
         "the earlier answer stands as said in an earlier session: {:?}",
-        text(answer)
+        text(&msgs[at_answer - 1])
     );
 }

@@ -45,12 +45,12 @@ fn gh_d583_treue_the_jena_answer_of_an_earlier_session_keeps_its_frame() {
     let call = h.curate("s2", "t1", 0, json!([user(NOW)]), mode("Be brief."));
     let msgs = call.messages();
     let since = base.format("%Y-%m-%d %H:%M UTC").to_string();
-    let find = |line: &str| -> Value {
+    let at = |line: &str| -> usize {
         msgs.iter()
-            .find(|m| text(m).ends_with(line))
+            .position(|m| text(m).contains(line))
             .unwrap_or_else(|| panic!("{line:?} stays in the window: {msgs:#?}"))
-            .clone()
     };
+    let find = |line: &str| -> Value { msgs[at(line)].clone() };
     for line in [HOME, FAR] {
         let m = find(line);
         assert!(
@@ -67,12 +67,17 @@ fn gh_d583_treue_the_jena_answer_of_an_earlier_session_keeps_its_frame() {
             m["origin"], "assistant",
             "{line:?} stays the model's own: {m:#?}"
         );
+        // GH #1566: the frame is the last line of the element before the
+        // answer; the answer keeps its own words.
+        assert_eq!(text(&m), line, "no frame in the model's own text");
+        let before = &msgs[at(line) - 1];
         assert!(
-            text(&m).starts_with(&format!(
-                "[your own answer in an earlier session, since {since} -- said then, not now]\n"
-            )),
+            before["origin"] != "assistant"
+                && text(before).ends_with(&format!(
+                    "\n[your answer right after this: your own, in an earlier session, since {since} -- said then, not now]"
+                )),
             "the own answer of the earlier session keeps its frame: {:?}",
-            text(&m)
+            text(before)
         );
     }
 }

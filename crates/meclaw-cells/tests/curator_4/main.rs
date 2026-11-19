@@ -7,6 +7,7 @@ pub mod assistant_followup;
 pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
 pub mod curator_profiles;
+pub mod gh_d38_k6_keep_recent_stays_the_floor;
 pub mod gh_d38_k6_null_budget_is_byte_identical;
 pub mod gh_d38_k6_the_budget_never_outgrows_the_aim;
 pub mod gh_d38_k6_the_budget_spans_the_day_boundary;
@@ -58,6 +59,5 @@ pub mod gh_d38_z3_the_handover_sets_the_brief_in_verbatim;
 pub mod gh_d38_z3_the_summary_is_itemised_and_attributed;
 pub mod gh_d583_nachlese_a_call_after_a_consult_is_judged_against_the_held_window;
 pub mod gh_d583_nachlese_a_key_with_spaces_is_taken_as_its_snake_form;
-pub mod gh_d583_nachlese_a_late_recall_pair_never_lands_before_the_turns_words;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;

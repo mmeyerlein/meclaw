@@ -190,6 +190,11 @@ harness = "assemble_judge"
 match = "^gh_d54g_listennote"
 harness = "curator_live"
 
+# d54g curwall (GH #1567): the spoken line and the end of a closed session, beside the live pins.
+[[rule]]
+match = "^gh_d54g_curwall"
+harness = "curator_live"
+
 [[rule]]
 match = "^gh_d54g_stamp_notes"
 harness = "curator_frame"

@@ -14,6 +14,7 @@ pub mod gh1564_a_woken_turn_answers_on_its_channel;
 pub mod gh1564_the_wake_ends_the_wait_for_the_stamp;
 pub mod gh_d54g_listennote_seam_carries_the_choices;
 pub mod gh_d54g_stamp_route;
+pub mod gh_d54g_stamp_route_an_owed_family_stands_on_the_stamp;
 pub mod gh_d583_kern_route_a_late_stamp_carries_its_yes_values;
 pub mod gh_d583_kern_route_error_and_unsure_carry_none;
 pub mod gh_d583_kern_route_family_threshold_bars_the_families_alone;
