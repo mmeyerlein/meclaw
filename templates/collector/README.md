@@ -1,4 +1,4 @@
-# `collector@7.1.1`
+# `collector@7.2.0`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Three cells:
 `assemble` (a `code` cell, the state machine), `window` (a `store` cell, the state) and `clock`
@@ -93,7 +93,7 @@ message context.
 | `in_tool` | a tool cell | one tool result: **every** `tool_result` turn of its `messages[]`, each filed under the call id it answers. See "What a tool result may carry" below |
 | `in_answer` | the brain, on `finish_reason == 'stop'` (through the dispatcher), or a completion cut on `length` (through the splitter in talky and, since GH #892, in cogny) | lets the answer out and, since `collector@5.0.0` (GH #889), drops the rows of its round, carrying `hop.finish_reason` onto the answer and marking a `length` finish `hop.truncated = "1"` (since `collector@4.4.0`, [#843](https://github.com/mmeyerlein/meclaw/issues/843)); every interim (`hop.interim`, a bridge) and every answer pass the store first: a bridge is said only while nothing went out in its turn and never after its turn's answer, a held or late one is dropped with a stderr line, and an answer whose text already went out leaves marked `hop.repeat` ([#1300](https://github.com/mmeyerlein/meclaw/issues/1300), [#1505](https://github.com/mmeyerlein/meclaw/issues/1505), see "At most one bridge, exactly one answer"). The round is open while its opening row `leg-window` is there. The sentence rides beside the store op (`hop.gate` → `context.col_gate`), so a refused op never swallows the answer: it leaves with `hop.store_error`/`hop.store_operation` and without `hop.degraded`, and a bridge the store could not check is not said |
 | `in_round_sweep` | a timer or an operator, on `hop.route == 'sweep'` | re-checks every open tool round and closes the stale ones; equally **never fired by the template itself** |
-| `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under -- and, since `4.1.0`, `sidecar[]` beside them, the sections that answerer wants in the block a `splitter` cuts out of the answer (GH #606). Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and both halves are re-derived as the union over every answerer's row (GH #529). See "The menu is asked for" and "One block, several offers" below |
+| `in_menu` | the tools hive this agent's tools live in, answering on `tool_schemas` | the declarations of the tools this agent DECLARED it uses: `schemas[]` and the names the hive had nothing under -- and, since `4.1.0`, `sidecar[]` beside them, the sections that answerer wants in the block a `splitter` cuts out of the answer (GH #606). Since `3.4.0` the answer is filed under `context.tool_answerer` as ONE row of the `menu` table and both halves are re-derived as the union over every answerer's row (GH #529). A third half, `contacts[]` (`{id, name}` per contact the answerer's tools reach), is written as the durable family `system.contacts` ([#1573](https://github.com/mmeyerlein/meclaw/issues/1573)). See "The menu is asked for", "One block, several offers" and "The contacts of a menu answer" below |
 | `mutation_committed` | the level above, carrying the mutation door's receipt (GH #553) | the occasion to ask for the menu again. The hive's own door turns it into the internal `in_menu_tick`, which is why nothing outside ever names that lane. It replaced `./menu-clock`, a five-minute poll |
 
 Exits leave **from the hive path** on `hop.route`:
@@ -259,7 +259,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@7.1.1",
+{"add_nodes": [{"name": "scribe", "template": "collector@7.2.0",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -542,6 +542,43 @@ ask for a block at all and nothing is written. `menu_answerers` beside it says w
 **`./assemble`'s cell contract moved again** (`contract.version` 2.1.0): `sidecar` joins
 `consumes.body` as the offers of one answer, `sidecar_sections` joins the emitted hop keys,
 and where there was one setting there were two -- `sidecar` and `sidecar_max_chars`, the second gone since `collector@7.0.1` (the curator decides what fits, R-IG-1).
+
+### The contacts of a menu answer (`contacts[]`, [#1573](https://github.com/mmeyerlein/meclaw/issues/1573))
+
+A tool can address somebody by an id -- a contact of the person this agent works for -- and
+the model can only use it when a window says which ids there are. `roster` does not: it holds
+the participants of the channel and nothing else. Measured before this: a round offered the
+model such a tool, `roster` was empty, no id stood anywhere in the request, and the model
+guessed (a fetch of a local file) and told its person it had no access.
+
+**The list comes from whoever answers for the tool.** A menu answer on `in_menu` may carry
+`contacts[]` beside `schemas[]` and `sidecar[]`, one `{id, name}` per contact. It is
+normalised (an entry without an id is dropped, an id given twice is kept once, the first
+time), kept in the answerer's row of the `menu` table (column `contacts`) and merged over
+every row the way the menu is: answerers in name order, the first one wins an id. The merge
+writes it on the `menu` message, beside `system.tools`, as the family `contacts`: one text
+leaf, `Contacts (address a contact by its id):` and then one line `<id> = <name>` (or the bare
+id) per contact. The curator keeps it with the other slots (`in_slots`) and hands it to every
+window whose system part carries the durable families -- a whole-tree window on every call,
+a delta window on the call after it changed. Like the menu it is durable state: one write per
+change, nothing per turn.
+
+**Absent or `[]`, the answerer's contacts are gone.** One answerer's row is its whole last
+answer, so an answer without the key revokes the contacts this answerer held, exactly as
+`contacts: []` does -- durable state is revoked, never merely abandoned (GH #606). Every
+merge that writes writes the family anew from the rows still holding a list, and writes it
+EMPTY when none does, so a list nobody holds any more never stays standing in a window. The
+empty leaf contributes nothing to the prompt: a tree without any source of contacts reads the
+prompt of before, byte for byte. `contacts: []` is recorded even with no tool and no section
+beside it; an answer empty in every half is parked as before (GH #529) and changes nothing. A
+source that offers contacts alone therefore answers under a `context.tool_answerer` of its
+own; under the name of a tools answerer its contacts and that answerer's tools would replace
+each other. A source may send its answer whenever its list changes: `in_menu` needs no
+question in front of it.
+
+Pins: `gh1573_a_menu_answer_carries_the_contacts_family` (record, merge, revocation by
+an answer without the key and by `[]`, no product name in the block) and `gh1573_a_held_contacts_slot_reaches_the_window`
+(the family in a whole-tree and in a delta window, nothing without the slot).
 
 ### Folded menu and route stamp (`fold_tools`, `in_route`, [#1244](https://github.com/mmeyerlein/meclaw/issues/1244))
 

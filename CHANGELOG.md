@@ -12,6 +12,15 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.89.4] — 2026-11-20
+
+This release lets a companion see who it can reach. A source that answers the tool menu may now add a `contacts` list (id and display name); the collector keeps it as its own family `system.contacts` next to the tools, and every window that carries the persistent families shows it. A source that answers without the list withdraws its contacts, and a colony without any contact source sends exactly the same prompt as before ([#1573](https://github.com/mmeyerlein/meclaw/issues/1573)).
+
+### Added
+
+- `collector`: a menu answer may carry the contacts its tools reach, and every window that carries the durable system part shows them ([#1573](https://github.com/mmeyerlein/meclaw/issues/1573)). A round offered the model a tool that addresses a contact by an id, but no window said which ids there are -- `roster` lists only the participants of the channel -- so the model guessed and told its person it had no access. An answer on `in_menu` may now carry `contacts[]` (`{id, name}`) beside `schemas[]` and `sidecar[]`; it is kept per answerer (new column `contacts` of the `menu` table, added to an existing store on the next spawn) and merged in answerer order, and the merge writes the family `system.contacts` beside `system.tools`: one line `<id> = <name>` per contact. An answer without the key, like `contacts: []`, revokes that answerer's contacts: every merge writes the family anew from the answerers still holding a list, empty when none does. The curator hands it on like the other durable families, with no new name. Shipped, no answerer sends contacts, so the family is an empty leaf and every prompt stays as it was.
+- **Template versions (#1573):** second digit, `collector@7.2.0`; third digit, `builder-librarian@2.2.117`; third digit for the pins that follow, `assistant@4.0.7`, `builder@1.34.5`, `cogny@5.16.3`, `figure@2.1.7`, `meclaw-os@2.4.15`, `member@2.10.7`, `memory-hive@3.22.4`, `org@2.2.29`, `simple-agent@2.4.4`, `talky@8.1.1`.
+
 ## [0.89.3] — 2026-11-20
 
 This patch makes the Linux release binary run on every x86-64-v2 CPU again. The 0.89.2 assets were built on a new runner image and need a CPU with AVX2: on one without it they stop with `SIGILL` on the first `--apply` or `--validate`; 0.89.3 replaces them. The release build now names x86-64-v2 as its floor for the Rust and the C dependencies, and a release step runs the binary on that floor before it ships ([#1571](https://github.com/mmeyerlein/meclaw/issues/1571)). With it the public CI runs green on the ubuntu-26.04 runner image.

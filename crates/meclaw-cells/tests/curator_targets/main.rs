@@ -11,6 +11,7 @@ pub mod curator_profiles;
 pub mod curator_target;
 pub mod d58_target_intake_and_push_take_their_names_from_the_instance;
 pub mod d58_target_the_compositions_deliver_by_target;
+pub mod gh1573_a_held_contacts_slot_reaches_the_window;
 pub mod gh_d583_kern_a_fallback_target_is_its_walls_source;
 pub mod gh_d583_kern_a_first_spec_call_without_a_row_drops_the_reply_leaf;
 pub mod gh_d583_kern_a_json_true_switches_like_one;

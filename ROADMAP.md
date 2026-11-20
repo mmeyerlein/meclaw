@@ -101,6 +101,7 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.89.4: this release lets a companion see who it can reach.
 - v0.89.3: this patch makes the Linux release binary run on every x86-64-v2 CPU again.
 - v0.89.2: this patch keeps a duty from losing its tool and keeps the curator's frames out of the words a model
   says.

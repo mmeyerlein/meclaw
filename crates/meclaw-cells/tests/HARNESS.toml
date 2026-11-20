@@ -63,6 +63,16 @@ harness = "curator_targets"
 match = "^d58_target_"
 harness = "curator_targets"
 
+# GH #1573: the curator half of the contacts family sits beside the target
+# pins (it runs the same hive); the collector half beside the menu merge.
+[[rule]]
+match = "^gh1573_a_held_contacts_slot"
+harness = "curator_targets"
+
+[[rule]]
+match = "^gh1573_a_menu_answer"
+harness = "misc_5"
+
 # D58 judge (GH #1480): the route's two pins go to a binary of their own
 # beside `assemble` (`assemble` holds 60 files; two more would split it into
 # `assemble_1`/`assemble_2` and rename the binary other strands filter on);
