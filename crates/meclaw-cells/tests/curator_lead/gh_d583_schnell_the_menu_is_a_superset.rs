@@ -1,6 +1,6 @@
 //! Wave d58-3, strand `schnell` (GH #1529, contract point 2) -- the tool menu
-//! of a session is a superset; the turn's choice is a hint and a refusal at
-//! the call, never a new menu.
+//! of a session is a superset; the turn's choice is a hint, never a new menu
+//! and never a refusal at the call (GH #1576).
 //! OR-583.stapel.8, GH #1333: the element on top stands directly before the
 //! person's words, which stay the last message before the answer.
 //!
@@ -14,8 +14,9 @@
 //! is warm go on top, the system part is sorted only at a cache miss. Now the
 //! menu of a session is the union of every family the target was allowed in
 //! it; it grows and shrinks only at a rebuild. The curator still chooses per
-//! turn, but as a hint in the element on top and as a refusal at the call
-//! (`hop.tools_refused`, the road the consult's deny takes since GH #1497).
+//! turn, but as a hint in the element on top; a tool on the menu stays
+//! callable (GH #1576 -- until then the rest was refused at the call through
+//! `hop.tools_refused` with the consult's text, though nothing ran).
 //! A tool the superset does not hold yet forces the break -- the provider
 //! knows no other way to add one -- and the curator says why: reason
 //! `menu_grow`; the watch counts it as a break as before.
@@ -154,11 +155,12 @@ fn gh_d583_schnell_turns_with_other_families_keep_the_menu() {
     assert_eq!(b3, json!(0), "no prefix break on the third call");
 }
 
-/// Pin: a family on the menu that the turn's stamp does not name is refused
-/// at the call (`hop.tools_refused`), the turn's own family is not; the
-/// element at the end of the window names the turn's choice as a hint.
+/// Pin: a family on the menu that the turn's stamp does not name stays on
+/// the menu and is not refused at the call (GH #1576: the menu is an offer,
+/// `hop.tools_refused` is the running consult's alone); the element at the
+/// end of the window names the turn's choice as a hint.
 #[test]
-fn gh_d583_schnell_a_family_outside_the_turn_is_refused_at_the_call() {
+fn gh_d583_schnell_a_family_outside_the_turn_is_a_hint_not_a_refusal() {
     if !shipped() {
         return;
     }
@@ -172,17 +174,9 @@ fn gh_d583_schnell_a_family_outside_the_turn_is_refused_at_the_call() {
     let (c2, _) = turn(&mut h, "t2", "What is on my list?", "orga");
     let refused = listed(c2.hop.get("tools_refused"));
     assert!(
-        refused
-            .iter()
-            .any(|n| n == "story" || n.starts_with("story_")),
-        "the family the turn does not name is refused at the call: {:?}",
+        refused.is_empty(),
+        "no family on the menu is refused at the call (GH #1576): {:?}",
         c2.hop
-    );
-    assert!(
-        !refused
-            .iter()
-            .any(|n| n == "orga" || n.starts_with("orga_")),
-        "the turn's own family is not refused: {refused:?}"
     );
     let last = on_top_of(&c2, "What is on my list?");
     let text = sj::to_string(&last).unwrap_or_default();
@@ -257,13 +251,13 @@ fn menu_grows(h: &Hive) -> Vec<Vec<Value>> {
     h.rows("SELECT kind, value FROM marks WHERE kind = 'menu_grow' OR value LIKE '%menu_grow%'")
 }
 
-/// Pin (review I-1 of the strand, OR-583.schnell.5): a turn whose class
-/// takes no tool is a choice of the turn, not a new menu -- the call sends
-/// the session's menu, refuses every tool on it at the call and says in the
-/// element at the end that this turn takes none; the turn after it sends the
+/// Pin (review I-1 of the strand, OR-583.schnell.5; GH #1576): a turn whose
+/// class takes no tool is a choice of the turn, not a new menu -- the call
+/// sends the session's menu, refuses none of it at the call (an offer, not a
+/// lock) and says in the element at the end that this turn takes none; the turn after it sends the
 /// same menu again. No break, no `menu_grow`.
 #[test]
-fn gh_d583_schnell_a_turn_without_tools_keeps_the_menu_and_refuses_it() {
+fn gh_d583_schnell_a_turn_without_tools_keeps_the_menu_callable() {
     if !shipped() {
         return;
     }
@@ -307,12 +301,10 @@ fn gh_d583_schnell_a_turn_without_tools_keeps_the_menu_and_refuses_it() {
         c2.body.get("tool_scope")
     );
     let refused = listed(c2.hop.get("tools_refused"));
-    for n in &allowed {
-        assert!(
-            refused.contains(n),
-            "every tool on the menu is refused at the call: {n} not in {refused:?}"
-        );
-    }
+    assert!(
+        refused.is_empty(),
+        "no tool on the menu is refused at the call (GH #1576): {refused:?}"
+    );
     let last = on_top_of(&c2, "Which one?");
     let text = sj::to_string(&last).unwrap_or_default();
     assert!(
@@ -572,256 +564,6 @@ fn refused_and_sent(out: &[Value]) -> (Vec<String>, Vec<String>) {
     (refused, sent)
 }
 
-/// Pin (re-check C-1 of fix round 1, OR-583.schnell.8): with the shipped
-/// talky's fold on, the menu carries ONE leaf per family (`tools.story`,
-/// an `op` enum), and the dispatcher unfolds `story{op}` to `story_<op>`
-/// before it matches the refusal exactly. A folded family the turn does not
-/// choose is refused in every unfolded form its leaf's `op` enum names --
-/// the call `story{op: "read"}` comes back `tool_refused`, the turn's own
-/// `orga{op: "add"}` leaves as `orga_add`.
-#[test]
-fn gh_d583_schnell_a_folded_family_outside_the_turn_is_refused_in_every_op() {
-    if !shipped() {
-        return;
-    }
-    let (tools, folded) = talky_folded_menu();
-    let mut h = hive();
-    let c1 = call_on(
-        &mut h,
-        "quick",
-        "s1",
-        "t1",
-        0,
-        "simple",
-        "orga,story",
-        json!([user("Put the doctor on my list and read me a story.")]),
-        &tools,
-        &folded,
-    );
-    h.tap(&c1, "stop", warm_usage(), json!([said("Done.")]));
-    let c2 = call_on(
-        &mut h,
-        "quick",
-        "s1",
-        "t2",
-        0,
-        "simple",
-        "orga",
-        json!([user("What is on my list?")]),
-        &tools,
-        &folded,
-    );
-    let refused = listed(c2.hop.get("tools_refused"));
-    for name in ["story", "story_read", "story_tell", "story_help"] {
-        assert!(
-            refused.iter().any(|n| n == name),
-            "{name} is refused at the call: {refused:?}"
-        );
-    }
-    assert!(
-        !refused
-            .iter()
-            .any(|n| n == "orga" || n.starts_with("orga_")),
-        "the turn's own family is not refused: {refused:?}"
-    );
-    let out = dispatch(
-        &folded,
-        &refused.join(","),
-        &[
-            ("c1", "story", json!({"op": "read", "args": {}})),
-            (
-                "c2",
-                "orga",
-                json!({"op": "add", "args": {"item": "doctor"}}),
-            ),
-        ],
-    );
-    let (no, sent) = refused_and_sent(&out);
-    assert_eq!(
-        no,
-        vec!["c1".to_string()],
-        "the folded call outside the turn is refused: {out:?}"
-    );
-    assert_eq!(
-        sent,
-        vec!["orga_add".to_string()],
-        "the turn's own call leaves: {out:?}"
-    );
-}
-
-/// Pin (re-check C-1, OR-583.schnell.8 with OR-.5): a turn whose class takes
-/// no tool keeps the session's menu on a scoped call and refuses all of it
-/// -- with the fold on, every unfolded op of every family on it.
-#[test]
-fn gh_d583_schnell_a_turn_without_tools_refuses_every_op_of_a_folded_family() {
-    if !shipped() {
-        return;
-    }
-    let (tools, folded) = talky_folded_menu();
-    let mut h = hive_with_a_class_without_tools();
-    let c1 = call_on(
-        &mut h,
-        "quick",
-        "s1",
-        "t1",
-        0,
-        "simple",
-        "orga,story",
-        json!([user("Put the doctor on my list and read me a story.")]),
-        &tools,
-        &folded,
-    );
-    h.tap(&c1, "stop", warm_usage(), json!([said("Done.")]));
-    let c2 = call_on(
-        &mut h,
-        "quick",
-        "s1",
-        "t2",
-        0,
-        NO_TOOL_CLASS,
-        "",
-        json!([user("Which one?")]),
-        &tools,
-        &folded,
-    );
-    let refused = listed(c2.hop.get("tools_refused"));
-    for name in [
-        "orga_add",
-        "orga_list",
-        "orga_help",
-        "story_read",
-        "story_tell",
-    ] {
-        assert!(
-            refused.iter().any(|n| n == name),
-            "{name} is refused at the call: {refused:?}"
-        );
-    }
-    let out = dispatch(
-        &folded,
-        &refused.join(","),
-        &[
-            (
-                "c1",
-                "orga",
-                json!({"op": "add", "args": {"item": "doctor"}}),
-            ),
-            ("c2", "story", json!({"op": "tell"})),
-        ],
-    );
-    let (no, sent) = refused_and_sent(&out);
-    assert_eq!(
-        no,
-        vec!["c1".to_string(), "c2".to_string()],
-        "no folded call of the menu leaves: {out:?}"
-    );
-    assert!(sent.is_empty(), "nothing is sent: {out:?}");
-}
-
-/// Pin (OR-583.schnell.8, the fallback of OR-.7): a refused folded family
-/// whose leaf names no readable `op` enum cannot be refused op by op -- the
-/// call sends the empty menu instead, so no tool of it slips through.
-#[test]
-fn gh_d583_schnell_a_folded_family_without_readable_ops_gets_the_empty_menu() {
-    if !shipped() {
-        return;
-    }
-    let (mut tools, folded) = talky_folded_menu();
-    tools["story"] = json!({"text": json!({"type": "function", "function": {
-        "name": "story", "description": "Stories.",
-        "parameters": {"type": "object", "properties": {}}}}).to_string()});
-    let mut h = hive();
-    let c1 = call_on(
-        &mut h,
-        "quick",
-        "s1",
-        "t1",
-        0,
-        "simple",
-        "orga,story",
-        json!([user("Put the doctor on my list and read me a story.")]),
-        &tools,
-        &folded,
-    );
-    h.tap(&c1, "stop", warm_usage(), json!([said("Done.")]));
-    let c2 = call_on(
-        &mut h,
-        "quick",
-        "s1",
-        "t2",
-        0,
-        "simple",
-        "orga",
-        json!([user("What is on my list?")]),
-        &tools,
-        &folded,
-    );
-    assert_eq!(
-        c2.body.get("tool_scope").and_then(|s| s.get("allow")),
-        Some(&json!([])),
-        "the call sends the empty menu: {:?} {:?}",
-        c2.body.get("tool_scope"),
-        c2.hop.get("tools_refused")
-    );
-}
-
-/// Pin (wave d58-3, stapel minor m-C of the re-check of fix round 2): when
-/// the menu falls back to empty (OR-.8, an `op` enum it cannot read), the
-/// turn's choice is no tool -- the element on top says so (`This turn takes
-/// no tool.`) and never names a tool the empty menu does not hold. Before,
-/// it said "Tools for this turn: orga" over a call that offered none.
-#[test]
-fn gh_d583_schnell_the_empty_menu_of_unreadable_ops_names_no_tool_on_top() {
-    if !shipped() {
-        return;
-    }
-    let (mut tools, folded) = talky_folded_menu();
-    tools["story"] = json!({"text": json!({"type": "function", "function": {
-        "name": "story", "description": "Stories.",
-        "parameters": {"type": "object", "properties": {}}}}).to_string()});
-    let mut h = hive();
-    let c1 = call_on(
-        &mut h,
-        "quick",
-        "s1",
-        "t1",
-        0,
-        "simple",
-        "orga,story",
-        json!([user("Put the doctor on my list and read me a story.")]),
-        &tools,
-        &folded,
-    );
-    h.tap(&c1, "stop", warm_usage(), json!([said("Done.")]));
-    let c2 = call_on(
-        &mut h,
-        "quick",
-        "s1",
-        "t2",
-        0,
-        "simple",
-        "orga",
-        json!([user("What is on my list?")]),
-        &tools,
-        &folded,
-    );
-    assert_eq!(
-        c2.body.get("tool_scope").and_then(|s| s.get("allow")),
-        Some(&json!([])),
-        "check of the setup: the call sends the empty menu: {:?}",
-        c2.body.get("tool_scope")
-    );
-    let text = sj::to_string(&c2.messages()).unwrap_or_default();
-    assert!(
-        !text.contains("Tools for this turn"),
-        "the element names no tool over an empty menu: {text}"
-    );
-    assert!(
-        text.contains("This turn takes no tool."),
-        "the element says the turn takes no tool: {text}"
-    );
-}
-
 /// Pin (wave d58-3, stapel minor m-B): the range read of a session's records
 /// (`w-top`) keeps only the session's own keys, and a read that came back
 /// full of them says so on stderr like the read of the targets does -- a
@@ -866,7 +608,8 @@ fn gh_d583_schnell_the_read_of_a_sessions_records_says_when_it_came_back_full() 
 /// `tools.<F>` on this call's menu is no tool the call could name -- the
 /// dispatcher unfolds only what the model was offered. It adds no op and
 /// does not empty the menu; the fallback to the empty menu (OR-.8) holds
-/// only for a family on the menu whose `op` enum cannot be read.
+/// only for a family on the menu whose `op` enum cannot be read. Since
+/// GH #1576 nothing beyond the turn is refused at all; the menu still stays.
 #[test]
 fn gh_d583_schnell_a_folded_family_without_a_leaf_keeps_the_menu() {
     if !shipped() {
@@ -904,12 +647,8 @@ fn gh_d583_schnell_a_folded_family_without_a_leaf_keeps_the_menu() {
     );
     let refused = listed(c2.hop.get("tools_refused"));
     assert!(
-        refused.iter().any(|n| n == "story"),
-        "check of the setup: the folded family outside the turn is refused: {refused:?}"
-    );
-    assert!(
-        !refused.iter().any(|n| n.starts_with("story_")),
-        "a family without a leaf brings no op: {refused:?}"
+        refused.is_empty(),
+        "nothing beyond the turn is refused (GH #1576), so no op either: {refused:?}"
     );
     let allow = c2
         .body
@@ -1225,4 +964,221 @@ fn gh_d583_schnell_a_spec_call_does_not_fix_the_element_of_its_turn() {
         top.contains(FACT_TEXT) && choice.split(", ").any(|f| f == "orga"),
         "the normal call shows its own element, the fact and the turn's choice: {top}"
     );
+}
+
+/// One path of the class GH #1576 pins: a later turn of a session whose
+/// choice is narrower than the menu the session holds (`menu_superset`).
+struct Narrower {
+    /// What the row pins.
+    name: &'static str,
+    /// The shipped talky's fold on (`tools.<F>` leaves, `op` enums).
+    folded: bool,
+    /// The second turn's class takes no tool (`tools` "none").
+    no_tool_class: bool,
+    /// The folded `story` leaf names no readable `op` enum.
+    unreadable_ops: bool,
+    /// The families the second turn's stamp names.
+    families: &'static str,
+    /// The calls the model makes in the second turn (`(id, name, args)`)
+    /// and the tool names the dispatcher must send for them.
+    calls: &'static [(&'static str, &'static str, &'static str)],
+    sent: &'static [&'static str],
+}
+
+/// GH #1576: every path on which `menu_superset` (GH #1529) refused a tool
+/// that stood on the menu the call offered. The superset menu is an offer,
+/// not a lock: a tool on it is never refused at the call (`hop.tools_refused`
+/// stays empty -- the hard refusal is the running consult's alone, GH #1497,
+/// pinned in gh1280), the menu stays the session's, and a correct call of it
+/// leaves the dispatcher as a tool call. Before, the dispatcher answered it
+/// `tool_refused` with the consult's text ("already running ... do not call
+/// it again") though nothing ran, and the model told the person a change was
+/// pending that was never made.
+const NARROWER: &[Narrower] = &[
+    // The production case: turn 1 creates on `orga`, turn 2's stamp names
+    // only another family, the model changes the item on `orga` anyway.
+    Narrower {
+        name: "a change on orga while the turn names story (folded)",
+        folded: true,
+        no_tool_class: false,
+        unreadable_ops: false,
+        families: "story",
+        calls: &[(
+            "c1",
+            "orga",
+            r#"{"op": "add", "args": {"item": "doctor at six"}}"#,
+        )],
+        sent: &["orga_add"],
+    },
+    Narrower {
+        name: "story while the turn names orga (folded)",
+        folded: true,
+        no_tool_class: false,
+        unreadable_ops: false,
+        families: "orga",
+        calls: &[
+            ("c1", "story", r#"{"op": "read", "args": {}}"#),
+            ("c2", "orga", r#"{"op": "add", "args": {"item": "doctor"}}"#),
+        ],
+        sent: &["story_read", "orga_add"],
+    },
+    Narrower {
+        name: "story while the turn names orga (flat menu)",
+        folded: false,
+        no_tool_class: false,
+        unreadable_ops: false,
+        families: "orga",
+        calls: &[("c1", "story_read", "{}")],
+        sent: &["story_read"],
+    },
+    Narrower {
+        name: "a class without tools, flat menu",
+        folded: false,
+        no_tool_class: true,
+        unreadable_ops: false,
+        families: "",
+        calls: &[("c1", "story_read", "{}")],
+        sent: &["story_read"],
+    },
+    Narrower {
+        name: "a class without tools, folded menu",
+        folded: true,
+        no_tool_class: true,
+        unreadable_ops: false,
+        families: "",
+        calls: &[
+            ("c1", "orga", r#"{"op": "add", "args": {"item": "doctor"}}"#),
+            ("c2", "story", r#"{"op": "tell"}"#),
+        ],
+        sent: &["orga_add", "story_tell"],
+    },
+    Narrower {
+        name: "a folded family without readable ops outside the turn",
+        folded: true,
+        no_tool_class: false,
+        unreadable_ops: true,
+        families: "orga",
+        calls: &[("c1", "orga", r#"{"op": "add", "args": {"item": "doctor"}}"#)],
+        sent: &["orga_add"],
+    },
+];
+
+/// The names a call's `tool_scope.allow` lists.
+fn allow_of(call: &Msg) -> Vec<String> {
+    call.body
+        .get("tool_scope")
+        .and_then(|s| s.get("allow"))
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pin (GH #1576, table `NARROWER`): a tool on the offered menu is never
+/// refused because the turn chose narrower; the element on top still names
+/// the turn's choice as a hint.
+#[test]
+fn gh1576_a_tool_on_the_offered_menu_is_never_refused() {
+    if !shipped() {
+        return;
+    }
+    for case in NARROWER {
+        let (mut tools, folded) = if case.folded {
+            talky_folded_menu()
+        } else {
+            (Value::Null, String::new())
+        };
+        if case.unreadable_ops {
+            tools["story"] = json!({"text": json!({"type": "function", "function": {
+                "name": "story", "description": "Stories.",
+                "parameters": {"type": "object", "properties": {}}}}).to_string()});
+        }
+        let mut h = if case.no_tool_class {
+            hive_with_a_class_without_tools()
+        } else {
+            hive()
+        };
+        let c1 = call_on(
+            &mut h,
+            "quick",
+            "s1",
+            "t1",
+            0,
+            "simple",
+            "orga,story",
+            json!([user("Put the doctor on my list and read me a story.")]),
+            &tools,
+            &folded,
+        );
+        h.tap(&c1, "stop", warm_usage(), json!([said("Done.")]));
+        let path = if case.no_tool_class {
+            NO_TOOL_CLASS
+        } else {
+            "simple"
+        };
+        let c2 = call_on(
+            &mut h,
+            "quick",
+            "s1",
+            "t2",
+            0,
+            path,
+            case.families,
+            json!([user("Move it to six, please.")]),
+            &tools,
+            &folded,
+        );
+        let name = case.name;
+        let allow = allow_of(&c2);
+        for fam in ["orga", "story"] {
+            assert!(
+                allow
+                    .iter()
+                    .any(|n| n == fam || n.starts_with(&format!("{fam}_"))),
+                "{name}: the session's menu still offers {fam}: {allow:?}"
+            );
+        }
+        let refused = listed(c2.hop.get("tools_refused"));
+        assert!(
+            refused.is_empty(),
+            "{name}: no tool on the offered menu is refused at the call: {refused:?}"
+        );
+        let calls: Vec<(&str, &str, Value)> = case
+            .calls
+            .iter()
+            .map(|(id, n, a)| (*id, *n, sj::from_str(a).expect("args")))
+            .collect();
+        let out = dispatch(&folded, &refused.join(","), &calls);
+        let (no, sent) = refused_and_sent(&out);
+        assert!(
+            no.is_empty(),
+            "{name}: nothing is answered tool_refused: {out:?}"
+        );
+        let want: Vec<String> = case.sent.iter().map(|s| s.to_string()).collect();
+        assert_eq!(sent, want, "{name}: the calls leave as tool calls: {out:?}");
+        let text = sj::to_string(&c2.messages()).unwrap_or_default();
+        if case.no_tool_class {
+            assert!(
+                text.contains("takes no tool"),
+                "{name}: the element on top says the turn takes no tool: {text}"
+            );
+        } else {
+            let hint = text
+                .split("Tools for this turn: ")
+                .nth(1)
+                .and_then(|r| r.split('.').next())
+                .unwrap_or_default();
+            assert!(
+                hint.split(", ").any(|n| n == case.families),
+                "{name}: the element on top names the turn's choice: {text}"
+            );
+        }
+        assert!(
+            !text.contains("not for this turn"),
+            "{name}: the element on top does not forbid what stays callable: {text}"
+        );
+    }
 }

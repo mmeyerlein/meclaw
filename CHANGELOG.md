@@ -12,6 +12,15 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.89.5] — 2026-11-20
+
+This release keeps a companion from refusing its own tools. When a follow-up turn was routed more narrowly than the session's tool menu, a tool that was still on the offered menu could be refused with the message meant for a running errand, and the companion then told the person something untrue. The offered menu is now an offer: any tool on it stays callable, and only a running consult still blocks a second call, with its own true message ([#1576](https://github.com/mmeyerlein/meclaw/issues/1576)).
+
+### Fixed
+
+- **curator: a tool on the session's menu is callable again when the turn chose narrower ([#1576](https://github.com/mmeyerlein/meclaw/issues/1576)).** Since #1529 a `scoped` call sends the session's menu as a superset and refused everything beyond the turn's choice at the call (`hop.tools_refused`), the road of the consult's deny. The dispatcher answered a correct call of such a tool -- a change on `orga` one turn after the item was created, while the turn's stamp named only the timer -- as `tool_refused` with the consult's text ("already running ... do not call it again") though nothing ran, and the model told the person a change was pending that was never made. The menu is now an offer: nothing on it is refused because the turn chose narrower (a later turn's narrower stamp, a class whose entry says `tools` "none", a folded family in every `F_<op>`, a folded family whose ops cannot be read -- which used to get the empty menu); the element on top still names the turn's choice and says the other tools stay callable if the person's words need one. The one refusal at the call is the running consult's (#1497), whose text is true there.
+- **Template versions (#1576):** third digit, `curator@3.1.1`; third digit for the pins that follow, `assistant@4.0.8`, `builder@1.34.6`, `builder-librarian@2.2.118`, `cogny@5.16.4`, `figure@2.1.8`, `meclaw-os@2.4.16`, `member@2.10.8`, `memory-hive@3.22.5`, `org@2.2.30`, `simple-agent@2.4.5`, `talky@8.1.2`.
+
 ## [0.89.4] — 2026-11-20
 
 This release lets a companion see who it can reach. A source that answers the tool menu may now add a `contacts` list (id and display name); the collector keeps it as its own family `system.contacts` next to the tools, and every window that carries the persistent families shows it. A source that answers without the list withdraws its contacts, and a colony without any contact source sends exactly the same prompt as before ([#1573](https://github.com/mmeyerlein/meclaw/issues/1573)).
