@@ -299,12 +299,13 @@ def run_unit(unit, modules, root, python, env, timeout_s, run="unittest", top="r
         # with `FAILED (errors=1)` -- that unit was GREEN (GH #1313). And only
         # beside a summary that says 0: exit 5 without one is no statement.
         verdict, reason = "GREEN", ""
+    elif run == "unittest" and tests == 0 and fail:
+        # A failed setUpClass: no test ran, the summary counts the error.
+        # Python 3.12 exits 5 here, 3.14 exits 1 (#1571); the summary names
+        # it, not the exit code.
+        verdict, reason = "RED", "set-up failed, no test ran"
     elif run == "unittest" and proc.returncode == 5:
-        verdict = "RED"
-        if fail:
-            reason = "set-up failed, no test ran"
-        else:
-            reason, fail = "exit 5 without a readable test summary", 1
+        verdict, reason, fail = "RED", "exit 5 without a readable test summary", 1
     else:
         verdict = "RED"
         reason = _last_line(output) or "exit %d" % proc.returncode

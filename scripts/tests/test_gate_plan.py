@@ -2262,6 +2262,7 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_export_audit_scope",
             "scripts.tests.test_release_matches_battery",
             "scripts.tests.test_release_script",
+            "scripts.tests.test_cpu_floor",
             "scripts.tests.test_release_roadmap",
             "scripts.tests.test_pipeline_candidate",
             "scripts.tests.test_pipeline_gate_stdout"]])

@@ -1062,8 +1062,9 @@ stop_watcher() {   # <pid> <handshake fd> <seconds to wait for the handshake>
 # runs, so its locals are in scope. A watcher already stopped is not stopped
 # again: a TERM during `wait "$wp"` found its handshake read and sent the
 # TERM to the bare PID of a watcher that may be reaped (tb-s7 Restfenster i).
-# SC2317: only the trap of run_guarded calls it, shellcheck sees no caller in the group (GH #1223)
-# shellcheck disable=SC2154,SC2317
+# SC2317 (shellcheck 0.10) / SC2329 (0.11): only the trap of run_guarded calls it, shellcheck sees
+# no caller in the group (GH #1223, #1571)
+# shellcheck disable=SC2154,SC2317,SC2329
 guard_abort() {   # <exit code>
     [ -n "$tp" ] && kill -TERM -- "-$tp" 2>/dev/null
     [ -n "$wp" ] && [ -z "$watcher_stopped" ] && stop_watcher "$wp" "$hfd" 0

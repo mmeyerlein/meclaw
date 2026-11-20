@@ -524,12 +524,13 @@ mod tests {
                       def start():\n\
                       \x20   sys.setswitchinterval(1e-6)\n\
                       \x20   st = {'stop': threading.Event(), 'live': threading.Event(), 'checks': 0, 'hits': 0}\n\
+                      \x20   st['at_start'] = 'abc' in vars(sys.modules['collections'])\n\
                       \x20   threading.Thread(target=watch, args=(st,), daemon=True).start()\n\
                       \x20   st['live'].wait(30)\n\
                       \x20   return st\n\
                       def report(st):\n\
                       \x20   st['stop'].set()\n\
-                      \x20   sys.stdout.write('hits=%d watched=%s' % (st['hits'], st['checks'] > 0))\n\
+                      \x20   sys.stdout.write('at_start=%s seen=%s watched=%s' % (st['at_start'], st['hits'] > 0, st['checks'] > 0))\n\
                       if op == 'cold':\n\
                       \x20   st = start()\n\
                       \x20   for _ in range(300):\n\
@@ -567,7 +568,15 @@ mod tests {
         let script = GH1026_WATCHER_SCRIPT;
         let dir = tempfile::TempDir::new().expect("tempdir");
         let cold = cold_in_env(dir.path(), env, script);
-        assert_eq!(cold, "hits=0 watched=True", "the cold baseline");
+        // The bare interpreter binds nothing while it raises: what it sees is
+        // what it had at start. Python 3.12 starts without `collections.abc`
+        // (`at_start=False seen=False`), 3.14 binds it at start (#1571); warm
+        // and resident must report the same line either way.
+        assert!(
+            cold == "at_start=False seen=False watched=True"
+                || cold == "at_start=True seen=True watched=True",
+            "the cold baseline: {cold}"
+        );
         let mut docs = vec![r#"{"body":{"op":"start"}}"#];
         docs.extend([r#"{"body":{"op":"raise"}}"#; 300]);
         docs.push(r#"{"body":{"op":"report"}}"#);

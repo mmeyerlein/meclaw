@@ -281,8 +281,9 @@ token_seen_after_run() {
     token_held=0
     "$root/scripts/strand.sh" token check --pid 0 >/dev/null 2>&1 || true
 }
-# SC2317: only the traps of token_traps call it, shellcheck sees no caller in the group (GH #1223)
-# shellcheck disable=SC2317
+# SC2317 (shellcheck 0.10) / SC2329 (0.11): only the traps of token_traps call it, shellcheck sees
+# no caller in the group (GH #1223, #1571)
+# shellcheck disable=SC2317,SC2329
 token_seen_on_signal() {
     token_seen_after_run
     trap - "$1"

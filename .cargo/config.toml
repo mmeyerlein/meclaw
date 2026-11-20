@@ -1,6 +1,14 @@
 [build]
 rustflags = ["--cfg", "tokio_unstable"]
 
+# The release assets (musl) run on x86-64-v2 and nothing above it: SSE4.2 and
+# POPCNT, no AVX (GH #1571). A target table wins over [build] and replaces its
+# rustflags, so it repeats the cfg. The C half takes the same floor through
+# CFLAGS_x86_64_unknown_linux_musl in .github/workflows/release.yml, and
+# scripts/cpu_floor.py runs the asset on that floor before it ships.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["--cfg", "tokio_unstable", "-C", "target-cpu=x86-64-v2"]
+
 # Test binaries carried up to 200 MB each, 130 GB for all of them, with line
 # tables; a one-line change in a low crate re-links hundreds of them, and that
 # write volume -- not CPU -- is what starves a colony sharing the disk (GH #571)

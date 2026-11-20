@@ -44,6 +44,13 @@ jobs:
           CC_x86_64_unknown_linux_musl: musl-gcc
           AR_x86_64_unknown_linux_musl: ar
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          # The C half of the build (bundled SQLite, ring's C) is pinned to the
+          # same floor as the Rust half (.cargo/config.toml, target musl):
+          # x86-64-v2. On the ubuntu-26.04 image the 0.89.2 assets carried AVX2
+          # code in SQLite's FTS5 set-up and died with SIGILL on every host
+          # without AVX2 (GH #1571); the step "cpu floor" below refuses that.
+          CFLAGS_x86_64_unknown_linux_musl: -march=x86-64-v2 -mtune=generic
+          CXXFLAGS_x86_64_unknown_linux_musl: -march=x86-64-v2 -mtune=generic
         run: cargo build --release --target "$TARGET" -p meclaw
 
       # Stripping happens BEFORE the gate and the smoke test, so the artifact
@@ -77,6 +84,17 @@ jobs:
           cp -r examples/hello/. "$root/"
           printf 'OPENROUTER_API_KEY=dummy\n' > "$root/.env"
           ./target/$TARGET/release/meclaw --validate --root "$root" --env "$root/.env"
+
+      # The smoke test above runs on the builder, which has AVX2; the asset has
+      # to run on the floor too. Under qemu as a Nehalem (x86-64-v2: SSE4.2 and
+      # POPCNT, no AVX) a run ended by a signal is red (GH #1571).
+      - name: cpu floor
+        run: |
+          # qemu-user ships /usr/bin/qemu-x86_64 on 24.04 and 26.04; resolute
+          # publishes no qemu-user-static (and no qemu-x86_64-static at all).
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-user
+          python3 scripts/cpu_floor.py "target/$TARGET/release/meclaw" --qemu qemu-x86_64
 
       # The archive holds the binary and both licences plus the README, so an
       # unpacked tarball is legally and practically self-contained. The

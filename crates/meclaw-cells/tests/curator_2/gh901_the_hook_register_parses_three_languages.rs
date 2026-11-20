@@ -164,7 +164,7 @@ fn json_is_checked_with_its_place() {
             "  \n",
             "{\"a\": 1}",
             "[1, 2]\n",
-            "{\"a\":1,}",
+            "{\"a\" 1}",
             "[1,\n2",
             "\n\n  x"
         ]),
@@ -176,7 +176,8 @@ fn json_is_checked_with_its_place() {
             null,
             null,
             null,
-            {"message": "Expecting property name enclosed in double quotes", "line": 1, "col": 8},
+            // a missing colon reads the same in Python 3.12 and 3.14 (#1571)
+            {"message": "Expecting ':' delimiter", "line": 1, "col": 6},
             {"message": "Expecting ',' delimiter", "line": 2, "col": 2},
             {"message": "Expecting value", "line": 3, "col": 3},
         ])

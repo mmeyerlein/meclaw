@@ -130,12 +130,14 @@ fn broken_json_toml_and_python_are_refused_with_their_place() {
             "conf/app.json",
             "application/json",
             "text",
-            "{\n  \"a\": 1,\n}\n",
+            // A missing colon: Python 3.12 and 3.14 give the same message and
+            // place (a trailing comma reads differently from 3.14 on, #1571).
+            "{\n  \"a\" 1\n}\n",
         ),
         "json",
-        "Expecting property name enclosed in double quotes",
-        3,
-        1,
+        "Expecting ':' delimiter",
+        2,
+        7,
     );
     failed(
         &check("conf/app.toml", "", "text", "[server]\nport = \n"),

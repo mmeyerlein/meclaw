@@ -1438,6 +1438,8 @@ def _classes_of_path(path):
                  "scripts/release_matches_battery.py",
                  # release-tempo rt4 (#1387): the release chain, its test in gate-selftest
                  "scripts/release.py", "scripts/release.sh",
+                 # ci2604 (#1571): the release asset's CPU floor, its test in gate-selftest
+                 "scripts/cpu_floor.py",
                  "scripts/check_required_pins.py", REQUIRED_PINS,
                  ".config/nextest.toml", ".config/slow-debt.toml",
                  ".config/testing-bans.toml", ".config/testing-bans.baseline.json",
@@ -4698,6 +4700,8 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_release_matches_battery",
               # release-tempo rt4 (#1387): the release chain prepare/publish
               "scripts.tests.test_release_script",
+              # ci2604 (#1571): the release asset's CPU floor under qemu
+              "scripts.tests.test_cpu_floor",
               # d54g roadmap (#1518): the release's line in the Shipped section of ROADMAP.md
               "scripts.tests.test_release_roadmap",
               # d53-1 c2 (#1389): the candidate build on every lane
