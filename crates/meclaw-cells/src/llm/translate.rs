@@ -142,7 +142,9 @@ fn walk_collect(node: &Value, out: &mut Vec<String>) {
 /// then `params.provider_extra` is overlaid at root (overlay wins per
 /// cell-types.md:145).
 ///
-/// - `system_string` empty -> no leading system-message inserted.
+/// - The `system` turns before the first conversational turn join
+///   `system_string` in that one leading system message (`\n\n` between,
+///   GH #1579); both empty -> no leading system-message inserted.
 /// - `tools_extracted` empty -> no `tools` key in body.
 ///
 /// Returns `Err(TranslateError::TypeUnsupported)` for `image`/`audio`/unknown
@@ -157,17 +159,69 @@ pub(crate) fn build_openai_request(
     use meclaw_core::serde_json::{Map, json};
 
     let mut messages: Vec<Value> = Vec::new();
-    if !system_string.is_empty() {
-        messages.push(json!({"role": "system", "content": system_string}));
+    // GH #1579 (OR-54z-34): the system turns before the first conversational
+    // turn join the system string in ONE leading system message, `\n\n`
+    // between, order kept, blank ones dropped -- the counterpart of the
+    // Messages wire's top-level `system`. A strict chat template (vLLM)
+    // refuses a second system message even right behind the first.
+    let start = conversation_start(input_messages);
+    let mut system = system_string.to_string();
+    for turn in &input_messages[..start] {
+        let mapped = map_turn(turn)?;
+        let text = mapped.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if text.trim().is_empty() {
+            continue;
+        }
+        if !system.is_empty() {
+            system.push_str("\n\n");
+        }
+        system.push_str(text);
+    }
+    if !system.is_empty() {
+        messages.push(json!({"role": "system", "content": system}));
     }
     // Merge rule (cell-types § Provider-Translate): CONSECUTIVE UBF tool_call
     // turns collapse into ONE wire assistant message with tool_calls[] — the
     // provider 400s per-call assistant messages whose results follow later
     // (Run-4b wire finding, receipt 922d93f). UBF stays one turn = one call.
     let mut prev_was_tool_call = false;
-    for turn in input_messages {
+    // GH #1579 (fix round 1): notes that fell into an open tool round, held
+    // until the round's `tool` messages are out -- they must follow the
+    // assistant's `tool_calls` directly (Run-4b).
+    let mut held_notes: Vec<Value> = Vec::new();
+    let in_open_round = |messages: &[Value]| {
+        messages.last().is_some_and(|m| {
+            m.get("role").and_then(|r| r.as_str()) == Some("tool")
+                || m.get("tool_calls").is_some_and(|t| t.is_array())
+        })
+    };
+    for (i, turn) in input_messages.iter().enumerate().skip(start) {
+        // GH #1579: a system turn after the first conversational turn is a
+        // user message of its own at its place, never `role: system`. Not
+        // merged into a neighbour: this wire takes consecutive user messages
+        // (the trailing note of GH #1282 is one too), and the neighbour stays
+        // byte-identical. Inside an open tool round it waits behind the
+        // round's results and does not split its tool calls.
+        if let Some(text) = mid_history_system_text(turn, i, start) {
+            if text.trim().is_empty() {
+                continue;
+            }
+            let note = json!({"role": "user", "content": system_note(text)});
+            if in_open_round(&messages) {
+                held_notes.push(note);
+            } else {
+                messages.push(note);
+                prev_was_tool_call = false;
+            }
+            continue;
+        }
         let is_tool_call = turn.get("origin").and_then(|v| v.as_str()) == Some("assistant")
             && turn.get("type").and_then(|v| v.as_str()) == Some("tool_call");
+        let is_tool_result = turn.get("type").and_then(|v| v.as_str()) == Some("tool_result");
+        if !(is_tool_result || (is_tool_call && prev_was_tool_call)) && !held_notes.is_empty() {
+            messages.append(&mut held_notes);
+            prev_was_tool_call = false;
+        }
         if is_tool_call && prev_was_tool_call {
             let entry = tool_call_entry(turn)?;
             if let Some(tcs) = messages
@@ -182,6 +236,7 @@ pub(crate) fn build_openai_request(
         messages.push(map_turn(turn)?);
         prev_was_tool_call = is_tool_call;
     }
+    messages.append(&mut held_notes);
 
     if is_anthropic_model(&params.model) {
         fold_trailing_assistant_chat(&mut messages);
@@ -226,6 +281,51 @@ pub(crate) const TRAILING_ASSISTANT_NOTE: &str = "[Context, not a new request --
 /// The note for the assistant texts `said`, joined like turns.
 pub(crate) fn trailing_assistant_note(said: &[&str]) -> String {
     format!("{TRAILING_ASSISTANT_NOTE}\n{}", said.join("\n\n"))
+}
+
+/// GH #1579: the fixed marker in front of a `system` turn that stands after
+/// the first conversational turn. Such a turn stays at its place in the
+/// history, as this line, a line break and the turn's text verbatim, in a
+/// user-role message ([`system_note`]) -- on both wires. A mid-history
+/// `role: system` is not portable (a strict chat template refuses it: vLLM
+/// answers 400 "System message must be at the beginning"), and lifting it
+/// into the top-level system changes the system prefix whenever the note
+/// changes, so the cached prefix was lost from its very start.
+pub(crate) const SYSTEM_NOTE: &str =
+    "[System note -- context from the system, not a message from the person:]";
+
+/// The marked note a mid-history `system` turn travels as (GH #1579).
+pub(crate) fn system_note(text: &str) -> String {
+    format!("{SYSTEM_NOTE}\n{text}")
+}
+
+/// Whether a wire text is a [`system_note`]. The cache marks skip such a
+/// text: the stable prefix ends before the note, so a changed note keeps the
+/// marked bytes (GH #1579). A person's text that itself begins with the
+/// marker only moves a mark one message earlier.
+pub(crate) fn is_system_note(text: &str) -> bool {
+    text.starts_with(SYSTEM_NOTE)
+}
+
+/// GH #1579: the index of the first conversational turn -- the first turn
+/// whose origin is not `system` (`input.len()` when there is none). A
+/// `system` turn before it joins the system part as before; one at or after
+/// it is a note in place ([`system_note`]).
+pub(crate) fn conversation_start(input_messages: &[Value]) -> usize {
+    input_messages
+        .iter()
+        .position(|t| t.get("origin").and_then(|v| v.as_str()) != Some("system"))
+        .unwrap_or(input_messages.len())
+}
+
+/// GH #1579: the text of turn `i` when it is a mid-history `system` text
+/// that leaves as a note: at or after `start` ([`conversation_start`]) and
+/// not blank (a blank one says nothing and is dropped, as the Messages wire
+/// drops every blank text).
+pub(crate) fn mid_history_system_text(turn: &Value, i: usize, start: usize) -> Option<&str> {
+    let field = |k: &str| turn.get(k).and_then(|v| v.as_str());
+    (i >= start && field("origin") == Some("system") && field("type") == Some("text"))
+        .then(|| field("text").unwrap_or(""))
 }
 
 /// GH #1282: whether a chat-wire model id names an Anthropic model behind a
@@ -574,13 +674,24 @@ pub(crate) fn apply_cache_wire(
             if has_system {
                 mark_message_end(&mut messages[0], &mark);
             }
-            let Some(youngest_user) = messages.iter().rposition(|m| role_is(m, "user")) else {
+            // GH #1579: a system note is neither the youngest user turn nor
+            // the end of the stable history -- both marks stay on the bytes
+            // before it, so a changed note keeps the cached prefix.
+            let is_note = |m: &Value| text_of(m).is_some_and(is_system_note);
+            let Some(youngest_user) = messages
+                .iter()
+                .rposition(|m| role_is(m, "user") && !is_note(m))
+            else {
                 return;
             };
             // The system message sits at 0 and a user message never does when
             // it is there, so the history is never an inverted range.
             let history = &mut messages[usize::from(has_system)..youngest_user];
-            if let Some(last_with_text) = history.iter_mut().rev().find(|m| has_text(m)) {
+            if let Some(last_with_text) = history
+                .iter_mut()
+                .rev()
+                .find(|m| has_text(m) && !is_note(m))
+            {
                 mark_message_end(last_with_text, &mark);
             }
         }
@@ -1030,7 +1141,23 @@ pub(crate) fn attach_image_parts(
     let Some(messages) = request.get_mut("messages").and_then(|m| m.as_array_mut()) else {
         return;
     };
-    let last_user = nth_user_index(messages, image_anchor(input_messages), |m| {
+    // GH #1579: the notes before the anchor are role-`user` messages on this
+    // wire too; counted from the turns, never guessed from a text.
+    let anchor_turn = input_messages.iter().rposition(|t| {
+        t.get("origin").and_then(|v| v.as_str()) == Some("user")
+            && t.get("type").and_then(|v| v.as_str()) == Some("text")
+    });
+    let start = conversation_start(input_messages);
+    let notes_before = input_messages
+        .iter()
+        .enumerate()
+        .take(anchor_turn.unwrap_or(0))
+        .filter(|&(i, t)| {
+            mid_history_system_text(t, i, start).is_some_and(|x| !x.trim().is_empty())
+        })
+        .count();
+    let anchor = image_anchor(input_messages).map(|o| o + notes_before);
+    let last_user = nth_user_index(messages, anchor, |m| {
         m.get("role").and_then(|r| r.as_str()) == Some("user")
     })
     .map(|idx| &mut messages[idx]);
@@ -2807,13 +2934,15 @@ mod gh1282_tests {
         build_openai_request(&params("anthropic/claude-sonnet-5"), "", turns, &[]).unwrap()
     }
 
-    /// Review PF M-1: a system turn behind the answer does not hide it -- a
-    /// gateway lifts system messages to the top-level system of a Claude
-    /// model, and the window would end on the assistant text after all. The
-    /// last non-system message decides; several trailing texts join into one
-    /// note, as on the Messages wire.
+    /// Review PF M-1: a system turn behind the answer never lets the window
+    /// end on the assistant text. Since GH #1579 such a turn is a marked
+    /// user note at its place (no mid-history `role: system` a gateway could
+    /// lift away), so the note itself closes the window and nothing is a
+    /// prefill; a trailing answer behind the note still folds into the
+    /// closing note, as on the Messages wire.
     #[test]
     fn a_system_turn_behind_the_answer_does_not_hide_the_prefill() {
+        let sys_note = |t: &str| format!("{}\n{t}", super::SYSTEM_NOTE);
         let body = claude(&[
             u("Plan me a trip."),
             a("Season 2 arrives in April."),
@@ -2823,8 +2952,8 @@ mod gh1282_tests {
             body["messages"],
             json!([
                 {"role": "user", "content": "Plan me a trip."},
-                {"role": "user", "content": format!("{NOTE}\nSeason 2 arrives in April.")},
-                {"role": "system", "content": "brief"}
+                {"role": "assistant", "content": "Season 2 arrives in April."},
+                {"role": "user", "content": sys_note("brief")}
             ])
         );
         let body = claude(&[u("q"), a("one"), sys("s"), a("two")]);
@@ -2832,8 +2961,9 @@ mod gh1282_tests {
             body["messages"],
             json!([
                 {"role": "user", "content": "q"},
-                {"role": "user", "content": format!("{NOTE}\none\n\ntwo")},
-                {"role": "system", "content": "s"}
+                {"role": "assistant", "content": "one"},
+                {"role": "user", "content": sys_note("s")},
+                {"role": "user", "content": format!("{NOTE}\ntwo")}
             ])
         );
         for w in [
@@ -2925,5 +3055,313 @@ mod gh1282_tests {
             let plain = build_openai_request(&params("m"), "", &w, &[]).unwrap();
             assert_eq!(claude["messages"], plain["messages"], "{claude}");
         }
+    }
+}
+
+#[cfg(test)]
+mod gh1579_tests {
+    //! GH #1579: a `system` turn after the first conversational turn stays
+    //! at its place as a marked note in a user message -- never a mid-history
+    //! `role: system`, which strict chat templates refuse (vLLM: "System
+    //! message must be at the beginning") and gateways lift into the
+    //! top-level system, where a changed note breaks the cached prefix.
+    use super::{apply_cache_wire, attach_image_parts, build_openai_request};
+    use crate::llm::params::LlmParams;
+    use meclaw_core::serde_json::{Value, json};
+
+    const SYS_NOTE: &str =
+        "[System note -- context from the system, not a message from the person:]";
+
+    fn params(extra: Value) -> LlmParams {
+        let mut raw = json!({"provider": "openai", "model": "m", "api_key": "k"});
+        for (k, v) in extra.as_object().unwrap() {
+            raw[k] = v.clone();
+        }
+        LlmParams::parse(&raw).unwrap()
+    }
+
+    fn turn(origin: &str, text: &str) -> Value {
+        json!({"origin": origin, "type": "text", "text": text})
+    }
+
+    fn note(text: &str) -> String {
+        format!("{SYS_NOTE}\n{text}")
+    }
+
+    /// Length of the longest common byte prefix of two strings.
+    fn common_prefix(a: &str, b: &str) -> usize {
+        a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
+    }
+
+    #[test]
+    fn gh1579_a_mid_history_system_turn_is_a_user_note_on_the_chat_wire() {
+        let w = [
+            turn("system", "lead"),
+            turn("user", "q"),
+            turn("assistant", "x"),
+            turn("system", "brief"),
+            turn("user", "next"),
+        ];
+        let body = build_openai_request(&params(json!({})), "S", &w, &[]).unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "system", "content": "S\n\nlead"},
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "x"},
+                {"role": "user", "content": note("brief")},
+                {"role": "user", "content": "next"}
+            ])
+        );
+        let messages = body["messages"].as_array().unwrap();
+        let first_talk = messages.iter().position(|m| m["role"] != "system").unwrap();
+        assert!(
+            messages[first_talk..].iter().all(|m| m["role"] != "system"),
+            "no system message after the first conversational turn: {body}"
+        );
+    }
+
+    /// A blank mid-history system turn says nothing and leaves no empty note,
+    /// as on the Messages wire; one at the end of the window is a note too.
+    #[test]
+    fn gh1579_a_blank_note_is_dropped_and_a_trailing_one_stays_a_note() {
+        let w = [
+            turn("user", "q"),
+            turn("system", "  "),
+            turn("assistant", "x"),
+            turn("system", "brief"),
+        ];
+        let body = build_openai_request(&params(json!({})), "", &w, &[]).unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "x"},
+                {"role": "user", "content": note("brief")}
+            ])
+        );
+    }
+
+    /// The prefix before a note is byte-identical when only the note changes,
+    /// the two cache marks included: the system mark on the system message,
+    /// the history mark on the last message before the note -- never on the
+    /// note itself, and a note behind the youngest user turn does not move
+    /// the history mark either.
+    #[test]
+    fn gh1579_the_prefix_stays_byte_identical_when_only_the_note_changes() {
+        let p = params(json!({"cache_mode": "breakpoints", "cache_ttl_s": 300}));
+        let mark = json!({"type": "ephemeral"});
+        let build = |w: &[Value]| {
+            let mut body = build_openai_request(&p, "S", w, &[]).unwrap();
+            apply_cache_wire(&mut body, &p, "/a/brain");
+            body
+        };
+        for tail in [false, true] {
+            let window = |n: &str| {
+                let mut w = vec![turn("user", "hello"), turn("assistant", "Hi there.")];
+                if tail {
+                    w.extend([turn("user", "Weather?"), turn("system", n)]);
+                } else {
+                    w.extend([turn("system", n), turn("user", "Weather?")]);
+                }
+                w
+            };
+            let one = build(&window("time 10:00"));
+            let two = build(&window("time 10:05, rain"));
+            let (s1, s2) = (one.to_string(), two.to_string());
+            let at = s1.find("[System note").expect("the note is in the request");
+            assert!(
+                common_prefix(&s1, &s2) >= at + SYS_NOTE.len(),
+                "prefix differs before the note:\n{s1}\n{s2}"
+            );
+            let messages = one["messages"].as_array().unwrap();
+            let marked: Vec<usize> = (0..messages.len())
+                .filter(|&i| messages[i].to_string().contains("cache_control"))
+                .collect();
+            assert_eq!(marked, vec![0, 2], "system mark and history mark: {one}");
+            assert_eq!(
+                messages[2],
+                json!({"role": "assistant", "content": [
+                    {"type": "text", "text": "Hi there.", "cache_control": mark}]})
+            );
+            let note_at = messages
+                .iter()
+                .position(|m| {
+                    m["content"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with(SYS_NOTE))
+                })
+                .expect("the note stays a plain string");
+            assert_eq!(note_at, if tail { 4 } else { 3 }, "{one}");
+            assert_eq!(
+                one["messages"].as_array().unwrap()[..note_at],
+                two["messages"].as_array().unwrap()[..note_at]
+            );
+        }
+    }
+
+    /// GH #847 still holds with a note in front of the anchor: the picture
+    /// joins the person's last turn, not the note.
+    #[test]
+    fn gh1579_an_image_joins_the_person_not_the_note() {
+        let w = [
+            turn("user", "a"),
+            turn("assistant", "b"),
+            turn("system", "brief"),
+            turn("user", "look at this"),
+        ];
+        let mut body = build_openai_request(&params(json!({})), "", &w, &[]).unwrap();
+        let part = json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}});
+        attach_image_parts(&mut body, &w, vec![part.clone()]);
+        assert_eq!(
+            body["messages"][2],
+            json!({"role": "user", "content": note("brief")})
+        );
+        assert_eq!(
+            body["messages"][3],
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "look at this"}, part]})
+        );
+    }
+
+    /// GH #1579 fix round 1 (review I2, ruling OR-54z-34): the system turns
+    /// before the first conversational turn join the system string in ONE
+    /// `role: system` message at the start (`\n\n` between, order kept), the
+    /// counterpart of the Messages wire's top-level `system` -- a strict chat
+    /// template (vLLM) refuses a second system message even right behind the
+    /// first. Blank ones fall, as there.
+    #[test]
+    fn gh1579_leading_system_turns_join_the_one_system_message() {
+        let w = [
+            turn("system", "lead one"),
+            turn("system", "  "),
+            turn("system", "lead two"),
+            turn("user", "q"),
+        ];
+        let body = build_openai_request(&params(json!({})), "S", &w, &[]).unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "system", "content": "S\n\nlead one\n\nlead two"},
+                {"role": "user", "content": "q"}
+            ])
+        );
+        let body = build_openai_request(&params(json!({})), "", &w, &[]).unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "system", "content": "lead one\n\nlead two"},
+                {"role": "user", "content": "q"}
+            ])
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.iter().filter(|m| m["role"] == "system").count(), 1);
+    }
+
+    /// The system mark sits at the end of the joined system part -- the
+    /// bytes it covered before plus the leading turns, which were part of
+    /// the stable prefix there too -- and the history mark where it was.
+    #[test]
+    fn gh1579_the_system_mark_ends_the_joined_system_part() {
+        let p = params(json!({"cache_mode": "breakpoints", "cache_ttl_s": 300}));
+        let mark = json!({"type": "ephemeral"});
+        let w = [
+            turn("system", "lead"),
+            turn("user", "hello"),
+            turn("assistant", "Hi there."),
+            turn("user", "Weather?"),
+        ];
+        let mut body = build_openai_request(&p, "S", &w, &[]).unwrap();
+        apply_cache_wire(&mut body, &p, "/a/brain");
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "system", "content": [
+                    {"type": "text", "text": "S\n\nlead", "cache_control": mark}]},
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Hi there.", "cache_control": mark}]},
+                {"role": "user", "content": "Weather?"}
+            ])
+        );
+    }
+
+    fn call(id: &str) -> Value {
+        let text = json!({"name": "get", "arguments": "{}"}).to_string();
+        json!({"origin": "assistant", "type": "tool_call", "id": id, "text": text})
+    }
+
+    fn result(id: &str) -> Value {
+        json!({"origin": "tool", "type": "tool_result", "id": id, "text": "r"})
+    }
+
+    fn wire_call(id: &str) -> Value {
+        json!({"id": id, "type": "function", "function": {"name": "get", "arguments": "{}"}})
+    }
+
+    /// GH #1579 fix round 1 (review I1 on this wire): a note inside an open
+    /// tool round waits behind the round's `tool` messages -- they must follow
+    /// the assistant's `tool_calls` directly (Run-4b) -- and does not split
+    /// consecutive tool calls into two assistant messages. A note right
+    /// behind a result stays there.
+    #[test]
+    fn gh1579_a_note_in_an_open_tool_round_follows_the_tool_messages() {
+        let build = |w: &[Value]| {
+            build_openai_request(&params(json!({})), "", w, &[]).unwrap()["messages"].clone()
+        };
+        let note_msg = json!({"role": "user", "content": note("brief")});
+        let tool_msg = |id: &str| json!({"role": "tool", "tool_call_id": id, "content": "r"});
+        let behind_the_call = [
+            turn("user", "q"),
+            call("c1"),
+            turn("system", "brief"),
+            result("c1"),
+            turn("user", "next"),
+        ];
+        assert_eq!(
+            build(&behind_the_call),
+            json!([
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": null, "tool_calls": [wire_call("c1")]},
+                tool_msg("c1"),
+                note_msg,
+                {"role": "user", "content": "next"}
+            ])
+        );
+        let between = [
+            turn("user", "q"),
+            call("c1"),
+            turn("system", "brief"),
+            call("c2"),
+            result("c1"),
+            turn("system", "  "),
+            result("c2"),
+        ];
+        assert_eq!(
+            build(&between),
+            json!([
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": null,
+                 "tool_calls": [wire_call("c1"), wire_call("c2")]},
+                tool_msg("c1"),
+                tool_msg("c2"),
+                note_msg
+            ])
+        );
+        let behind_the_result = [
+            turn("user", "q"),
+            call("c1"),
+            result("c1"),
+            turn("system", "brief"),
+        ];
+        assert_eq!(
+            build(&behind_the_result),
+            json!([
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": null, "tool_calls": [wire_call("c1")]},
+                tool_msg("c1"),
+                note_msg
+            ])
+        );
     }
 }

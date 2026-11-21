@@ -12,6 +12,15 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.89.6] — 2026-11-21
+
+This release makes the window the `llm` cell sends portable to every provider and keeps its cached prefix stable. System turns that sat in the middle of the history were sent as `role: system` on the chat wire, which providers with a strict chat template refuse, and were lifted into the top-level system on the Messages wire, which changed the cached prefix whenever such a note changed. Leading system turns now join the one system part at the start; every later one stays at its position as a marked note in the user part, after any tool results of an open round, on both wires. The bytes before a note stay identical, so the cache marks keep hitting ([#1579](https://github.com/mmeyerlein/meclaw/issues/1579)).
+
+### Fixed
+
+- **llm: a `system` turn in the middle of the history is portable and keeps the prompt cache ([#1579](https://github.com/mmeyerlein/meclaw/issues/1579)).** The chat wire sent such a turn as `role: system` in place, which a strict chat template refuses (vLLM with a local Qwen model: HTTP 400 "System message must be at the beginning") and a gateway lifts into the top-level system; the Messages wire appended it to the top-level `system`. Either way the system prefix changed whenever the note changed, and the cached prefix was lost from its start. A `system` turn before the first conversational turn still joins the system part -- on the chat wire now in ONE leading system message together with the system string, since a strict template refuses a second one even at the start; every later one now stays at its place on both wires as a user-role note behind the fixed marker `[System note -- context from the system, not a message from the person:]` (its own message on the chat wire, its own text block in the user message there on the Messages wire, so the roles still alternate); a note that falls into an open tool round follows the round's results, never ahead of a `tool_result`. The Responses wire is unchanged. Neither cache mark of `cache_mode: "breakpoints"` lands on a note, so the bytes before it stay identical when only the note changes.
+- **Template versions (#1579):** third digit for the pins that follow, `builder@1.34.7`, `builder-librarian@2.2.119`, `meclaw-os@2.4.17`.
+
 ## [0.89.5] — 2026-11-20
 
 This release keeps a companion from refusing its own tools. When a follow-up turn was routed more narrowly than the session's tool menu, a tool that was still on the offered menu could be refused with the message meant for a running errand, and the companion then told the person something untrue. The offered menu is now an offer: any tool on it stays callable, and only a running consult still blocks a second call, with its own true message ([#1576](https://github.com/mmeyerlein/meclaw/issues/1576)).

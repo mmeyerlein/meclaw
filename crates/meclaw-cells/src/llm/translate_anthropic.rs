@@ -9,22 +9,29 @@
 
 use crate::llm::params::{CacheMode, LlmParams};
 use crate::llm::translate::{
-    TranslateError, TranslatedResponse, cache_control, encode_base64, peer_content, takes_param,
+    TranslateError, TranslatedResponse, cache_control, conversation_start, encode_base64,
+    is_system_note, mid_history_system_text, peer_content, system_note, takes_param,
     trailing_assistant_note, usage_cost, usage_tokens_cache_write, usage_tokens_cached,
 };
 use meclaw_core::serde_json::{Map, Value, json};
 
 /// Build the `POST /v1/messages` body (T10-03).
 ///
-/// - `system` is a top-level field; a UBF `system` turn in the history is
-///   appended to it, because the Messages wire has no system role.
+/// - `system` is a top-level field; a UBF `system` turn before the first
+///   conversational turn is appended to it, because the Messages wire has no
+///   system role. A later one stays at its place as a marked note
+///   ([`system_note`], GH #1579), its own text block in the user message
+///   there, so a changed note leaves `system` and the history before it
+///   byte-identical and the cache marks keep hitting.
 /// - Every wire message carries content blocks, and a turn whose role equals
 ///   the previous one's is appended to it: consecutive `tool_call` turns
 ///   become ONE assistant message of `tool_use` blocks, and the
 ///   `tool_result` turns of the round, with any user text after them, ONE
 ///   user message in history order -- the provider answers 400 to a round
 ///   split over several messages or to a result behind a text block, and
-///   nothing is reordered here. Blank texts are dropped (`is_blank_text`).
+///   nothing is reordered here but a note: one that falls into an open round
+///   follows the round's results ([`push_block`], GH #1579). Blank texts are
+///   dropped (`is_blank_text`).
 /// - `image_blocks` ([`image_block`], T10-04) follow the text of the LAST
 ///   `user` turn (GH #847: never a `peer` turn), in the same user message;
 ///   without a `user` turn they close the history as user content.
@@ -49,7 +56,18 @@ pub(crate) fn build_messages_request(
     let mut images = Some(image_blocks).filter(|b| !b.is_empty());
     let mut system = system_string.to_string();
     let mut messages: Vec<Value> = Vec::new();
+    let start = conversation_start(input_messages);
     for (i, turn) in input_messages.iter().enumerate() {
+        if let Some(text) = mid_history_system_text(turn, i, start) {
+            if !text.trim().is_empty() {
+                push_block(
+                    &mut messages,
+                    "user",
+                    json!({"type": "text", "text": system_note(text)}),
+                );
+            }
+            continue;
+        }
         match map_turn(turn)? {
             Mapped::System(text) if text.trim().is_empty() => {}
             Mapped::System(text) => {
@@ -145,11 +163,23 @@ fn fold_trailing_assistant(messages: &mut Vec<Value>) {
 
 /// Append a content block under `role`: to the last message when it has the
 /// same role (the wire wants the roles to alternate), else as a new one.
+///
+/// GH #1579 (fix round 1): a `tool_result` goes in front of the system notes
+/// ([`is_system_note`]) that close the message -- a note that fell into an
+/// open tool round waits behind its results, because the provider answers
+/// 400 to a result behind a text block. Only notes move; any other text
+/// stays in history order.
 fn push_block(messages: &mut Vec<Value>, role: &str, block: Value) {
     match messages.last_mut() {
         Some(last) if last["role"] == role => {
             if let Some(content) = last.get_mut("content").and_then(Value::as_array_mut) {
-                content.push(block);
+                let at = if block["type"] == "tool_result" {
+                    let is_note = |b: &Value| b["text"].as_str().is_some_and(is_system_note);
+                    content.len() - content.iter().rev().take_while(|b| is_note(b)).count()
+                } else {
+                    content.len()
+                };
+                content.insert(at, block);
             }
         }
         _ => messages.push(json!({"role": role, "content": [block]})),
@@ -317,8 +347,18 @@ fn mark_stable_history(messages: &mut [Value], mark: Value) {
             .map_or(0, Vec::len);
         positions.extend((0..len).map(|b| (m, b)));
     }
+    // GH #1579: a system note is neither the youngest user text nor the end
+    // of the stable history -- the mark stays on the block before it, so a
+    // changed note keeps the cached prefix.
+    let is_note = |m: usize, b: usize| {
+        messages[m]["content"][b]["text"]
+            .as_str()
+            .is_some_and(is_system_note)
+    };
     let Some(youngest) = positions.iter().rposition(|&(m, b)| {
-        messages[m]["role"] == "user" && block_type(&messages[m], b).as_deref() == Some("text")
+        messages[m]["role"] == "user"
+            && block_type(&messages[m], b).as_deref() == Some("text")
+            && !is_note(m, b)
     }) else {
         return;
     };
@@ -326,7 +366,7 @@ fn mark_stable_history(messages: &mut [Value], mark: Value) {
         !matches!(
             block_type(&messages[m], b).as_deref(),
             Some("thinking" | "redacted_thinking")
-        )
+        ) && !is_note(m, b)
     });
     if let Some(&(m, b)) = target
         && let Some(block) = messages
@@ -343,13 +383,16 @@ fn mark_stable_history(messages: &mut [Value], mark: Value) {
 /// history, past the `tool_result` turns, the assistant turns of the answer
 /// that asked for them (its tool calls and the text beside them,
 /// OR-programm-tm.AN2.9). Empty when the history does not end in a round.
+/// A `system` turn inside the round (a note, GH #1579) does not end it: on
+/// the wire it waits behind the round's results ([`push_block`]).
 pub(crate) fn open_round_ids(input_messages: &[Value]) -> Vec<String> {
     let field = |t: &Value, k: &str| t.get(k).and_then(Value::as_str).map(str::to_string);
+    let is_system = |t: &Value| field(t, "origin").as_deref() == Some("system");
     let mut ids: Vec<String> = input_messages
         .iter()
         .rev()
-        .skip_while(|t| field(t, "type").as_deref() == Some("tool_result"))
-        .take_while(|t| field(t, "origin").as_deref() == Some("assistant"))
+        .skip_while(|t| field(t, "type").as_deref() == Some("tool_result") || is_system(t))
+        .take_while(|t| field(t, "origin").as_deref() == Some("assistant") || is_system(t))
         .filter(|t| field(t, "type").as_deref() == Some("tool_call"))
         .filter_map(|t| field(t, "id"))
         .collect();
@@ -1185,6 +1228,10 @@ mod tests {
     /// The closing context note a trailing assistant text travels in (GH #1282).
     const NOTE: &str = "[Context, not a new request -- your last message in this conversation, already delivered to the person:]";
 
+    /// The marker a mid-history system turn travels behind (GH #1579).
+    const SYS_NOTE: &str =
+        "[System note -- context from the system, not a message from the person:]";
+
     fn ends_on_user(body: &Value) -> bool {
         body["messages"]
             .as_array()
@@ -1366,5 +1413,222 @@ mod tests {
             })
             .to_string()
         );
+    }
+
+    /// GH #1579: a `system` turn after the first conversational turn no
+    /// longer grows the top-level `system` -- it stays at its place as a
+    /// marked note, its own text block in the user message there (merged with
+    /// the user content beside it, the roles alternate). A system turn before
+    /// the first conversational turn joins `system` as before.
+    #[test]
+    fn gh1579_a_mid_history_system_turn_stays_in_place_as_a_user_note() {
+        let t = |o: &str, x: &str| json!({"origin": o, "type": "text", "text": x});
+        let history = [
+            t("system", "lead"),
+            t("user", "q"),
+            t("assistant", "x"),
+            t("system", "brief"),
+            t("user", "next"),
+        ];
+        let body = build_messages_request(&anthropic(json!({})), "S", &history, &[], Vec::new())
+            .expect("request");
+        assert_eq!(body["system"], "S\n\nlead");
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "q"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": format!("{SYS_NOTE}\nbrief")},
+                    {"type": "text", "text": "next"}
+                ]}
+            ])
+        );
+        // Behind the answer the note closes the window as a user message of its own.
+        let body =
+            build_messages_request(&anthropic(json!({})), "S", &history[..4], &[], Vec::new())
+                .expect("request");
+        assert_eq!(body["system"], "S\n\nlead");
+        assert_eq!(
+            body["messages"][2],
+            json!({"role": "user", "content": [{"type": "text", "text": format!("{SYS_NOTE}\nbrief")}]})
+        );
+    }
+
+    /// GH #1579: the request before a note is byte-identical when only the
+    /// note changes, the two cache marks included -- `system` keeps its mark
+    /// and its text, the history mark sits on the block before the note and
+    /// never on the note, also when the note follows the youngest user text.
+    #[test]
+    fn gh1579_the_prefix_stays_byte_identical_when_only_the_note_changes() {
+        let params = anthropic(json!({"cache_mode": "breakpoints", "cache_ttl_s": 300}));
+        let mark = json!({"type": "ephemeral"});
+        let t = |o: &str, x: &str| json!({"origin": o, "type": "text", "text": x});
+        let common_prefix =
+            |a: &str, b: &str| a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+        for tail in [false, true] {
+            let window = |n: &str| {
+                let mut w = vec![t("user", "hello"), t("assistant", "Hi there.")];
+                if tail {
+                    w.extend([t("user", "Weather?"), t("system", n)]);
+                } else {
+                    w.extend([t("system", n), t("user", "Weather?")]);
+                }
+                w
+            };
+            let build = |w: &[Value]| {
+                build_messages_request(&params, "S", w, &[], Vec::new()).expect("request")
+            };
+            let one = build(&window("time 10:00"));
+            let two = build(&window("time 10:05, rain"));
+            let (s1, s2) = (one.to_string(), two.to_string());
+            let at = s1.find("[System note").expect("the note is in the request");
+            assert!(
+                common_prefix(&s1, &s2) >= at + SYS_NOTE.len(),
+                "prefix differs before the note:\n{s1}\n{s2}"
+            );
+            assert_eq!(
+                one["system"],
+                json!([{"type": "text", "text": "S", "cache_control": mark}])
+            );
+            assert_eq!(one["system"], two["system"]);
+            assert_eq!(
+                one["messages"].as_array().unwrap()[..2],
+                two["messages"].as_array().unwrap()[..2]
+            );
+            assert_eq!(
+                one["messages"][1],
+                json!({"role": "assistant", "content": [
+                    {"type": "text", "text": "Hi there.", "cache_control": mark}]}),
+                "the history mark sits before the note: {one}"
+            );
+            let last = &one["messages"][2]["content"];
+            let expected = if tail {
+                json!([{"type": "text", "text": "Weather?"},
+                       {"type": "text", "text": format!("{SYS_NOTE}\ntime 10:00")}])
+            } else {
+                json!([{"type": "text", "text": format!("{SYS_NOTE}\ntime 10:00")},
+                       {"type": "text", "text": "Weather?"}])
+            };
+            assert_eq!(*last, expected, "no mark on the note or behind it: {one}");
+        }
+    }
+
+    /// GH #1579 fix round 1 (review I1): a note inside an open tool round
+    /// never stands ahead of a `tool_result` -- the provider answers 400 to a
+    /// result behind a text block. In the user message of the round the
+    /// results come first and the note follows as a text block, whether the
+    /// note comes right behind the `tool_use` or between two results; a note
+    /// right behind a result stays where it is.
+    #[test]
+    fn gh1579_a_note_in_an_open_tool_round_follows_the_tool_results() {
+        let t = |o: &str, x: &str| json!({"origin": o, "type": "text", "text": x});
+        let tr = |id: &str, x: &str| json!({"origin": "tool", "type": "tool_result", "id": id, "text": x});
+        let note = |x: &str| json!({"type": "text", "text": format!("{SYS_NOTE}\n{x}")});
+        let build = |w: &[Value]| {
+            build_messages_request(&anthropic(json!({})), "S", w, &[], Vec::new()).expect("request")
+                ["messages"]
+                .clone()
+        };
+        // assistant tool_use, then the note, then the result.
+        let behind_the_call = [
+            t("user", "q"),
+            tool_call("c1", "get", "{}"),
+            t("system", "brief"),
+            tr("c1", "r1"),
+        ];
+        assert_eq!(
+            build(&behind_the_call),
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "q"}]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "c1", "name": "get", "input": {}}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "c1", "content": "r1"},
+                    note("brief")]}
+            ])
+        );
+        // The note between two results of one round.
+        let between_the_results = [
+            t("user", "q"),
+            tool_call("c1", "get", "{}"),
+            tool_call("c2", "put", "{}"),
+            tr("c1", "r1"),
+            t("system", "brief"),
+            tr("c2", "r2"),
+            t("user", "next"),
+        ];
+        assert_eq!(
+            build(&between_the_results),
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "q"}]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "c1", "name": "get", "input": {}},
+                    {"type": "tool_use", "id": "c2", "name": "put", "input": {}}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "c1", "content": "r1"},
+                    {"type": "tool_result", "tool_use_id": "c2", "content": "r2"},
+                    note("brief"),
+                    {"type": "text", "text": "next"}]}
+            ])
+        );
+        // The note right behind a result: after it, and a later text after the note.
+        let behind_the_result = [
+            t("user", "q"),
+            tool_call("c1", "get", "{}"),
+            tr("c1", "r1"),
+            t("system", "brief"),
+            t("user", "next"),
+        ];
+        assert_eq!(
+            build(&behind_the_result)[2],
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "c1", "content": "r1"},
+                note("brief"),
+                {"type": "text", "text": "next"}]})
+        );
+        // Every round on the wire: no text block ahead of a tool_result.
+        for w in [
+            &behind_the_call[..],
+            &between_the_results[..],
+            &behind_the_result[..],
+        ] {
+            for m in build(w).as_array().unwrap() {
+                let types: Vec<&str> = m["content"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|b| b["type"].as_str().unwrap())
+                    .collect();
+                let first_text = types.iter().position(|ty| *ty == "text");
+                let last_result = types.iter().rposition(|ty| *ty == "tool_result");
+                if let (Some(text), Some(result)) = (first_text, last_result) {
+                    assert!(result < text, "text ahead of a tool_result: {m}");
+                }
+            }
+        }
+    }
+
+    /// GH #1579 fix round 1: a note inside the open round does not hide the
+    /// round from the thinking replay -- its `tool_use` ids stay the round's.
+    #[test]
+    fn gh1579_a_note_in_the_open_round_keeps_its_ids() {
+        let t = |o: &str, x: &str| json!({"origin": o, "type": "text", "text": x});
+        let tr = |id: &str| json!({"origin": "tool", "type": "tool_result", "id": id, "text": "r"});
+        let call = tool_call("c1", "get", "{}");
+        for w in [
+            vec![t("user", "q"), call.clone(), t("system", "brief"), tr("c1")],
+            vec![t("user", "q"), call.clone(), tr("c1"), t("system", "brief")],
+        ] {
+            assert_eq!(super::open_round_ids(&w), vec!["c1".to_string()], "{w:?}");
+        }
+        let closed = [
+            t("user", "q"),
+            call,
+            tr("c1"),
+            t("user", "next"),
+            t("system", "brief"),
+        ];
+        assert!(super::open_round_ids(&closed).is_empty());
     }
 }

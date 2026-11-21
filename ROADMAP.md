@@ -101,6 +101,8 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.89.6: this release makes the window the `llm` cell sends portable to every provider and keeps its cached prefix
+  stable.
 - v0.89.5: this release keeps a companion from refusing its own tools.
 - v0.89.4: this release lets a companion see who it can reach.
 - v0.89.3: this patch makes the Linux release binary run on every x86-64-v2 CPU again.
