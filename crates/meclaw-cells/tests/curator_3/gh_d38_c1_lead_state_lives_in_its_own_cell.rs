@@ -3,8 +3,8 @@
 //! WHY this file exists: the switch of the curator kept its memory in the
 //! ledger beside the window -- `escalated:<session>` (the quick voice gave a
 //! turn up, `win` 7039/7045), `ask_pending:<session>` (an errand runs,
-//! 7677) and the speculation rows `spec:`/`spec_held:`/`spec_fb:<s>#<t>`
-//! (claimed in `win-hashes` 6728). With the lead a cell of its own, that
+//! 7677); the speculation rows went with the speculation (GH #1584).
+//! With the lead a cell of its own, that
 //! state moves with it into the lead's own store (`./lead_state`): the
 //! ledger holds the window and its record, the lead holds the switch. Each
 //! case runs over two messages, so the second one can only decide right
@@ -22,13 +22,7 @@ use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
 
 /// The lead's keys: none of them may ever reach the ledger again.
-const LEAD_KEYS: [&str; 5] = [
-    "escalated:",
-    "ask_pending:",
-    "spec:",
-    "spec_held:",
-    "spec_fb:",
-];
+const LEAD_KEYS: [&str; 2] = ["escalated:", "ask_pending:"];
 
 fn hive(over: &[(&str, &str, Value)]) -> Hive {
     assert!(
@@ -227,56 +221,6 @@ fn a_pending_consult_is_kept_by_the_lead_across_turns() {
     ledger_holds_no_lead_key(&h);
 }
 
-#[test]
-fn a_speculation_row_is_claimed_in_the_lead() {
-    if !shipped() {
-        return;
-    }
-    let mut h = hive(&[("lead", "spec_ahead", json!("1"))]);
-    turn(&mut h, "s1", "t0", "hello", "hi", json!({}));
-    // The spec curate of t5 claims the turn's row first ...
-    curate(
-        &mut h,
-        "t5",
-        0,
-        "",
-        json!([]),
-        json!([user("weather?")]),
-        json!({"spec": "1"}),
-    );
-    let claim: Value =
-        meclaw_core::serde_json::from_str(&h.lead_state("spec:s1#t5")).unwrap_or_default();
-    assert_eq!(
-        claim["state"],
-        json!("fired"),
-        "the spec curate claims in the lead: {claim}"
-    );
-    // ... and the turn's normal curate under its simple stamp finds it there.
-    curate(
-        &mut h,
-        "t5",
-        0,
-        "simple",
-        json!([]),
-        json!([user("weather?")]),
-        json!({}),
-    );
-    let row: Value =
-        meclaw_core::serde_json::from_str(&h.lead_state("spec:s1#t5")).unwrap_or_default();
-    assert!(
-        row.get("state").is_some(),
-        "the turn's speculation row stands in the lead after both curates: {row}"
-    );
-    ledger_holds_no_lead_key(&h);
-}
-
-/// The state line the summarizer is handed (`summary_state_cond`, GH #1440)
-/// names a consult the lead still waits for, as it did while the row lived
-/// in the ledger. WHY: the move of `ask_pending:<session>` took the
-/// ledger read of the rebuild (`n-sstate`) with it -- the window's line got
-/// the row from the lead's verdict, the summarizer's line lost "open: a
-/// consult" without a word and no test saw it (`gh_d38_z3_state_cond_keeps_
-/// the_listed_lines` sows a delegation only). The rebuild asks the lead now.
 #[test]
 fn the_summary_names_the_consult_the_lead_waits_for() {
     if !shipped() {

@@ -26,8 +26,7 @@ fn repo(rel: &str) -> std::path::PathBuf {
 /// Whether `config` can stream partials: its params carry `partial_unit` at
 /// all. A set switches it on through `override_params`, which this static
 /// sweep never sees -- so a cell shipped `off` declares the lane as well
-/// (GH #1411 A1: `./quick_spec` ships `off` and is switched on by the set,
-/// like `./quick` and `./brain`).
+/// (GH #1411 A1, like `./quick` and `./brain`).
 fn can_stream_partials(config: &Value) -> bool {
     config.pointer("/params/partial_unit").is_some()
 }

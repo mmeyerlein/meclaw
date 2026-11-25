@@ -683,7 +683,8 @@ fn every_lift_of_the_window_lifts_its_rate() {
             );
         }
     }
-    assert_eq!(seen, 17, "talky 8, cogny 1, simple-agent 5, member 3");
+    // GH #1584: talky's two lifts onto `./quick_spec` went with the cell.
+    assert_eq!(seen, 15, "talky 6, cogny 1, simple-agent 5, member 3");
 }
 
 /// `./intake` cuts a registered section by the window and the rate the

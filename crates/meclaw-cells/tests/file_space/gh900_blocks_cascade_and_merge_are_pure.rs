@@ -1154,6 +1154,38 @@ fn a_hunk_is_read_by_the_counts_of_its_head() {
     }
 }
 
+/// One corpus of `past_the_cap_...` (`LO`..`HI` bytes a line) and its edits
+/// `FROM`..`TO` of 50, from the random state `STATE` (none: the seed): the
+/// blocks of the corpus, the new blocks outside the edit's reach, the most new
+/// blocks of one edit, the random state behind the corpus and all its edits.
+const PAST_THE_CAP: &str = r#"
+R = __import__("random").Random(7)
+if STATE:
+    R.setstate((3, tuple(STATE), None))
+A = "abcdefghij klmnop"
+L = ["%d %s\n" % (i, "".join(R.choice(A) for _ in range(R.randint(LO, HI))))
+     for i in range(2000)]
+old = set(block_hash(b) for b in chunk("".join(L).encode(), True))
+stray, most = 0, 0
+for k in range(50):
+    i = R.randrange(2000)
+    if not FROM <= k < TO:
+        continue
+    for M in ([*L[:i], "changed %d\n" % k, *L[i + 1:]], [*L[:i], "inserted %d\n" % k, *L[i:]]):
+        blocks = chunk("".join(M).encode(), True)
+        j = next((x for x in range(i, len(M)) if _boundary(M[x].encode())), len(M) - 1)
+        lo_b, hi_b = len("".join(M[:i]).encode()), len("".join(M[:j + 1]).encode())
+        pos, new = 0, 0
+        for b in blocks:
+            if block_hash(b) not in old:
+                new += 1
+                if pos + len(b) <= lo_b or pos >= hi_b:
+                    stray += 1
+            pos += len(b)
+        most = max(most, new)
+OUT = [len(old), stray, most, list(R.getstate()[1])]
+"#;
+
 /// OR-FH-84 (review W I-4): the 16 KiB cap counts from the block's start, so
 /// it is no content boundary -- a line that grows or shrinks moves every
 /// capped cut up to the next line whose hash is a boundary. What holds for
@@ -1170,35 +1202,33 @@ fn past_the_cap_the_blocks_resynchronise_at_the_next_boundary() {
     if !shipped() {
         return;
     }
-    let got = script(
-        r#"
-R = __import__("random").Random(7)
-A = "abcdefghij klmnop"
-OUT = []
-for lo, hi in ((0, 60), (300, 600), (1200, 1600)):
-    L = ["%d %s\n" % (i, "".join(R.choice(A) for _ in range(R.randint(lo, hi))))
-         for i in range(2000)]
-    old = set(block_hash(b) for b in chunk("".join(L).encode(), True))
-    stray, most = 0, 0
-    for k in range(50):
-        i = R.randrange(2000)
-        for M in ([*L[:i], "changed %d\n" % k, *L[i + 1:]], [*L[:i], "inserted %d\n" % k, *L[i:]]):
-            blocks = chunk("".join(M).encode(), True)
-            j = next((x for x in range(i, len(M)) if _boundary(M[x].encode())), len(M) - 1)
-            lo_b, hi_b = len("".join(M[:i]).encode()), len("".join(M[:j + 1]).encode())
-            pos, new = 0, 0
-            for b in blocks:
-                if block_hash(b) not in old:
-                    new += 1
-                    if pos + len(b) <= lo_b or pos >= hi_b:
-                        stray += 1
-                pos += len(b)
-            most = max(most, new)
-    OUT.append([hi, len(old), stray, most])
-"#,
-    );
-    let rows = got.as_array().expect("one row per line length");
-    assert_eq!(rows.len(), 3, "{got}");
+    // GH #1640: one run of the pure scope is one wait for its child, which ends
+    // at the hang mark. The three corpora in one run took 11 s beside a full
+    // lane and 37 s in the slowest of seven slow gates, so each runs in two halves
+    // of its edits, on the same random stream: a run starts at the state the
+    // corpus before it left and draws every edit, also those of the other half.
+    let mut state = json!([]);
+    let mut rows = Vec::new();
+    for (lo, hi) in [(0, 60), (300, 600), (1200, 1600)] {
+        let (mut blocks, mut stray, mut most) = (None, 0, 0);
+        let mut left = state.clone();
+        for (from, to) in [(0, 25), (25, 50)] {
+            let head = format!("STATE, LO, HI, FROM, TO = {state}, {lo}, {hi}, {from}, {to}\n");
+            let got = script(&[head.as_str(), PAST_THE_CAP].concat());
+            let n = got[0].as_u64();
+            assert!(
+                n.is_some() && blocks.is_none_or(|b| Some(b) == n),
+                "lines up to {hi} B: both halves cut the same blocks: {got}"
+            );
+            blocks = n;
+            stray += got[1].as_u64().expect("stray");
+            most = most.max(got[2].as_u64().expect("most"));
+            left = got[3].clone();
+        }
+        state = left;
+        rows.push(json!([hi, blocks, stray, most]));
+    }
+    assert_eq!(rows.len(), 3, "{rows:?}");
     for r in rows {
         let (hi, blocks, stray, most) =
             (r[0].as_u64(), r[1].as_u64(), r[2].as_u64(), r[3].as_u64());

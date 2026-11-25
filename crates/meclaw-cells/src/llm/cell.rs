@@ -11,6 +11,7 @@ use crate::llm::{
     system_gate, tool_scope, translate, translate_anthropic, translate_decisions,
     translate_responses, wire,
 };
+use crate::params_overlay::{ParamsPush, PushFor};
 use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_colony::{AttachmentReadError, AttachmentReader};
 use meclaw_core::serde_json::Value;
@@ -2212,34 +2213,6 @@ impl StatefulCell for LlmCell {
     }
 }
 
-/// GH #862 (R-SN-9): who a `params` slot is for. The registry addresses a
-/// push by `hop.subscriber`; the operator's `POST /messages`, `argus`/`steward`
-/// and a memory-hive broadcast carry none. The own address is the one the
-/// substrate stamps on the sink (`OutputSink::sender_path`, GH #132) -- never
-/// message data.
-enum PushFor {
-    /// No `hop.subscriber`: the operator's message, applied as before.
-    Operator,
-    /// `hop.subscriber` is this cell's own path.
-    Me,
-    /// Any other value -- the empty string and a non-string included, so the
-    /// rule fails closed: another cell's push. Carries the address as one
-    /// line for the detail and the warning.
-    Other(String),
-}
-
-/// At most this many characters of a foreign address reach a detail or a log
-/// line: the value is message data, and a detail is no place for a document.
-const PUSH_ADDRESS_MAX_CHARS: usize = 256;
-
-fn push_for(hop: &meclaw_core::serde_json::Map<String, Value>, own: &Path) -> PushFor {
-    match hop.get("subscriber") {
-        None => PushFor::Operator,
-        Some(Value::String(s)) if s == own.as_str() => PushFor::Me,
-        Some(v) => PushFor::Other(one_line(v, PUSH_ADDRESS_MAX_CHARS)),
-    }
-}
-
 /// GH #1260: whether an update changes the package in force -- a package key
 /// set to another value, set anew or reset. The start value is fixed, so the
 /// package keys of the overlay decide; a push of other keys, or of the same
@@ -2251,20 +2224,6 @@ fn package_changed(
     crate::llm::params::MODEL_PACKAGE_KEYS
         .iter()
         .any(|k| before.get(*k) != after.get(*k))
-}
-
-/// `v` as one line of at most `max` characters: a string as it is, anything
-/// else as its JSON text; a line break or any other control character becomes a
-/// space, so a forged address cannot start a second log line.
-fn one_line(v: &Value, max: usize) -> String {
-    let raw = match v {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    raw.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .take(max)
-        .collect()
 }
 
 /// The registry's bound on a model id (`MODEL_ID_MAX_CHARS` in
@@ -2319,6 +2278,35 @@ impl LlmCell {
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
             // GH #1410: the call a partial belongs to.
             let partial_of = msg.id;
+
+            // GH #1353: on the params lane an update or nothing -- no turn, no
+            // `system` write and no credential reaches this cell through a door.
+            let push = ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                tracing::warn!(
+                    target: package::PARAMS_LOG_TARGET,
+                    "llm: params {} not applied: {detail}",
+                    sink.sender_path().as_str()
+                );
+                if !push.refused(sink, "invalid_input", &detail).await {
+                    output::emit_error_for(
+                        &self.params.provider,
+                        sink,
+                        reply_target,
+                        "invalid_input",
+                        &detail,
+                        "parse",
+                        vec![],
+                        started_at_unix_ms,
+                        0,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                }
+                return;
+            }
 
             // Step 1: parse the input body. Validation failures → emit_error
             // with source="parse", input_messages=[], NO DB write.
@@ -2405,7 +2393,9 @@ impl LlmCell {
             // and the turn runs on (a conversation is never broken off, and it
             // cannot change the model it talks to).
             let has_params = content_obj.contains_key("params");
-            let is_turn = content_obj.contains_key("messages");
+            // GH #1353: past the check above an empty `messages` on the params
+            // lane is an update like any other.
+            let is_turn = content_obj.contains_key("messages") && !push.on_lane();
             // GH #862 (R-SN-9): the registry addresses a push by
             // `hop.subscriber`, and any edge that forwarded its road into
             // another composite's `in_model` door moved that brain too
@@ -2415,13 +2405,12 @@ impl LlmCell {
             // loudly, and on a turn the slot is skipped whole and the turn
             // runs on (the GH #853 rule). Only the `params` slot is bound; a
             // message without the key is byte-identical to before.
-            let push_for = push_for(&msg.headers.hop, sink.sender_path());
             // GH #1320 K-13: the caller's edge allows this turn to stay
             // unanswered (talky sets it for an inner turn only). Read here,
             // before the message moves on; absent, an empty answer stays the
             // #999 F2 error.
             let silence_ok = msg.headers.hop.get("silence_ok").and_then(Value::as_str) == Some("1");
-            if has_params && let PushFor::Other(to) = &push_for {
+            if has_params && let PushFor::Other(to) = push.push_for() {
                 tracing::warn!(
                     target: package::PARAMS_LOG_TARGET,
                     "llm: params {} not applied: a push addressed to '{to}' is not for this cell",
@@ -2433,10 +2422,7 @@ impl LlmCell {
                         sink,
                         reply_target,
                         "invalid_input",
-                        &format!(
-                            "a params push addressed to '{to}' is not for this cell; \
-                             nothing applied"
-                        ),
+                        &push.foreign_detail().unwrap_or_default(),
                         "parse",
                         vec![],
                         started_at_unix_ms,
@@ -2451,11 +2437,16 @@ impl LlmCell {
             }
             if let Some(params_val) = content_obj
                 .get("params")
-                .filter(|_| !matches!(push_for, PushFor::Other(_)))
+                .filter(|_| push.foreign_detail().is_none())
             {
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
                     None => {
+                        let detail = "invalid params slot: not a JSON object";
+                        // GH #1353: on the params lane the shared answer.
+                        if push.refused(sink, "invalid_input", detail).await {
+                            return;
+                        }
                         // GH #863: an own push refused names itself (no model:
                         // the slot is no object).
                         output::emit_error_with_hop_for(
@@ -2463,7 +2454,7 @@ impl LlmCell {
                             sink,
                             reply_target,
                             "invalid_input",
-                            "invalid params slot: not a JSON object",
+                            detail,
                             "parse",
                             vec![],
                             started_at_unix_ms,
@@ -2471,7 +2462,7 @@ impl LlmCell {
                             None,
                             None,
                             None,
-                            refusal_hop(&push_for, sink.sender_path(), None),
+                            refusal_hop(push.push_for(), sink.sender_path(), None),
                         )
                         .await;
                         return;
@@ -2499,12 +2490,16 @@ impl LlmCell {
                                 })
                                 .await;
                             if let Err(e) = persist_result {
+                                let detail = format!("cell.db params write failed: {e}");
+                                if push.refused(sink, "provider_error", &detail).await {
+                                    return;
+                                }
                                 output::emit_error_with_hop_for(
                                     &self.params.provider,
                                     sink,
                                     reply_target,
                                     "provider_error",
-                                    &format!("cell.db params write failed: {e}"),
+                                    &detail,
                                     "parse",
                                     vec![],
                                     started_at_unix_ms,
@@ -2512,7 +2507,11 @@ impl LlmCell {
                                     None,
                                     None,
                                     None,
-                                    refusal_hop(&push_for, sink.sender_path(), Some(&update_obj)),
+                                    refusal_hop(
+                                        push.push_for(),
+                                        sink.sender_path(),
+                                        Some(&update_obj),
+                                    ),
                                 )
                                 .await;
                                 return;
@@ -2573,8 +2572,17 @@ impl LlmCell {
                                     })
                                     .await;
                             }
+                            // GH #1353: the params lane's sender learns that it
+                            // holds; every other push stays silent.
+                            if !is_turn {
+                                push.applied(sink).await;
+                            }
                         }
                         Err(detail) => {
+                            // GH #1353: on the params lane the shared answer.
+                            if push.refused(sink, "invalid_input", &detail).await {
+                                return;
+                            }
                             // GH #863: the guard or the immutable rule said no. Addressed
                             // to this cell, the refusal names the push and the model it
                             // named, so the registry learns what this cell does NOT run.
@@ -2591,13 +2599,19 @@ impl LlmCell {
                                 None,
                                 None,
                                 None,
-                                refusal_hop(&push_for, sink.sender_path(), Some(&update_obj)),
+                                refusal_hop(push.push_for(), sink.sender_path(), Some(&update_obj)),
                             )
                             .await;
                             return;
                         }
                     }
                 }
+            }
+
+            // GH #1353: an update on the params lane is done here; nothing beside
+            // it is left to read.
+            if push.on_lane() {
+                return;
             }
 
             // Step 1c (R3 / GH #421): the sealed credential slot. Handled here
@@ -3306,7 +3320,7 @@ impl LlmCell {
                 &tools,
             ) {
                 Ok(mut r) => {
-                    // GH #890: the cache wire -- a key or two marks, by
+                    // GH #890: the cache wire -- a key or the marks, by
                     // `cache_mode`; nothing at all under `off`. Before the
                     // images, so a mark sits on the text it closes.
                     translate::apply_cache_wire(&mut r, &self.params, sink.sender_path().as_str());

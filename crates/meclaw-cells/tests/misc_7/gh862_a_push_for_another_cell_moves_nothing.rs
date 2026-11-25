@@ -778,15 +778,7 @@ fn build_tree(td: &TempDir, base_url: &str) {
             v["params"]["base_url"] = json!(base_url);
             v["params"]["model"] = json!(START);
         });
-        // #1398: the quick voice's siblings carry its model and endpoint.
-        patch(
-            root,
-            &format!("main/{composite}/quick_spec/config.json"),
-            |v| {
-                v["params"]["base_url"] = json!(base_url);
-                v["params"]["model"] = json!(START);
-            },
-        );
+        // #1398: the quick voice's sibling `quick_bridge` carries its model and endpoint.
         patch(
             root,
             &format!("main/{composite}/quick_bridge/config.json"),

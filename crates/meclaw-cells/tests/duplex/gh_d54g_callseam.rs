@@ -1049,6 +1049,18 @@ fn shipped_voice_cell() -> Option<CellNode> {
     parsed.cells.into_iter().find(|c| c.rel_path.is_empty())
 }
 
+/// The media half of the shipped `freeswitch` template, a ref on `voice`, or
+/// `None` where the templates did not travel.
+fn shipped_telephone_media_cell() -> Option<CellNode> {
+    shipped_voice_cell()?;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("templates/freeswitch");
+    let parsed = parse_subtree(&root, &shipped_registry())
+        .unwrap_or_else(|e| panic!("the shipped template 'freeswitch' parses: {e:?}"));
+    parsed.cells.into_iter().find(|c| c.rel_path == "voice")
+}
+
 /// The first audible audio of an answer is stamped the moment it goes out.
 ///
 /// Until now the time stood only in the closed `turn` (`t_first_audio_ms`), so
@@ -1065,11 +1077,23 @@ fn shipped_voice_cell() -> Option<CellNode> {
 /// template, and the parse reads it.
 #[tokio::test(flavor = "current_thread")]
 async fn gh_d54g_callseam_the_first_audio_of_an_answer_is_stamped() {
-    let over = json!({"duplex": live_block(json!({})), "emit_first_audio": true});
+    let over = json!({"duplex": live_block(json!({})), "emit_first_audio": true,
+                      "emit_audio_report": true, "audio_out_lead_ms": 20});
     if let Some(cell) = shipped_voice_cell()
         && let Err(why) = check_override_params(&cell, None, "voice", &over)
     {
         panic!("a set's `emit_first_audio` on 'voice' must pass the door: {why:?}");
+    }
+    // The telephone's media half is a ref on it, and the set writes the lead there.
+    if let Some(cell) = shipped_telephone_media_cell()
+        && let Err(why) = check_override_params(
+            &cell,
+            Some("voice"),
+            "freeswitch",
+            &json!({"audio_out_lead_ms": 20}),
+        )
+    {
+        panic!("a set's `audio_out_lead_ms` on 'freeswitch' must pass the door: {why:?}");
     }
 
     let (mut live, mut client, session) = open_cell("seam-10", over).await;
@@ -1325,7 +1349,7 @@ async fn told_until(live: &mut Live, last: &str) -> Vec<String> {
 /// threw away every part but the last (strand deleg, finding `quiet_held`,
 /// decision oc1). The parts of one cut queue in their order; a new text still
 /// replaces the waiting one
-/// (`d53_v3_a_horizon_advise_reaches_the_voice::a_horizon_advise_becomes_one_corrected_instruction_at_the_turn_boundary`).
+/// (`d53_v3_a_horizon_advise_reaches_the_voice::a_horizon_advise_becomes_one_commentary_at_the_turn_boundary`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gh_d54g_callseam_the_parts_of_one_cut_wait_together_for_the_quiet_line() {
     let params = duplex_params(json!({

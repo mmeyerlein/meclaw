@@ -10506,8 +10506,7 @@ def pass_or_queue(event, now, ops, define=None):
         # killed cell woken by the same write, 58/112 with a new `touched` (REBUILD-WRITE).
         # Writes queued before a select that failed are in the store already; only those
         # the boot leaves out of the replay (`seen`).
-        r["seen"] = sorted(set(str(ev.get("oid") or "") for _, ev, _ in r["pending"]
-                               if ev.get("kind") in ("app_write", "app_withdraw")))
+        r["seen"] = queued_before(r)
         r["pending"].append((now, event, queued_row(r, event)))
         r["phase"] = "booting-rows"
         return [select_rows({"boot": "rows"})] + ops
@@ -10521,6 +10520,32 @@ def pass_or_queue(event, now, ops, define=None):
     if said is None:
         return ops
     return with_rest(ops + said + render(now, str(event.get("struck") or "")), now)
+
+
+def pass_boot_receipt():
+    """A mutation receipt reached the screen (GH #1590): a cold cell boots on it.
+
+    The boot receipt of the mutation door (ruling O-0904-2) is the first message a born
+    colony sends, and without it a fresh screen had no page map until the first app wrote
+    -- `/` and every output answered `404` meanwhile. It is no event of § 4.1 and runs no
+    pass: a cold cell only starts the boot (rows, then the tree), and `boot_tree` draws the
+    page map from the rows it finds. A cell that is booting or live has nothing to redo, so
+    every later receipt is silent.
+    """
+    r = ram()
+    if r["phase"] != "cold":
+        return []
+    # cold again after a failed select, the writes queued before it stay out of the replay
+    r["seen"] = queued_before(r)
+    r["phase"] = "booting-rows"
+    return [select_rows({"boot": "rows"})]
+
+
+def queued_before(r):
+    """The windows whose queued writes left before the select about to go out (`seen`):
+    empty for a fresh cell, the pending writes after a select that failed."""
+    return sorted(set(str(ev.get("oid") or "") for _, ev, _ in r["pending"]
+                      if ev.get("kind") in ("app_write", "app_withdraw")))
 
 
 def queued_row(r, event):
@@ -12250,6 +12275,8 @@ def main():
 
     if route == "event":
         return pass_event(body)
+    if route == "mutation_committed":
+        return pass_boot_receipt()
     if route in ("in_view", "in_withdraw"):
         return pass_request(body, envelope, route == "in_withdraw")
     if route == "in_notice":

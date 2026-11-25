@@ -140,19 +140,14 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
     // GH #1260 (OR-WG-2): the quick answer carries the sidecar block, and the
     // splitter sees it as it sees the brain's -- same condition, and its
     // sections leave on talky's own `sidecar` port.
-    // GH #1275: a held spec answer (`context.spec` "1") never does --
-    // the curator releases it on `spec_release` once the turn keeps it.
     assert_eq!(
         q_split["condition"].as_str().unwrap_or(""),
-        format!(
-            "{} && !(has(context.spec) && context.spec == '1')",
-            // GH #1440: the brain's answer to a self summary never reaches
-            // the splitter; a quick answer is never one.
-            edge(&edges, "./brain", "./splitter", "'stop'")["condition"]
-                .as_str()
-                .unwrap_or("")
-                .trim_end_matches(" && !(has(context.summarize) && context.summarize == '1')")
-        ),
+        // GH #1440: the brain's answer to a self summary never reaches
+        // the splitter; a quick answer is never one.
+        edge(&edges, "./brain", "./splitter", "'stop'")["condition"]
+            .as_str()
+            .unwrap_or("")
+            .trim_end_matches(" && !(has(context.summarize) && context.summarize == '1')"),
         "the quick answer reaches the splitter like the brain's"
     );
     edge(&edges, "./splitter", ".", "hop.route == 'sidecar'");
@@ -160,13 +155,15 @@ fn talky_speaks_quick_turns_through_its_own_model_cell() {
     assert_eq!(tap["modifier"]["set_hop"]["route"], "'in_llm'", "{tap}");
     edge(&edges, "./quick", "./errors", "'error'");
     // GH #1411: the `partial` exit names `!has(hop.refused_subscriber)` too,
-    // so the refusal's own way back is the edge whose condition is exactly it.
+    // so the refusal's own way back is the edge whose condition is exactly it --
+    // GH #1353: closed to the answer of a refused params push, which names the
+    // same key and leaves on its own lane.
     let refused = edges
         .iter()
         .find(|e| {
             e["from"] == "./quick"
                 && e["to"] == "."
-                && e["condition"] == "has(hop.refused_subscriber)"
+                && e["condition"] == "has(hop.refused_subscriber) && !has(hop.params_answer)"
         })
         .expect("talky has no refusal way back out of ./quick");
     assert_eq!(

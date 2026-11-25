@@ -40,9 +40,7 @@ cores come from its host-file line (`cores=<n>`), without it nproc / 2. The
 plan names cores and density as a note (`colony density 6 (lane cores 6,
 one colony per core), nproc 12; unit 6 workers (cores); lab 6 workers x 1
 colony, cpu 12`). Two density stations never share D: each takes the
-whole budget and the later waits for the earlier one's slots; pair modules
-that should run beside single ones go into ONE station with
-`unit_runner.py --pair GLOB`.
+whole budget and the later waits for the earlier one's slots.
 
 A top-level `"lane_env": ["NAME", ...]` (welle-tb tb-zcol) names the caller's
 variables the stations need on the lane (soul2me: `SOUL2ME_LAB_MECLAW_BIN`):
@@ -55,6 +53,19 @@ reaches a lane.
 `always` and `parallel.slot_env` are additive to V0 (OR-DT.W10.1), and so is
 `lib: build|read|none` (GH #1142): the station's role towards the set's
 build/lib, which orders the stations that touch it.
+
+`"select": "imports"` (#1605) narrows a `unit_runner.py` station to the test
+files the diff reaches: `resolve` hands the station the changed paths that hit
+its `inputs` (`--select=imports --changed=<path> ...`), and the runner runs
+only the files whose hull -- imports, transitively, plus the repository paths
+their text names -- holds one of them. `"guards": [glob, ...]` names the files
+that run anyway (tree scanners: what they read no import shows). A changed
+data file no hull reaches selects the files naming its deepest named
+directory, any other adds no file (#1618); every file runs only when such a
+path cannot be read or an unresolved import may name it; release, ci
+and `--all` hand `--select-all=<reason>` and run every file. The runner's
+summary says `selected k of n files: <reason>`. Only a station with a cmd
+that calls `unit_runner.py` may select.
 
 THE REPOSITORIES (host file, GH #1262)
 ======================================
@@ -145,6 +156,7 @@ them before the satellite's tree travels.
 
 import dataclasses
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -317,6 +329,14 @@ def is_satellite(repo_root):
             and not os.path.isfile(os.path.join(root, "scripts", "gate_plan.py")))
 
 
+SELECTS = ("imports",)
+UNIT_RUNNER = "unit_runner.py"
+
+
+def _runs_unit_runner(argv):
+    return any(os.path.basename(a) == UNIT_RUNNER for a in argv)
+
+
 def _fail(what):
     raise RegisterError("%s: %s" % (REGISTER_PATH, what))
 
@@ -357,6 +377,15 @@ def _check_station(st, i):
         _fail("%s: always must be a boolean" % where)
     if st.get("lib", "") not in ("",) + LIB_ROLES:
         _fail("%s: lib must be one of %s" % (where, "|".join(LIB_ROLES)))
+    select = st.get("select")
+    if select is not None:
+        if select not in SELECTS:
+            _fail("%s: select must be one of %s" % (where, "|".join(SELECTS)))
+        if not any(_runs_unit_runner(c["argv"]) for c in cmds):
+            _fail("%s: select needs a cmd that calls %s" % (where, UNIT_RUNNER))
+    guards = st.get("guards", [])
+    if not isinstance(guards, list) or not all(isinstance(g, str) and g for g in guards):
+        _fail("%s: guards must be a list of globs" % where)
     if st.get("cargo", 0) not in (0, 1):
         _fail("%s: cargo must be 0 or 1" % where)
     timeout = st.get("timeout_min", TIMEOUT_DEFAULT)
@@ -519,6 +548,12 @@ def resolve(register, files, mode, all_stations=False):
         if reason:
             row = dict(st)
             row["reason"] = reason
+            if st.get("select"):
+                # #1605: the runner narrows to the tests the diff reaches --
+                # the paths that hit this station's inputs; a full pass runs all
+                row["changed"] = None if full else [
+                    p for p in files
+                    if any(_hits(g, p) for g in map(_glob_of, st.get("inputs", [])) if g)]
             out.append(row)
     return out
 
@@ -766,6 +801,19 @@ def _density_note(density, why, lane_cpu, rows, cored=()):
     return "; ".join(parts)
 
 
+def _select_args(row, argv):
+    """The selection a `select` station hands its unit runner (#1605)."""
+    if not row.get("select") or not _runs_unit_runner(argv):
+        return []
+    out = ["--select=%s" % row["select"]]
+    changed = row.get("changed")
+    if changed is None:
+        out.append("--select-all=%s" % "; ".join(row.get("reason") or ["full pass"]))
+    else:
+        out += ["--changed=%s" % p for p in changed]
+    return out + ["--guard=%s" % g for g in row.get("guards") or []]
+
+
 def _station(row, root, pipeline_dir, python, workers, slots, offset=0):
     par = row.get("parallel")
     if _uses_slots(row):
@@ -785,7 +833,7 @@ def _station(row, root, pipeline_dir, python, workers, slots, offset=0):
         "name": row["name"],
         "scope": row.get("scope", ""),
         "cargo": int(row.get("cargo", 0)),
-        "cmds": [{"argv": [_subst(a, values) for a in c["argv"]],
+        "cmds": [{"argv": [_subst(a, values) for a in c["argv"]] + _select_args(row, c["argv"]),
                   "cwd": _subst(c.get("cwd") or ".", values)} for c in row["cmds"]],
         "env": "none",
         "reason": list(row.get("reason") or []),
@@ -1116,6 +1164,15 @@ ASSET_CACHES = {"coding": "coding", "soul2me": "soul2me", "orga": "orga-hive"}
 RELEASE_KEYS = ("meclaw", "meclaw_release")
 _SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
+# A set may name an unreleased core candidate (w1 kandidat, #1606):
+# `"meclaw_candidate": {"rev": "<40 hex>", "sha256": "<hex>"}`. Its binary is
+# `~/kb/bin/meclaw-<rev12>` beside `<binary>.origin.json` (`strand.sh
+# candidate`), the same path here and on every lane; such a set needs no
+# release asset for its version.
+CANDIDATE_KEY = "meclaw_candidate"
+CANDIDATE_BIN = "kb/bin"
+_REV40 = re.compile(r"^[0-9a-f]{40}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclasses.dataclass
@@ -1129,6 +1186,8 @@ class PinTransport:
     cache: str
     versions: list
     mirrors: list
+    # `{rev, sha256, rel}` per named candidate, `rel` = `kb/bin/meclaw-<rev12>`
+    candidates: list = dataclasses.field(default_factory=list)
 
 
 def _expand(path, home, root):
@@ -1149,12 +1208,58 @@ def _asset_there(folder):
     return False
 
 
+def file_sha256(path):
+    """The sha256 hex of the file at `path`."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def candidate_findings(doc, home):
+    """(candidate or None, findings) of one set's `meclaw_candidate`: the
+    field's form, `rev` against the commit `meclaw_core` names (prefix),
+    and the binary `<home>/kb/bin/meclaw-<rev12>` with its `origin.json`
+    (`core_sha` = rev, the file's sha256 = sha256). A missing binary names
+    the build that makes it -- never a fall back to a release."""
+    field = doc[CANDIDATE_KEY]
+    if not isinstance(field, dict):
+        return None, ["%s is not an object {rev, sha256}" % CANDIDATE_KEY]
+    rev, digest = str(field.get("rev", "")), str(field.get("sha256", ""))
+    if not _REV40.match(rev) or not _SHA256.match(digest):
+        return None, ["%s needs rev (40 hex) and sha256 (64 hex), got %r" % (CANDIDATE_KEY, field)]
+    core = _HEX.search(str(doc.get("meclaw_core", "")))
+    if not core or not rev.startswith(core.group(0)):
+        return None, ["%s rev %s is not the commit meclaw_core names (%r)"
+                      % (CANDIDATE_KEY, rev[:12], doc.get("meclaw_core"))]
+    rel = "%s/meclaw-%s" % (CANDIDATE_BIN, rev[:12])
+    path = os.path.join(home, rel)
+    if not os.path.isfile(path):
+        return None, ["candidate binary ~/%s is missing -- `strand.sh candidate %s` builds it"
+                      % (rel, rev)]
+    try:
+        with open(path + ".origin.json", encoding="utf-8") as fh:
+            origin = json.load(fh)
+    except (OSError, ValueError) as e:
+        return None, ["candidate ~/%s.origin.json is not readable (%s)" % (rel, e)]
+    bad = []
+    if not isinstance(origin, dict) or origin.get("core_sha") != rev:
+        bad.append("candidate ~/%s.origin.json names core_sha %r, not %s"
+                   % (rel, origin.get("core_sha") if isinstance(origin, dict) else origin, rev))
+    have = file_sha256(path)
+    if have != digest:
+        bad.append("candidate ~/%s has sha256 %s, the set names %s" % (rel, have, digest))
+    return (None if bad else {"rev": rev, "sha256": digest, "rel": rel}), bad
+
+
 def set_pins(repo_root, core_root, home=None):
     """The `PinTransport` of the satellite at `repo_root` from its
     `sets/*.json`: every pinned release (the entry's release keys) must be
     in this machine's cache, every `meclaw_core` commit in the repository of
     `core_root`, every `sources.<n>` tag or commit in its repository below
-    `home`. Fail-closed: anything that cannot travel is a RegisterError that
+    `home`; a set naming `meclaw_candidate` needs its candidate binary
+    (`candidate_findings`) instead of a release asset. Fail-closed: anything that cannot travel is a RegisterError that
     names every broken pin at once -- a lane run on a missing pin builds the
     wrong set or none (W10 part B, F4/S1: both pushed by hand on build03)."""
     home = os.path.abspath(os.path.expanduser(home or "~"))
@@ -1163,7 +1268,7 @@ def set_pins(repo_root, core_root, home=None):
     entry = repo_entries()[name]
     keys = entry["release_keys"]
     cache = os.path.join(home, ".cache", entry["asset_cache"], "meclaw")
-    versions, mirrors, bad = set(), {}, []
+    versions, mirrors, bad, candidates = set(), {}, [], {}
 
     def mirror(repo, revs, why):
         """One pin of `repo`: every revision it names (a tag, a commit,
@@ -1219,9 +1324,17 @@ def set_pins(repo_root, core_root, home=None):
         if len(named) > 1:
             bad.append("%s: %s disagree (%s)" % (rel, " and ".join(keys),
                                                  ", ".join(sorted(map(str, named.values())))))
+        cand = CANDIDATE_KEY in doc
+        if cand:
+            got, findings = candidate_findings(doc, home)
+            bad.extend("%s: %s" % (rel, f) for f in findings)
+            if got:
+                candidates[got["rel"]] = got
         for v in named.values():
             if not (isinstance(v, str) and _SEMVER.match(v)):
                 bad.append("%s: meclaw release %r is not x.y.z" % (rel, v))
+            elif cand:
+                pass  # the candidate is the binary: no release asset for this number
             elif not _asset_there(os.path.join(cache, v)):
                 bad.append("%s: meclaw release %s is not in %s (fetch it with the "
                            "satellite's build_set.py)" % (rel, v, cache))
@@ -1257,7 +1370,8 @@ def set_pins(repo_root, core_root, home=None):
     if bad:
         raise RegisterError("set pins of %s cannot travel:\n  %s" % (root, "\n  ".join(bad)))
     return PinTransport(repo=name, home=home, cache=cache, versions=sorted(versions, key=_semver_key),
-                        mirrors=sorted(mirrors.values(), key=lambda m: m["rel"]))
+                        mirrors=sorted(mirrors.values(), key=lambda m: m["rel"]),
+                        candidates=[candidates[k] for k in sorted(candidates)])
 
 
 def _semver_key(v):

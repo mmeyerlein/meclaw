@@ -213,8 +213,16 @@ fn call_contexts(tcfg: &Value, cell: &str, kind: &str, conds: &[&str]) -> Vec<Ma
             .any(|kv| asked.contains(&kv))
     };
     let mut out = Vec::new();
+    // GH #1353: the params door carries a params-only update; it opens no call,
+    // so no receipt of one comes out of its context.
+    let is_params_door = |e: &Value| -> bool {
+        e["from"] == "."
+            && e["condition"]
+                .as_str()
+                .is_some_and(|c| c.starts_with("has(hop.route) && hop.route == 'in_params' && "))
+    };
     for e in raw.iter().filter(|e| e["to"] == from.as_str()) {
-        if is_reply(e) {
+        if is_reply(e) || is_params_door(e) {
             continue;
         }
         let own: Map<String, Value> = stamps(e)
@@ -647,6 +655,25 @@ fn no_connector_hands_its_credential_pending_receipt_to_a_turn() {
         loops.is_empty(),
         "a connector's credential_pending receipt becomes the input of a turn: {loops:?}"
     );
+}
+
+/// GH #1353: a connector that refuses an update addressed to another path
+/// answers in its own shape, without `params_answer` and without a chat. The
+/// condition of the inbound edge leaves it out, whatever its modifier says.
+#[test]
+fn gh1353_a_refused_params_update_is_no_turn_of_the_slack_agent() {
+    // GH #49: private templates are absent from the public clone.
+    if !templates_dir().join("slack-agent").exists() {
+        return;
+    }
+    let hop = json!({"error_code": "invalid_input", "msg_type": "proxy_inbound_error"});
+    let hop = hop.as_object().expect("object");
+    let took: Vec<String> = edges(&template_config("slack-agent"))
+        .into_iter()
+        .filter(|e| e.from == "./proxy" && takes(e, &Map::new(), hop))
+        .map(|e| e.to)
+        .collect();
+    assert!(took.is_empty(), "the refusal goes on to {took:?}");
 }
 
 /// The exclusion stays narrow: an ordinary inbound message of the channel

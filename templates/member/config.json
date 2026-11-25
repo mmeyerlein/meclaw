@@ -69,7 +69,7 @@
         },
         {
           "route": "mutation_committed",
-          "because": "the mutation receipt, GH #553: the graph moved, and the door said so. This level declares it and routes it into `./assistants` AND `./apps` -- two children, because an agent's tool menu and a person's screen are the same fact read twice -- which is what makes it a mandatory hop under ADR-0020: nothing may carry this lane past a level that takes part in it. Derived from assistant@2.6.0 and colony-view@1.1.0"
+          "because": "the mutation receipt, GH #553: the graph moved, and the door said so. This level declares it and routes it into `./assistants` and into every app under `./apps` -- because an agent's tool menu and a person's screen are the same fact read twice -- which is what makes it a mandatory hop under ADR-0020: nothing may carry this lane past a level that takes part in it. Not through `./apps` itself: the container ships empty, and a static edge into it dead-lettered every receipt in a member with no app hearing it (GH #1598). The edge to an app is drawn per app, from this level straight to it, by the manifest that installs the app (templates/builder, `_app_member_edges`, `install_app`). A screen hears it too (GH #1590: it draws its first page off the receipt, not off the first app write), but not through `./channels`: the container ships empty, and a static edge into it dead-lettered every receipt in a member with no screen (GH #1597). The edge to a screen is drawn per screen, from this level straight to it, by the manifest that grows the screen (templates/builder, `_screen_member_edges`). Derived from assistant@2.6.0 and colony-view@1.1.0"
         },
         {
           "route": "tool_result",
@@ -89,7 +89,7 @@
         },
         {
           "route": "in_stats",
-          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of \"assistant@4.0.8\""
+          "because": "a question an observer asks about one brain of one generation (GH #926): what that brain's curator counted in a window, by kind, with a few samples. The member reads nothing in it and answers nothing -- no holder of this level keeps a curator, and no sibling in here raises the lane -- so it crosses this boundary unchanged, handed into `./assistants` on a plain door the way `in_export` and `in_import` enter. WHICH generation it reaches is decided by that container's own per-assistant edge on `context.assistant`, the key a turn is addressed with, and which brain of that generation counts is `hop.stats_role`, read one level further down; a question that names no generation has no address, and the container says so as `no_route` at its own path. Answered on `stats`. Derived from the accepts list of \"assistant@4.1.0\""
         },
         {
           "route": "in_seed",
@@ -191,7 +191,7 @@
           "at": [
             "./apps"
           ],
-          "because": "one section of the block the front model appends to its answer, on its way to the app that asked for it (GH #607). The block is ONE fence with one key per section; the splitter inside the generation cuts it up and emits one message per section, carrying `hop.section`. `memory` is taken by this level's own memory hive on the edge beside this one -- it is the write half of the member's memory (GH #122, ADR 0012) and it is not this lane. EVERY OTHER SECTION belongs to an app of this person, and `at: [\"./apps\"]` says the same thing `turn` and `partial` say: the lane docks on that container, both its ends are inside this level, and nothing may carry it PAST the member as a v-lane (ADR-0020). What is DIFFERENT from the observer lanes is who draws the edge into the container: this level does, not the installing mutation. The rim cannot know the sections -- a section is named by whoever offered it, an app is installed later, and an edge per section would have to be redrawn at the rim on every install. So the level carries everything that is not `memory` into `./apps` on ONE edge and the installing mutation draws `./apps -> ./apps/<app>` on `hop.section == '<app section>'`, which is the level where the name is known. That costs a member without apps nothing measurable, for the same reason the two restamp edges cost it nothing: a section is only ever written because it was OFFERED, and with no app offering one the model is never asked for anything but `memory`"
+          "because": "one section of the block the front model appends to its answer, on its way to the app that asked for it (GH #607). The block is ONE fence with one key per section; the splitter inside the generation cuts it up and emits one message per section, carrying `hop.section`. `memory` is taken by this level's own memory hive on the edge beside this one -- it is the write half of the member's memory (GH #122, ADR 0012) and it is not this lane. EVERY OTHER SECTION belongs to an app of this person, and `at: [\"./apps\"]` says the same thing `turn` and `partial` say: the lane docks on that container, both its ends are inside this level, and nothing may carry it PAST the member as a v-lane (ADR-0020). Since GH #1598 the edge is drawn like the observer edges: by the installing mutation, from `./assistants` straight to the app on `hop.section == '<app section>'`, one edge per offered section. Until then this level carried everything that is not `memory` into `./apps` on ONE edge -- but a model writes sections for the channels too (`fact`, `context`, `correction` on `./assistants -> ./channels`), and every one of them that no app offered ended in the empty container as `hive_no_route` (soul2me lab, set 0.73)."
         },
         {
           "route": "answer_check",
@@ -202,23 +202,23 @@
         },
         {
           "route": "stats",
-          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of \"assistant@4.0.8\""
+          "because": "the answer to one `in_stats`, out of the generation that was asked, unchanged: the counts in the body, `hop.stats_tag`, `hop.error_code`, `hop.detail`. Nothing inside this member consumes it -- whoever asked is outside -- so it LEAVES the level the way `export_done` and `dump` do, and the asker matches it by its tag. Derived from the emits list of \"assistant@4.1.0\""
         },
         {
           "route": "stamp",
-          "because": "the route stamp of one turn (GH #1304), out of the generation unchanged: body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, no text and no turn notes, hop `turn_id`, `path`, `fallback` on a fallback stamp. The route cell raises it only when its knob `stamp_out` is \"1\", so a member that set no knob carries nothing. Nothing inside this member reads it -- the reader is a product outside -- so it LEAVES the level the way `stats` does. Derived from the emits list of \"assistant@4.0.8\""
+          "because": "the route stamp of one turn (GH #1304), out of the generation unchanged: body `stamp` = `{turn_id, session_id, channel, audience_set, path, intent, choices, duration}`, no text and no turn notes, hop `turn_id`, `path`, `fallback` on a fallback stamp. The route cell raises it only when its knob `stamp_out` is \"1\", so a member that set no knob carries nothing. Nothing inside this member reads it -- the reader is a product outside -- so it LEAVES the level the way `stats` does. Derived from the emits list of \"assistant@4.1.0\""
         },
         {
           "route": "opened",
-          "because": "GH #1305: a conversation of one generation began, out unchanged: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, no text. Raised inside an assistant's talky only when its stamp knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@4.0.8\""
+          "because": "GH #1305: a conversation of one generation began, out unchanged: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `turn_id`, no text. Raised inside an assistant's talky only when its stamp knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@4.1.0\""
         },
         {
           "route": "closed",
-          "because": "GH #1305: a conversation of one generation ended, out unchanged right behind its `write`: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, no text. Raised only when the curator writer knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@4.0.8\""
+          "because": "GH #1305: a conversation of one generation ended, out unchanged right behind its `write`: hop `session_id`, `channel`, `channel_node`, `audience_set`, `opened_at`, `closed_at`, `reason`, `turns_person`, `turns_assistant`, `last_turn_id`, `degraded`, no text. Raised only when the curator writer knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@4.1.0\""
         },
         {
           "route": "inner_silent",
-          "because": "GH #1305: an inner turn answered with silence -- nothing went to a channel; hop `inner_source`, `turn_id`, no text. Raised only when the dispatcher knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@4.0.8\""
+          "because": "GH #1305: an inner turn answered with silence -- nothing went to a channel; hop `inner_source`, `turn_id`, no text. Raised only when the dispatcher knob `conversation_events` is \"1\", so a member that set no knob carries nothing. Nothing here reads it -- the reader is a product outside -- so it leaves the level the way `stats` does. Derived from the emits list of \"assistant@4.1.0\""
         },
         {
           "route": "conversations",
@@ -447,11 +447,6 @@
               "turn_id": "has(hop.turn_id) ? hop.turn_id : ''"
             }
           }
-        },
-        {
-          "from": "./assistants",
-          "to": "./apps",
-          "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section != 'memory'"
         },
         {
           "from": "./assistants",
@@ -890,11 +885,6 @@
               "conversations_asked"
             ]
           }
-        },
-        {
-          "from": "./apps",
-          "to": "./channels",
-          "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && has(context.channel_node) && context.channel_node != ''"
         },
         {
           "from": "./channels",
@@ -1387,11 +1377,6 @@
           "condition": "has(hop.route) && hop.route == 'mutation_committed'"
         },
         {
-          "from": ".",
-          "to": "./apps",
-          "condition": "has(hop.route) && hop.route == 'mutation_committed'"
-        },
-        {
           "from": "./channels",
           "to": "./assistants",
           "condition": "has(hop.route) && hop.route == 'tool_result'",
@@ -1490,6 +1475,21 @@
               "has_file",
               "conversations_asked"
             ]
+          }
+        },
+        {
+          "from": "./channels",
+          "to": "./assistants",
+          "condition": "has(hop.route) && hop.route == 'delegation_cancel'",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_delegation_cancel'"
+            },
+            "set_context": {
+              "channel": "has(context.channel) ? context.channel : ''",
+              "engine": "has(hop.engine) ? hop.engine : ''",
+              "live": "has(hop.engine) && hop.engine == 'duplex' && has(hop.call_id) ? hop.call_id : ''"
+            }
           }
         }
       ]

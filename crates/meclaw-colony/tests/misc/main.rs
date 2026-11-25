@@ -7,6 +7,7 @@ pub mod bootstrap_crash_recovery;
 pub mod colony_hot_path_panic_free;
 pub mod long_running_on_start_before_mailbox;
 pub mod p1_read_messages_inbox;
+pub mod params_road_out_of_the_shell;
 pub mod r12_add_edges_subscope_matrix;
 pub mod read_echo_tag;
 pub mod w13_memory_hive_is_sealed;

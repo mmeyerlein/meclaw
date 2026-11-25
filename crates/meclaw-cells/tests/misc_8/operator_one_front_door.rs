@@ -140,12 +140,24 @@ fn every_accepted_lane_has_a_door_and_every_emitted_lane_an_exit() {
             "in_lifecycle",
             "in_draft",
             "in_verdict",
-            "export_done"
+            "export_done",
+            // GH #1353: the params road -- the update and the answer to it.
+            "in_params",
+            "in_params_answer"
         ]
     );
     assert_eq!(
         routes(&hive, "emits"),
-        vec!["export", "receipt", "ask", "mutate", "sub_receipt"],
+        vec![
+            "export",
+            "receipt",
+            "ask",
+            "mutate",
+            "sub_receipt",
+            "params_applied",
+            "params_refused",
+            "params_receipt"
+        ],
         "`apply` and `in_receipt` are NOT rim lanes since GH #556 — they are the \
          two interior edges between `./intake` and `./submit`"
     );
@@ -664,7 +676,7 @@ fn the_shell_doors_every_caller_lane_to_the_front_door_and_takes_the_answer_out(
             env!("CARGO_MANIFEST_DIR"),
             "/../../templates/meclaw-os/operator/config.json"
         ))["cell"]["template"],
-        "operator@1.2.10",
+        "operator@1.3.0",
         "pinned exactly: a bare name would adopt a new front door on a bump"
     );
     assert!(

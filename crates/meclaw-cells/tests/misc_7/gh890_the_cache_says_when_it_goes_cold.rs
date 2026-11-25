@@ -11,7 +11,8 @@
 //!    byte, however the other two knobs are set;
 //! 2. `breakpoints` marks exactly two prefix ends: the end of the system
 //!    message and the end of the stable history, and nothing else moves
-//!    (its own frozen fixture);
+//!    (its own frozen fixture); a request that ends on a round result marks
+//!    that result as a third one (OR-58-63);
 //! 3. the answer's hop, read back out of the colony's `message_log`, carries
 //!    `cache_expires_at` = the end of the provider call + `cache_ttl_s`, the
 //!    cache-write tokens and the window -- and carries no stamp under `off`,
@@ -80,9 +81,26 @@ fn read_fixture(path: &str) -> Value {
     meclaw_core::serde_json::from_str(&text).expect("fixture is valid JSON")
 }
 
+/// The turns of the broad request: every turn type, ending on the person's text.
+fn broad_turns() -> Vec<Value> {
+    vec![
+        json!({"origin": "user", "type": "text", "text": "first"}),
+        json!({"origin": "assistant", "type": "tool_call", "id": "call_1",
+               "text": "{\"name\":\"get_weather\",\"arguments\":\"{}\"}"}),
+        json!({"origin": "tool", "type": "tool_result", "id": "call_1", "text": "sunny"}),
+        json!({"origin": "assistant", "type": "text", "text": "it is sunny"}),
+        json!({"origin": "user", "type": "text", "text": "thanks"}),
+    ]
+}
+
 /// The broad request of the wire regression -- system, a tool schema, every
 /// turn type, attribution, `provider_extra` -- with `extra` params on top.
 async fn broad_request(extra: Value) -> Value {
+    request_of(extra, broad_turns()).await
+}
+
+/// The broad request over `turns`.
+async fn request_of(extra: Value, turns: Vec<Value>) -> Value {
     let mock = MockOpenAI::start(vec![canned_chat_completion("ok", "stop")]).await;
     let mut raw = json!({
         "provider": "openai",
@@ -116,14 +134,7 @@ async fn broad_request(extra: Value) -> Value {
                     "get_weather": {"text": "{\"name\":\"get_weather\",\"description\":\"w\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}"}
                 }
             },
-            "messages": [
-                {"origin": "user", "type": "text", "text": "first"},
-                {"origin": "assistant", "type": "tool_call", "id": "call_1",
-                 "text": "{\"name\":\"get_weather\",\"arguments\":\"{}\"}"},
-                {"origin": "tool", "type": "tool_result", "id": "call_1", "text": "sunny"},
-                {"origin": "assistant", "type": "text", "text": "it is sunny"},
-                {"origin": "user", "type": "text", "text": "thanks"}
-            ]
+            "messages": turns
         })))
         .build();
     cell.handle(msg, &sink, &mut db).await;
@@ -180,6 +191,8 @@ async fn off_keeps_the_wire_fixture_byte_identical() {
     );
 }
 
+/// A window ending on the person's text; a window ending on a round result
+/// carries a third mark (OR-58-63, the next test).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn breakpoints_marks_exactly_two_prefix_ends() {
     let body = broad_request(json!({"cache_mode": "breakpoints", "cache_ttl_s": 300})).await;
@@ -204,6 +217,41 @@ async fn breakpoints_marks_exactly_two_prefix_ends() {
         .collect();
     plain["messages"] = Value::Array(messages);
     assert_eq!(bytes(&plain), bytes(&read_fixture(OFF_FIXTURE)));
+}
+
+/// OR-58-63 through the cell and the strict mock: the follow-up call of a
+/// tool round carries its third mark on the last result, and without the
+/// marks the request is the one `off` sends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn or_58_63_a_tool_round_ends_on_a_third_mark() {
+    let mut turns = broad_turns();
+    turns.extend([
+        json!({"origin": "assistant", "type": "tool_call", "id": "call_2",
+               "text": "{\"name\":\"get_weather\",\"arguments\":\"{}\"}"}),
+        json!({"origin": "tool", "type": "tool_result", "id": "call_2", "text": "rain"}),
+    ]);
+    let body = request_of(
+        json!({"cache_mode": "breakpoints", "cache_ttl_s": 300}),
+        turns.clone(),
+    )
+    .await;
+    // 0 system, 1 first, 2 tool_calls, 3 sunny, 4 it is sunny, 5 thanks, 6 tool_calls, 7 rain
+    assert_eq!(marked(&body), vec![0, 4, 7], "{body}");
+    assert_eq!(body.to_string().matches("cache_control").count(), 3);
+    assert_eq!(
+        body["messages"][7],
+        json!({"role": "tool", "tool_call_id": "call_2", "content": [
+            {"type": "text", "text": "rain", "cache_control": {"type": "ephemeral"}}]})
+    );
+    let mut plain = body.clone();
+    plain["messages"] = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(unmarked)
+        .collect();
+    let off = request_of(json!({"cache_mode": "off"}), turns).await;
+    assert_eq!(bytes(&plain), bytes(&off));
 }
 
 // ═══════════════════════════════════════════════════ 3: the stamp, in the log

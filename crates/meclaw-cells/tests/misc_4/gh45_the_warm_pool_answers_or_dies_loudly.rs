@@ -29,7 +29,10 @@ async fn warm_cell(
         "runner_mode": "warm",
         "max_concurrency": 1
     });
-    let (otx, orx) = tokio::sync::mpsc::channel(16);
+    // 32 > the 24 emissions of the test: the consume mark goes out through a
+    // spawned task (`WorkGuard::drop`), so a full channel could let it lose the
+    // race against the next message's answer (review stille, Minor 1).
+    let (otx, orx) = tokio::sync::mpsc::channel(32);
     let td = tempfile::TempDir::new().unwrap();
     let (itx, _irx) = tokio::sync::mpsc::channel(8);
     let spawned = Arc::new(CodeCellFactory)
@@ -124,27 +127,41 @@ async fn every_message_gets_exactly_one_answer() {
         5_000,
     )
     .await;
+    let mut ids = Vec::new();
     for n in 0..12 {
-        tx.send(
-            MessageBuilder::new(Path::new("/code"))
-                .body(Body::Inline(json!({"messages":[],"n":n})))
-                .reply_to(Path::new("/sink"))
-                .build(),
-        )
-        .await
-        .unwrap();
+        let m = MessageBuilder::new(Path::new("/code"))
+            .body(Body::Inline(json!({"messages":[],"n":n})))
+            .reply_to(Path::new("/sink"))
+            .build();
+        ids.push(m.id);
+        tx.send(m).await.unwrap();
     }
-    let mut seen = 0;
-    while seen < 12 {
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv_answer()).await {
-            Ok(Some(_)) => seen += 1,
-            other => panic!("only {seen} of 12 answers arrived: {other:?}"),
+    // GH #1589: absence by a marker, not by a silence. The cell task closes
+    // every handled delivery with its consume mark on the same FIFO output
+    // channel, after every emission the handler made for it (GH #1015). So the
+    // answers of message n are exactly what arrives before the mark carrying
+    // n's id; a second answer, however late, lands before that mark. The old
+    // proof was 300 ms of quiet after the twelfth answer, which passed any
+    // duplicate slower than that. The wait carries only the hang mark.
+    for (n, id) in ids.iter().enumerate() {
+        let mut answers = 0;
+        loop {
+            let what = format!("the consume mark of message {n}");
+            let em = meclaw_testing::deadline::hang(&what, rx.recv())
+                .await
+                .unwrap_or_else(|| panic!("the cell dropped its output channel at message {n}"));
+            if let Some(closed) = em.consumed_mark_id() {
+                assert_eq!(
+                    closed, *id,
+                    "message {n} was closed by the mark of another delivery"
+                );
+                break;
+            }
+            answers += 1;
         }
+        assert_eq!(
+            answers, 1,
+            "message {n} got {answers} answers -- exactly one per message"
+        );
     }
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv_answer())
-            .await
-            .is_err(),
-        "no thirteenth answer -- exactly one per message"
-    );
 }

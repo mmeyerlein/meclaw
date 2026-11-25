@@ -17,6 +17,13 @@
 //! task. There it would have measured a channel pair for nothing; here the
 //! channel pair is the contract under test.
 //!
+//! How the way back is delivered is a profile of the params (GH #1636): by
+//! default one item per item, at once. A real provider sends chunks of 100 ms
+//! and some of them late, and a loopback at the even pace of its input never
+//! showed the wire that; `chunk_ms` and `late` make it. The profile moves
+//! bytes in time and changes none, and it is a plan, never a draw: the n-th
+//! chunk of every session is as late as the params say (`EchoProfile`).
+//!
 //! What it does NOT carry is the session's clock (R-L7). The tick that feeds
 //! the turn machine and the delegation deadline sits in the connection, ABOVE
 //! this trait, so both implementations get it and neither writes it: a
@@ -28,8 +35,10 @@ use crate::voice::contract::{
     AudioFormat, BoxFuture, DuplexControl, DuplexError, DuplexEvent, DuplexProvider, DuplexSession,
     ProviderTimeouts, Speaker,
 };
+use crate::voice::params::EchoLate;
 use meclaw_colony::io_liveness::IoLivenessMark;
 use std::collections::VecDeque;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
@@ -43,17 +52,133 @@ use tokio::time::Instant;
 pub const ECHO_DUPLEX_RATES: [u32; 3] = [8_000, 16_000, 24_000];
 
 /// How many items make one meter reading. 50 frames of 20 ms is one second of
-/// audio, which is the granularity a real session's `usage.updated` has.
+/// audio, which is the granularity a real session's `usage.updated` has; longer
+/// items make a reading of as many fewer (`owe_usage`).
 const ITEMS_PER_USAGE: u64 = 50;
 
-/// How long one item is assumed to be, in seconds — 20 ms, the frame length
-/// this wire runs at (`params.audio_out_frame_ms`).
-const SECONDS_PER_ITEM: f64 = 0.02;
+/// How long one item is assumed to be, in milliseconds — 20 ms, the frame
+/// length this wire runs at (`params.audio_out_frame_ms`). With `chunk_ms` an
+/// item is a chunk of that length instead.
+const MS_PER_ITEM: u64 = 20;
+
+/// How many chunks may wait for their moment before the audio is read no
+/// further: a bound, not a pace. At 10 ms an item (the least `chunk_ms`) it holds
+/// more than [`MAX_ECHO_LATE_MS`](crate::voice::params::MAX_ECHO_LATE_MS), so a
+/// caller who sends at the speed of sound does not meet it.
+const MAX_WAITING: usize = 512;
+
+/// How the way back is delivered; `params.duplex.chunk_ms` and
+/// `params.duplex.late`. The default is the loopback as it always was.
+#[derive(Debug, Clone, Default)]
+struct EchoProfile {
+    /// The length of one chunk in milliseconds of sound; `None` passes every
+    /// item on in its own size.
+    chunk_ms: Option<u64>,
+    /// The plan of the late chunks; constant over the session.
+    late: Vec<EchoLate>,
+}
+
+impl EchoProfile {
+    /// How much later than ready the `n`-th chunk (from 1) goes out: the
+    /// longest delay of the pairs that meet it.
+    fn late_by(&self, n: u64) -> Duration {
+        let ms = self
+            .late
+            .iter()
+            .filter(|pair| n.is_multiple_of(pair.every))
+            .map(|pair| pair.ms)
+            .max();
+        Duration::from_millis(ms.unwrap_or(0))
+    }
+
+    /// The bytes of one chunk at `format`, the format the session runs at.
+    fn chunk_bytes(&self, format: AudioFormat) -> Option<usize> {
+        self.chunk_ms.map(|ms| {
+            let samples = u64::from(format.sample_rate) * ms / 1_000;
+            samples as usize * format.frame_bytes()
+        })
+    }
+
+    /// The milliseconds of sound one item on the way back is metered as.
+    fn ms_per_item(&self) -> u64 {
+        self.chunk_ms.unwrap_or(MS_PER_ITEM)
+    }
+}
+
+/// The way back of one session: what is being bundled and what waits for its
+/// moment. The plan itself is the params' and stays in [`EchoProfile`].
+struct WayBack {
+    profile: EchoProfile,
+    chunk_bytes: Option<usize>,
+    /// The chunk being filled; always shorter than `chunk_bytes`.
+    filling: Vec<u8>,
+    /// The chunks that are ready, with the moment each may go out, in order.
+    waiting: VecDeque<(Instant, Vec<u8>)>,
+    /// How many chunks the session has made.
+    made: u64,
+}
+
+impl WayBack {
+    fn new(profile: EchoProfile, format: AudioFormat) -> Self {
+        Self {
+            chunk_bytes: profile.chunk_bytes(format),
+            profile,
+            filling: Vec::new(),
+            waiting: VecDeque::new(),
+            made: 0,
+        }
+    }
+
+    /// Takes one item off the microphone at `now`.
+    fn take(&mut self, bytes: Vec<u8>, now: Instant) {
+        let Some(size) = self.chunk_bytes else {
+            return self.ready(bytes, now);
+        };
+        self.filling.extend_from_slice(&bytes);
+        while self.filling.len() >= size {
+            let rest = self.filling.split_off(size);
+            let chunk = std::mem::replace(&mut self.filling, rest);
+            self.ready(chunk, now);
+        }
+    }
+
+    /// Queues one chunk that is complete at `now`, as late as the plan says.
+    fn ready(&mut self, chunk: Vec<u8>, now: Instant) {
+        self.made += 1;
+        let at = now + self.profile.late_by(self.made);
+        self.waiting.push_back((at, chunk));
+    }
+
+    /// The moment the next chunk may go out. Only the head is asked, which is
+    /// what keeps the order: a chunk behind a late one waits behind it.
+    fn next_at(&self) -> Option<Instant> {
+        self.waiting.front().map(|(at, _)| *at)
+    }
+
+    /// The next chunk, if its moment has come.
+    fn due(&mut self, now: Instant) -> Option<Vec<u8>> {
+        if self.next_at()? > now {
+            return None;
+        }
+        self.waiting.pop_front().map(|(_, chunk)| chunk)
+    }
+
+    /// Everything not yet out, in order and without its delays: the session is
+    /// ending. The last one may be a chunk that was never filled.
+    fn rest(self) -> impl Iterator<Item = Vec<u8>> {
+        self.waiting
+            .into_iter()
+            .map(|(_, chunk)| chunk)
+            .chain(Some(self.filling).filter(|bytes| !bytes.is_empty()))
+    }
+}
 
 /// Audio in, the same audio out — and every event the contract has a shape for.
 pub struct EchoDuplex {
     /// The rate this instance declares; `params.duplex.sample_rate`.
     sample_rate: u32,
+    /// How the way back is delivered.
+    profile: EchoProfile,
     /// The two deadlines this adapter is held to. Kept because
     /// [`Self::with_timeouts`] is the shape every provider has; neither can
     /// fire here, for the reason [`EchoDuplex::run_session`] gives.
@@ -65,8 +190,16 @@ impl EchoDuplex {
     pub fn new(sample_rate: u32) -> Self {
         Self {
             sample_rate,
+            profile: EchoProfile::default(),
             timeouts: ProviderTimeouts::default(),
         }
+    }
+
+    /// Deliver the way back in chunks of `chunk_ms` and by the plan `late`
+    /// (GH #1636); `None` and an empty plan are the default loopback.
+    pub fn with_profile(mut self, chunk_ms: Option<u64>, late: Vec<EchoLate>) -> Self {
+        self.profile = EchoProfile { chunk_ms, late };
+        self
     }
 
     /// Hold this adapter to the cell's two deadlines (hard rule 12).
@@ -104,11 +237,13 @@ impl DuplexProvider for EchoDuplex {
     /// timeout around that would be a deadline on a human being quiet.
     fn run_session(
         &self,
-        _format: AudioFormat,
+        format: AudioFormat,
         session: DuplexSession,
         liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), DuplexError>> {
         let _timeouts = self.timeouts;
+        let ms_per_item = self.profile.ms_per_item();
+        let mut way_back = WayBack::new(self.profile.clone(), format);
         let DuplexSession {
             mut audio_in,
             audio_out,
@@ -144,15 +279,35 @@ impl DuplexProvider for EchoDuplex {
             // loopback that dropped would measure the drop, not the wire:
             // - `owed` holds the events, in order. It grows only with the
             //   guidance read (an append is two events, a mute one) and by one
-            //   meter reading per `ITEMS_PER_USAGE` echoed frames, and while a
-            //   meter reading waits in it the audio is not read (`usage_owed`).
+            //   meter reading per second of echoed frames, and while a meter
+            //   reading waits in it no chunk goes out and no audio is read
+            //   (`usage_owed`).
             // - `held` is the one echoed frame the audio outlet had no room
             //   for; while it waits the audio is not read either, so the
             //   backpressure on the client stays what it was.
             let mut owed: VecDeque<DuplexEvent> = VecDeque::new();
             let mut usage_owed: usize = 0;
             let mut held: Option<Vec<u8>> = None;
-            let reason = loop {
+            let reason = 'session: loop {
+                // What is due goes out before anything else is waited for. The
+                // default profile queues a frame due the instant it came, so
+                // it leaves right here, in the turn of the loop after its read.
+                while held.is_none()
+                    && usage_owed == 0
+                    && let Some(bytes) = way_back.due(Instant::now())
+                {
+                    // Held, never dropping: a full outlet keeps the frame (see
+                    // `held`) and stops the audio until it is out.
+                    match audio_out.try_send(bytes) {
+                        Ok(()) => {
+                            items += 1;
+                            usage_owed += owe_usage(&mut owed, items, ms_per_item);
+                        }
+                        Err(TrySendError::Full(bytes)) => held = Some(bytes),
+                        Err(TrySendError::Closed(_)) => break 'session "client_gone",
+                    }
+                }
+                let next_at = way_back.next_at();
                 tokio::select! {
                     // `biased` so a control frame is acted on before the audio
                     // that is already queued behind it — a mute that arrives
@@ -210,13 +365,19 @@ impl DuplexProvider for EchoDuplex {
                             if let Some(bytes) = held.take() {
                                 permit.send(bytes);
                                 items += 1;
-                                usage_owed += owe_usage(&mut owed, items);
+                                usage_owed += owe_usage(&mut owed, items, ms_per_item);
                             }
                         }
                         Err(_) => break "client_gone",
                     },
 
-                    frame = audio_in.recv(), if held.is_none() && usage_owed == 0 => match frame {
+                    // A late chunk's moment; the turn of the loop sends it.
+                    _ = tokio::time::sleep_until(next_at.unwrap_or(started_at)),
+                        if next_at.is_some() && held.is_none() && usage_owed == 0 => {}
+
+                    frame = audio_in.recv(), if held.is_none()
+                        && usage_owed == 0
+                        && way_back.waiting.len() < MAX_WAITING => match frame {
                         // The client went away: `audio_in` closing IS the end
                         // of the call (contract § 1.1).
                         None => break "close_requested",
@@ -229,17 +390,7 @@ impl DuplexProvider for EchoDuplex {
                             if muted {
                                 continue;
                             }
-                            // Held, never dropping: a full outlet keeps the
-                            // frame (see `held`) and stops the audio until it
-                            // is out.
-                            match audio_out.try_send(bytes) {
-                                Ok(()) => {
-                                    items += 1;
-                                    usage_owed += owe_usage(&mut owed, items);
-                                }
-                                Err(TrySendError::Full(bytes)) => held = Some(bytes),
-                                Err(TrySendError::Closed(_)) => break "client_gone",
-                            }
+                            way_back.take(bytes, Instant::now());
                         }
                     },
                 }
@@ -258,12 +409,21 @@ impl DuplexProvider for EchoDuplex {
                     }
                 }
             }
-            if let (Some(bytes), true) = (held, reason != "client_gone") {
-                let _ = draining(audio_out.send(bytes), &mut control, &mut audio_in).await;
+            // ... and so does the audio: the held frame, then what was still
+            // being bundled or waited for, without its delays.
+            if reason != "client_gone" {
+                for bytes in held.into_iter().chain(way_back.rest()) {
+                    if draining(audio_out.send(bytes), &mut control, &mut audio_in)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             }
             let closed = DuplexEvent::Closed {
                 reason: reason.to_string(),
-                usage_seconds: items as f64 * SECONDS_PER_ITEM,
+                usage_seconds: seconds_of(items, ms_per_item),
             };
             let _ = draining(events.send(closed), &mut control, &mut audio_in).await;
             Ok(())
@@ -271,14 +431,19 @@ impl DuplexProvider for EchoDuplex {
     }
 }
 
-/// Owes one meter reading when `items` echoed frames make one; returns how
-/// many it added (0 or 1).
-fn owe_usage(owed: &mut VecDeque<DuplexEvent>, items: u64) -> usize {
-    if !items.is_multiple_of(ITEMS_PER_USAGE) {
+/// What `items` echoed items of `ms_per_item` are metered as, in seconds.
+fn seconds_of(items: u64, ms_per_item: u64) -> f64 {
+    items as f64 * (ms_per_item as f64 / 1_000.0)
+}
+
+/// Owes one meter reading when `items` echoed items of `ms_per_item` make one;
+/// returns how many it added (0 or 1).
+fn owe_usage(owed: &mut VecDeque<DuplexEvent>, items: u64, ms_per_item: u64) -> usize {
+    if !items.is_multiple_of((ITEMS_PER_USAGE * MS_PER_ITEM / ms_per_item).max(1)) {
         return 0;
     }
     owed.push_back(DuplexEvent::Usage {
-        seconds: items as f64 * SECONDS_PER_ITEM,
+        seconds: seconds_of(items, ms_per_item),
         usage_ratio: None,
     });
     1
@@ -321,6 +486,229 @@ async fn draining<F: std::future::Future>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voice::params::VoiceParams;
+    use crate::voice::providers::build_duplex;
+    use meclaw_core::serde_json::json;
+
+    /// One frame of a caller: 20 ms, the pace of a telephone uplink.
+    const FRAME_MS: u64 = 20;
+
+    /// How long the line stays open after the last frame, in frames: longer
+    /// than every delay a test plans.
+    const LINGER_FRAMES: usize = 60;
+
+    /// The paused tokio clock's "now": virtual time, exact.
+    fn virtual_now() -> Instant {
+        tokio::time::Instant::now()
+    }
+
+    /// `n` frames of `bytes` bytes each, the n-th one filled with n (from 1).
+    fn frames(n: u8, bytes: usize) -> Vec<Vec<u8>> {
+        (1..=n).map(|b| vec![b; bytes]).collect()
+    }
+
+    /// What came back: every item with the virtual millisecond it arrived at,
+    /// and the seconds the close metered.
+    struct Delivered {
+        items: Vec<(u64, Vec<u8>)>,
+        usage_seconds: f64,
+    }
+
+    impl Delivered {
+        fn times(&self) -> Vec<u64> {
+            self.items.iter().map(|(at, _)| *at).collect()
+        }
+        fn sizes(&self) -> Vec<usize> {
+            self.items.iter().map(|(_, b)| b.len()).collect()
+        }
+        fn bytes(&self) -> Vec<u8> {
+            self.items.iter().flat_map(|(_, b)| b.clone()).collect()
+        }
+    }
+
+    /// Runs one session at `rate` of the loopback the registry builds from the
+    /// `duplex` block, fed one frame per [`FRAME_MS`] and then left open for
+    /// [`LINGER_FRAMES`] before the caller goes away.
+    async fn deliver(duplex: meclaw_core::JsonValue, rate: u32, frames: Vec<Vec<u8>>) -> Delivered {
+        let params = VoiceParams::parse(&json!({"mount": "voice", "duplex": duplex}))
+            .expect("the profile parses");
+        let provider = build_duplex(
+            params.duplex.as_ref().expect("a duplex block"),
+            ProviderTimeouts::default(),
+        )
+        .expect("the loopback adapter");
+        let (audio_in_tx, audio_in) = mpsc::channel(32);
+        let (audio_out, mut audio_out_rx) = mpsc::channel::<Vec<u8>>(32);
+        let (events, mut events_rx) = mpsc::channel(32);
+        let (control_tx, control) = mpsc::channel(4);
+        let opened = virtual_now();
+        let session = tokio::spawn(provider.run_session(
+            AudioFormat::pcm16_mono(rate),
+            DuplexSession {
+                audio_in,
+                audio_out,
+                events,
+                control,
+            },
+            IoLivenessMark::disabled(),
+        ));
+        let meter = tokio::spawn(async move {
+            let mut closed = None;
+            while let Some(event) = events_rx.recv().await {
+                if let DuplexEvent::Closed { usage_seconds, .. } = event {
+                    closed = Some(usage_seconds);
+                }
+            }
+            closed
+        });
+        let caller = tokio::spawn(async move {
+            let mut pace = tokio::time::interval(Duration::from_millis(FRAME_MS));
+            for frame in frames {
+                pace.tick().await;
+                audio_in_tx.send(frame).await.expect("the session runs");
+            }
+            for _ in 0..LINGER_FRAMES {
+                pace.tick().await;
+            }
+        });
+        let mut items = Vec::new();
+        while let Some(bytes) = audio_out_rx.recv().await {
+            let at = virtual_now().saturating_duration_since(opened);
+            items.push((at.as_millis() as u64, bytes));
+        }
+        caller.await.expect("the caller ran through");
+        session
+            .await
+            .expect("the session task ran through")
+            .expect("a caller going away is no failure");
+        drop(control_tx);
+        Delivered {
+            items,
+            usage_seconds: meter
+                .await
+                .expect("the meter ran through")
+                .expect("the session said it closed"),
+        }
+    }
+
+    /// Without a profile the loopback is what it was: every item back in the
+    /// instant it came, in its own size, whatever that size is.
+    #[tokio::test(start_paused = true)]
+    async fn the_default_echo_is_unchanged() {
+        let sent: Vec<Vec<u8>> = [640, 2, 1_000, 3_200, 640]
+            .into_iter()
+            .zip(1u8..)
+            .map(|(len, b)| vec![b; len])
+            .collect();
+        let got = deliver(json!({"provider": "echo"}), 16_000, sent.clone()).await;
+        assert_eq!(got.times(), vec![0, 20, 40, 60, 80]);
+        assert_eq!(
+            got.items.into_iter().map(|(_, b)| b).collect::<Vec<_>>(),
+            sent,
+            "byte for byte, one item per item"
+        );
+        assert_eq!(got.usage_seconds, 5.0 * 0.02, "20 ms per item, as before");
+    }
+
+    /// `chunk_ms` hands the audio back in chunks of that much sound, each in
+    /// the instant its last byte came in, and keeps every byte in order.
+    #[tokio::test(start_paused = true)]
+    async fn the_echo_bundles_to_chunks() {
+        let profile = json!({"provider": "echo", "chunk_ms": 100});
+
+        // 13 frames of 20 ms: two whole chunks, and 60 ms of rest that goes
+        // out when the caller does.
+        let sent = frames(13, 640);
+        let got = deliver(profile.clone(), 16_000, sent.clone()).await;
+        assert_eq!(got.sizes(), vec![3_200, 3_200, 1_920]);
+        assert_eq!(got.times()[..2], [80, 180]);
+        assert_eq!(got.bytes(), sent.concat(), "nothing dropped, in order");
+        assert_eq!(got.usage_seconds, 0.2, "two chunks of 100 ms metered");
+
+        // One item longer than two chunks is cut, and the cut goes out as the
+        // burst a provider sends.
+        let sent = vec![vec![7u8; 8_000]];
+        let got = deliver(profile.clone(), 16_000, sent.clone()).await;
+        assert_eq!(got.sizes(), vec![3_200, 3_200, 1_600]);
+        assert_eq!(got.times()[..2], [0, 0]);
+        assert_eq!(got.bytes(), sent.concat());
+
+        // The length is sound, so it follows the rate of the SESSION, which a
+        // client may have negotiated away from the configured one.
+        let got = deliver(profile, 24_000, frames(5, 960)).await;
+        assert_eq!(got.sizes(), vec![4_800]);
+        assert_eq!(got.times(), vec![80]);
+    }
+
+    /// `late` is the plan and nothing but the plan: the n-th chunk leaves that
+    /// much after it was ready, the longest of several matching pairs counts,
+    /// and what comes after it waits behind it and leaves in order.
+    #[tokio::test(start_paused = true)]
+    async fn every_nth_chunk_is_late_by_the_plan() {
+        let sent = frames(12, 640);
+        let got = deliver(
+            json!({"provider": "echo", "late": [
+                {"every": 3, "ms": 50},
+                {"every": 4, "ms": 10}
+            ]}),
+            16_000,
+            sent.clone(),
+        )
+        .await;
+        assert_eq!(
+            got.times(),
+            vec![0, 20, 90, 90, 90, 150, 150, 150, 210, 210, 210, 270],
+            "3, 6, 9 and 12 are 50 ms late (12 is also a fourth one: the \
+             longer delay counts), 4 and 8 leave right behind them"
+        );
+        assert_eq!(got.bytes(), sent.concat(), "a late chunk overtakes nothing");
+
+        // Together with the chunks: the count is in chunks, not in frames.
+        let sent = frames(20, 640);
+        let got = deliver(
+            json!({"provider": "echo", "chunk_ms": 100, "late": [{"every": 2, "ms": 629}]}),
+            16_000,
+            sent.clone(),
+        )
+        .await;
+        assert_eq!(got.sizes(), vec![3_200; 4]);
+        assert_eq!(got.times(), vec![80, 809, 809, 1_009]);
+        assert_eq!(got.bytes(), sent.concat());
+    }
+
+    /// A profile that names nothing is refused at birth, by its key.
+    #[test]
+    fn a_profile_that_names_nothing_is_refused() {
+        for (profile, key) in [
+            (
+                json!({"provider": "echo", "chunk_ms": 9}),
+                "duplex.chunk_ms",
+            ),
+            (
+                json!({"provider": "echo", "chunk_ms": 1_001}),
+                "duplex.chunk_ms",
+            ),
+            (
+                json!({"provider": "echo", "late": [{"every": 0, "ms": 50}]}),
+                "duplex.late",
+            ),
+            (
+                json!({"provider": "echo", "late": [{"every": 3, "ms": 0}]}),
+                "duplex.late",
+            ),
+            (
+                json!({"provider": "echo", "late": [{"every": 3, "ms": 5_001}]}),
+                "duplex.late",
+            ),
+        ] {
+            let refused = VoiceParams::parse(&json!({"mount": "voice", "duplex": profile}))
+                .expect_err("a profile that names nothing is refused");
+            assert!(
+                refused.starts_with(key),
+                "the refusal names its key {key}: {refused}"
+            );
+        }
+    }
 
     /// What the `hello` frame and `GET /info` are built from.
     #[test]

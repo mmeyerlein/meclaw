@@ -380,8 +380,10 @@ fn the_hive_is_sealed_and_states_two_lanes() {
         .map(|l| l["route"].as_str().unwrap())
         .collect();
     // GH #1096 (R-AG-1): the receipt is the redraw, not a minute tick.
-    assert_eq!(accepts, ["mutation_committed", "in_refresh"]);
-    assert_eq!(emits, ["event"]);
+    // GH #1353: `in_params` is a params-only update for one cell, answered on
+    // `params_applied` or `params_refused`.
+    assert_eq!(accepts, ["mutation_committed", "in_refresh", "in_params"]);
+    assert_eq!(emits, ["event", "params_applied", "params_refused"]);
 
     let edges = cfg["params"]["graph"]["edges"].as_array().expect("edges");
     // Every lane the contract names has a door, and no door names a lane the

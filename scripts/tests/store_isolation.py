@@ -89,8 +89,7 @@ def isolate():
     # GH #1262: the register words come from the built-in entries alone, never
     # from the machine's host file (absent here; a test writes its own).
     os.environ[REPOS_ENV] = str(pathlib.Path(tmp) / "pipeline-repos.json")
-    # d59-2 fix round (review M3): the night's local lane and the close's build hint
-    # read the host file; a test reads its own, never the machine's (absent here).
+    # d59-2 fix round (review M3): the night's local lane reads the host file; a test reads its own, never the machine's (absent here).
     os.environ[LANES_ENV] = str(pathlib.Path(tmp) / "lanes")
     for name in OUTBOUND_ENVS + OUTER_RUN_ENVS:
         os.environ.pop(name, None)

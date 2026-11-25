@@ -631,17 +631,22 @@ fn the_level_wires_the_screen_the_memory_and_the_record() {
          does, and the return path is the same one — the only difference is which container \
          the owner path lies in"
     );
+    // GH #1597: an application's view reaches a screen of this person on an edge the
+    // growth of THAT screen draws (`./apps -> ./channels/<screen>`, the builder's
+    // `_screen_member_edges`), never on a static edge into the container: the container
+    // ships empty, and a view for a screen this member does not have ended there as a
+    // dead letter. The app stays display-blind (templates/colony-view/README.md): which
+    // screen it draws on is the ONE literal the edge out of the app itself carries.
     assert!(
-        hp.graph.edges.iter().any(|e| {
+        !hp.graph.edges.iter().any(|e| {
             e.from == "./apps"
                 && e.to == "./channels"
                 && e.condition
                     .as_deref()
                     .is_some_and(|c| c.contains("hop.route == 'view'"))
         }),
-        "an application's view cannot reach a screen of this person. The app is display-blind \
-         by design (templates/colony-view/README.md): which screen it draws on is named in ONE \
-         literal, in the edge the instantiating mutation draws out of the app itself"
+        "the member carries an application's view into its channels container whether a \
+         screen stands there or not (GH #1597)"
     );
     assert!(
         hp.graph.edges.iter().any(|e| {
@@ -959,6 +964,15 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
             );
             continue;
         }
+        if let Some((_, why)) = SHELL_BOUND_EXITS.iter().find(|(l, _)| *l == route) {
+            assert!(
+                !consumed_inside && !leaves,
+                "`{route}` is bound by the shell's model road, at \
+                 `./assistants/<agent>`; an edge of this template on it would deliver it \
+                 twice ({why})"
+            );
+            continue;
+        }
         if let Some((_, why)) = SET_BOUND_EXITS.iter().find(|(l, _)| *l == route) {
             assert!(
                 !consumed_inside && !leaves,
@@ -1135,7 +1149,15 @@ fn every_lane_an_assistant_emits_is_consumed_here_or_leaves_the_level() {
 /// so the assistant no longer accepts the lane and there is nothing left to
 /// subtract. `in_candidate` stood here until GH #951: the member's own `./objects`
 /// hands the assistants its briefs on that lane, so a sibling supplies it now.
-const NOT_CARRIED: [(&str, &str); 12] = [
+const NOT_CARRIED: [(&str, &str); 13] = [
+    (
+        "in_model",
+        "a model package of the colony's llm-registry (GH #1616, R-80-5). Its producer is \
+         the SHELL, and only a cell of the shell may reach into a member, onto a door the \
+         target hive declares: the builder's road draws the push from the registry's \
+         container straight to `<member>/assistants/<agent>`, the assistant's own \
+         `in_model` door. A door at this level would let any sibling move a brain's model",
+    ),
     (
         "in_advice",
         "answered inside the assistant by ./cogny; the other producer is a SECOND agent, \
@@ -1233,6 +1255,15 @@ const SET_BOUND_EXITS: [(&str, &str); 5] = [
     // (`call_facts` until D58 live, GH #1482).
     ("live_facts", "the reader of what a call carried"),
 ];
+
+/// GH #1616 (R-80-5) -- the exits of the assistant that the SHELL's model road
+/// takes: the builder draws the way back from `./assistants/<agent>` straight to
+/// the registry's container, beside the push onto the assistant's `in_model`
+/// door. An assertion, not a mute: an edge of this template on the lane fails.
+const SHELL_BOUND_EXITS: [(&str, &str); 1] = [(
+    "model_refused",
+    "the refusal of a registry push, carried on to the registry's `in_refused`",
+)];
 
 /// A lane the assistant raises whose holder inside this member lands in a later
 /// strand of the same wave, with why nothing raises it until then. An assertion,

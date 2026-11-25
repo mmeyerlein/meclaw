@@ -60,7 +60,7 @@ names one (`parallel.profiles`); the first red part is the station's exit.
 VERDICTS. A station's verdict is its exit code, except for the rules ported
 from the station loop of `scripts/gate.sh` (`PORTED_RULES` below).
 
-Exit: GREEN 0, RED 1, ABORTED 2, ASK 4 -- the verdict of `pass_ended`.
+Exit: GREEN 0, RED 1, ABORTED 2 -- the verdict of `pass_ended`.
 
 STOPPING A RUN. SIGTERM to the executor -- a foreign stop of its scope, or
 `pipeline.py exec --abort <run>` (the pid in `<ws>/exec.pid`) -- aborts the
@@ -90,7 +90,7 @@ from . import events, finding, flakes, gitenv, hang_dump, ports, receipt, store
 # `run_guards` -> `hygiene_before`, the same place as for a legacy `run`), so
 # the executor keeps only its own disk check and emits `hygiene_checked` once.
 
-EXIT = {"GREEN": 0, "RED": 1, "ABORTED": 2, "ASK": 4}
+EXIT = {"GREEN": 0, "RED": 1, "ABORTED": 2}
 DIMS = ("cpu", "colony", "browser_chromium", "browser_webkit", "export", "cargo", "cargo_aux")
 # GH #1419 L3: slots of the run itself, not of the lane -- the admission books a
 # `cargo_aux` station as a cargo run (`schedule._needs`); inside the run one such
@@ -103,6 +103,15 @@ RUN_SLOTS = {"cargo_aux": 1}
 AUX_DIR = "aux"
 WATCH_PERIOD_S = 30          # the one clock of the executor (OR-DT-8): the disk watcher
 KILL_GRACE_S = 10
+# w1 abbruchfrist (#1607): a station stopped by the first red (fail-fast) or a
+# red precheck gets SIGTERM to its process group and this long to clean up
+# (soul2me lab left slots and stub_model on build04 when it got none), then
+# SIGKILL. The station -- and with it the run and the lease -- ends only once
+# the group is gone; `GROUP_POLL_S` is the step of that look, `GROUP_SLACK_S`
+# how long a group may outlive its SIGKILL before the station ends anyway.
+STOP_GRACE_S = 30
+GROUP_POLL_S = 0.05
+GROUP_SLACK_S = 5
 # TV-K5 (b), ruling K6 2026-10-11: a station cap is a hang marker. `_spawn` waits
 # up to the cap, writes the diagnosis and kills; `timeout` around the command is
 # only the backstop this many seconds later.
@@ -118,6 +127,65 @@ HANG_TREE_HEAD = "--- process tree (%s) ---" % " ".join(HANG_PS)
 # without its verdict (`test_x (mod.Class) ... `).
 _RUNNING_TEST = re.compile(r"^\s*(?:SLOW|START|TERMINATING)\s+\[[^]]*\]\s+(.+?)\s*$")
 _RUNNING_UNIT = re.compile(r"^(test\S* \([^)]+\))(?: \.\.\.)?\s*$")
+
+
+def _exited(proc, timeout):
+    """Wait up to `timeout` s for `proc` to exit WITHOUT reaping it (WNOWAIT):
+    while the leader stays a zombie, its process group id cannot be reused and
+    stays this process's own (#1607). True = exited."""
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                return True
+        except ChildProcessError:
+            return True     # reaped elsewhere: `proc.wait()` reads its code
+        left = end - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(GROUP_POLL_S, left))
+
+
+def _group_alive(pgid):
+    """True while a live (not zombie) process is in group `pgid` (/proc)."""
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return False
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % name, encoding="utf-8", errors="replace") as fh:
+                rest = fh.read().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(rest) > 2 and rest[0] != "Z" and rest[2] == str(pgid):
+            return True
+    return False
+
+
+def _end_group(pgid, grace, log):
+    """After a stop (SIGTERM sent to the group): wait up to `grace` s for the
+    group to clean up and end, then SIGKILL it; give up `GROUP_SLACK_S` later.
+    w1 abbruchfrist (#1607): fail-fast stopped stations without time to clean up."""
+    end = time.monotonic() + grace
+    killed = False
+    while _group_alive(pgid):
+        now = time.monotonic()
+        if now >= end and not killed:
+            log.write("stop: group %d still alive after %g s grace -- SIGKILL\n" % (pgid, grace))
+            log.flush()
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            killed = True
+        elif killed and now >= end + GROUP_SLACK_S:
+            log.write("stop: group %d outlived its SIGKILL\n" % pgid)
+            log.flush()
+            return
+        time.sleep(GROUP_POLL_S)
 
 
 def hang_line(name, cap_min):
@@ -244,8 +312,6 @@ def pass_verdict(ends, aborted=False, station_aborted=False):
         return "RED"
     if station_aborted or any(d.get("verdict") == "ABORTED" for d in ends):
         return "ABORTED"
-    if any(d.get("verdict") == "ASK" for d in ends):
-        return "ASK"
     return "GREEN"
 # `scripts/test-tier.sh`: an empty selection (EXIT_NO_TESTS, GH #1167 i).
 NO_TESTS_EXIT = 6
@@ -281,7 +347,6 @@ Ported from the station loop of scripts/gate.sh:
   corpus-committed        strand: NOTE (matches its sources | the corpus is stale ...)
   test-bans-inventory     exit 0 -> NOTE with the TEST-BANS-INVENTORY line; else RED with it
   slow-tests              SLOW-VERDICT as reason; exit 1 -> NOTE in every mode (TV-K5); exit 2 -> RED
-  persona-receipt         0 GREEN, 6 RED, 3/4/5 ASK or NOTE by --decide; strand NOTE; other exit RED
   deny-advisories         NOTE clean | NOTE findings -- read <log>
   scenarios:builder       no retry: a red round is red, `registry lacks` goes to the triage (GH #721, TV-B8)
   lock-wait / tree-sync / stage-lock   NOTE rows before the first cargo station
@@ -327,6 +392,10 @@ def legacy_v1(doc):
     top-level keys `scripts/gate.sh` wrote (`receipt.V1_KEYS`)."""
     old = receipt.legacy(doc)
     return {k: old[k] for k in receipt.V1_KEYS}
+
+
+# The argv word replaced by the list file of a station's `paths` (`gate_plan.PATHS_FILE`).
+PATHS_FILE = "{paths}"
 
 
 def _write_json_atomic(path, doc):
@@ -1223,6 +1292,10 @@ class _Run:
         self.precheck_red = False
         self.precheck_stopped = set()
         self.fail_fast_hit = False
+        # w1 fruehrot (#1607): the station whose red ended the run under fail-fast,
+        # the run's second it did, and the running stations it stopped (SKIP).
+        self.fail_fast_by = None
+        self.fail_fast_stopped = set()
         self.aborted = None
         # Without a lock file no station needs cargo (`run` refuses that
         # dispatch), and no child is told the lock is held ("absent").
@@ -1401,7 +1474,7 @@ class _Run:
         if self.aborted:
             return "aborted"
         if self.fail_fast_hit:
-            return "fail-fast"
+            return "fail-fast: %s red" % self.fail_fast_by[0] if self.fail_fast_by else "fail-fast"
         only = self.d.get("+only")
         if only and name not in only:
             return "not in --only"
@@ -1441,6 +1514,11 @@ class _Run:
     def _red_before_start(self, st):
         """The lane refusals gate.sh grades RED before a station runs."""
         name = st["name"]
+        if st.get("paths") is None and any(
+                PATHS_FILE in (c.get("argv") or []) for c in st.get("cmds") or []):
+            # review argvpre I-2: an empty list file would check nothing and say GREEN
+            return ("paths missing for %s: the argv names the list file, the station "
+                    "carries no paths -- refused, it would check nothing" % PATHS_FILE)
         booked = int(_needs(st)["colony"])
         if booked < 0:
             return ("colony booking unresolved (%d): the lane's colonies were not known "
@@ -1660,9 +1738,25 @@ class _Run:
             stopped = [n for n, s in self.state.items()
                        if s == "running" and self._precheck_stops(self.by_name[n])]
             self.precheck_stopped.update(stopped)
-            self._kill([p for (n, _pid), p in self.procs.items() if n in stopped])
-        if name in self.red_ended and self.d.get("+fail_fast"):
+            self._kill([p for (n, _pid), p in self.procs.items() if n in stopped], STOP_GRACE_S)
+        if name in self.red_ended and self.d.get("+fail_fast") and not self.fail_fast_hit:
             self.fail_fast_hit = True
+            # w1 fruehrot (#1607): in d54s five strand gates ran red to the end
+            # (6 583 s) although their finding stood after 68-85 s. The first red
+            # ends the run: the running stations stop like a red precheck stops
+            # the build (SKIP, processes killed) -- a verdict RED, never ABORTED.
+            self.fail_fast_by = (name, round(self.clock() - self.t_start, 1))
+            stopped = [n for n, s in self.state.items() if s == "running" and n != name]
+            self.fail_fast_stopped.update(stopped)
+            self._kill([p for (n, _pid), p in self.procs.items() if n in stopped], STOP_GRACE_S)
+
+    def _stop_reason(self, name):
+        """Why a running station was stopped (caller holds `cond`), or None."""
+        if name in self.precheck_stopped:
+            return "precheck red"
+        if name in self.fail_fast_stopped:
+            return "fail-fast: %s red" % self.fail_fast_by[0]
+        return None
 
     def schedule(self):
         # Whole-station cache hits first: they never start, and their
@@ -1835,7 +1929,7 @@ class _Run:
         log.write("$ %s\n" % shlex.join(argv))
         log.flush()
         with self.cond:
-            if self.aborted or st["name"] in self.precheck_stopped:
+            if self.aborted or self._stop_reason(st["name"]):
                 return 143, False
         if remaining > hang_dump.LEAD_S:
             # Python under the station dumps its stacks before the cap (TV-Z5).
@@ -1852,14 +1946,12 @@ class _Run:
             return 127, False
         with self.cond:
             self.procs[(st["name"], proc.pid)] = proc
-            late = self.aborted or st["name"] in self.precheck_stopped
+            late = self.aborted or self._stop_reason(st["name"])
         if late:
             # The abort came between the check above and this register: its
             # snapshot of `procs` missed this process, so it goes here.
-            self._kill([proc])
-        try:
-            rc = proc.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
+            self._kill([proc], STOP_GRACE_S if self._stop_reason(st["name"]) else None)
+        if not _exited(proc, remaining):
             # The cap is a hang marker (TV-K5): the diagnosis first, while the
             # hang still stands, then the kill. 124 is `timeout`'s own code.
             hang_diagnosis(st, log, proc.pid)
@@ -1868,6 +1960,14 @@ class _Run:
             with self.cond:
                 self.procs.pop((st["name"], proc.pid), None)
             return 124, True
+        with self.cond:
+            stopped = self._stop_reason(st["name"])
+            grace = STOP_GRACE_S if stopped else KILL_GRACE_S if self.aborted else None
+        if grace is not None:
+            # w1 abbruchfrist (#1607): the leader is gone but not reaped, so its
+            # group id stays ours; the rest of the group gets the grace.
+            _end_group(proc.pid, grace, log)
+        rc = proc.wait()
         with self.cond:
             self.procs.pop((st["name"], proc.pid), None)
         elapsed = self.clock() - t0
@@ -1909,6 +2009,9 @@ class _Run:
             argv = [self.legacy_path if a == "{receipt}" else a for a in c.get("argv") or []]
             if not argv:
                 continue
+            if PATHS_FILE in argv:
+                listed = self._paths_file(st)
+                argv = [listed if a == PATHS_FILE else a for a in argv]
             cwd = c.get("cwd") or ""
             cwd = cwd if os.path.isabs(cwd) else os.path.join(self.tree, cwd)
             extra = {}
@@ -1937,6 +2040,19 @@ class _Run:
                 self.cut_argvs.setdefault(st["name"], []).append(argv)
             out.append((argv, cwd, extra))
         return out, excluded
+
+    def _paths_file(self, st):
+        """The list file of `st["paths"]` in the run's workspace, one path per
+        line -- written where this executor runs, on a lane as on this machine
+        (#1520: an export-sized diff on the argv ended the pass at exec)."""
+        path = os.path.join(self.ws, "paths",
+                            "%s.txt" % re.sub(r"[^A-Za-z0-9._-]", "_", st["name"]))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("".join(p + "\n" for p in st.get("paths") or ()))
+        os.replace(tmp, path)
+        return path
 
     def _run_build(self, st, log, t0):
         argvs = self._build_argvs(st)
@@ -2131,9 +2247,9 @@ class _Run:
                 rc, timed_out = self._run_cmds(cmds, st, log, t0, failed_cmd)
         secs = self.clock() - t0
         with self.cond:
-            stopped = name in self.precheck_stopped
+            stopped = self._stop_reason(name)
         if stopped:
-            self.ended(name, "SKIP", secs, "precheck red")
+            self.ended(name, "SKIP", secs, stopped)
             done.update(verdict="SKIP", secs=secs)
             return
         verdict, reason, decision = self._judge(st, rc, timed_out, log_path, red, failed_cmd)
@@ -2195,9 +2311,6 @@ class _Run:
             self._tail(name, log_path)
         if name == "precheck":
             self._precheck_notes(log_path)
-        if decision:
-            self.emit("owner_decision", {"station": name, "decision": "without",
-                                         "reason": decision})
         self.emit("station_log", {"station": name, "path": log_path})
         extra = {}
         if st.get("build") is not None:
@@ -2311,18 +2424,6 @@ class _Run:
                         print("    | %s" % line.rstrip("\n"), file=self.err)
         except OSError:
             pass
-
-    def _decision_for(self, name):
-        reason = ""
-        for d in self.d.get("decide") or []:
-            if isinstance(d, dict):
-                if d.get("station") == name:
-                    reason = d.get("reason") or ""
-            elif isinstance(d, str) and "=" in d:
-                st, rest = d.split("=", 1)
-                if st == name:
-                    reason = rest.split(":", 1)[1] if ":" in rest else rest
-        return reason
 
     def _emptied_by_cache(self, st, rc, log_path, excluded, failed, t0):
         """GH #1167 (i): `[{part, key, from_run}]` when the nextest selection
@@ -2474,8 +2575,6 @@ class _Run:
             except OSError:
                 pass
             return ("GREEN" if rc == 0 else "RED"), shards, None
-        if name == "persona-receipt":
-            return self._persona(rc, log_path)
         if name == "deny-advisories":
             return "NOTE", "clean" if rc == 0 else "findings -- read %s" % log_rel, None
         if name == "crate-isolation" and rc:
@@ -2483,35 +2582,6 @@ class _Run:
         if st.get("nextest") is not None and rc == EXIT_NO_TESTS:
             return "RED", "no tests matched", None
         return ("GREEN" if rc == 0 else "RED"), "", None
-
-    def _persona(self, rc, log_path):
-        text = ""
-        try:
-            with open(log_path, encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    if line.startswith("PERSONA-RECEIPT "):
-                        parts = line.rstrip("\n").split(" ", 2)
-                        text = parts[2] if len(parts) > 2 else ""
-        except OSError:
-            pass
-        text = text or "no PERSONA-RECEIPT line in %s" % log_path
-        if rc not in (0, 3, 4, 5, 6):
-            return "RED", "the checker failed (exit %d)" % rc, None
-        if self.mode == "strand":
-            why = {0: "covers its sources",
-                   3: "the persona sources moved (%s); measure and commit the report" % text,
-                   4: "no persona report yet; measure and commit one",
-                   5: "the committed report is incomplete; measure and commit a full one",
-                   6: "the committed report is red (%s)" % text}[rc]
-            return "NOTE", why, None
-        if rc == 0:
-            return "GREEN", "", None
-        if rc == 6:
-            return "RED", text, None
-        why = self._decision_for("persona-receipt")
-        if why:
-            return "NOTE", "owner decided: without -- %s" % why, why
-        return "ASK", text, None
 
     # --- the flake hook (W8) ----------------------------------------------------------
     def _known_binaries(self):
@@ -2727,8 +2797,9 @@ class _Run:
         self._kill(procs)
 
     @staticmethod
-    def _kill(procs):
-        """SIGTERM to the own sessions of `procs`, SIGKILL after the grace."""
+    def _kill(procs, grace=None):
+        """SIGTERM to the own sessions of `procs`, SIGKILL after `grace`
+        (default `KILL_GRACE_S`) to the group of every leader not yet reaped."""
         for p in procs:
             try:
                 os.killpg(p.pid, signal.SIGTERM)
@@ -2737,12 +2808,14 @@ class _Run:
 
         def hard_kill():
             for p in procs:
-                if p.poll() is None:
+                # `returncode`, not `poll()`: a leader that exited is left
+                # unreaped while `_end_group` waits on its group (#1607).
+                if p.returncode is None:
                     try:
                         os.killpg(p.pid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         pass
-        t = threading.Timer(KILL_GRACE_S, hard_kill)
+        t = threading.Timer(KILL_GRACE_S if grace is None else grace, hard_kill)
         t.daemon = True
         t.start()
 
@@ -2877,6 +2950,13 @@ class _Run:
             data["reason"] = self.aborted
         elif verdict == "ABORTED":
             data["reason"] = "process"     # the kind of `abort`, as for a whole-run abort
+        if self.fail_fast_by and verdict == "RED" and (
+                self.fail_fast_stopped or any(
+                    str(e["data"].get("reason") or "").startswith("fail-fast")
+                    for e in self.events if e["event"] == "station_ended")):
+            # w1 fruehrot (#1607): the summary line names the stop -- only when it
+            # cut something (a red last station stopped nothing).
+            data["stopped"] = {"station": self.fail_fast_by[0], "after_s": self.fail_fast_by[1]}
         self.stop_event.set()
         if self.deadline_timer is not None:
             self.deadline_timer.cancel()
@@ -3043,7 +3123,7 @@ class _Run:
 def run(dispatch, out, err, scope_stopper=None, clock=time.monotonic):
     """Execute one dispatch; the event stream goes to `out`, diagnostics to `err`.
 
-    Returns the exit code of the run's verdict (GREEN 0, RED 1, ABORTED 2, ASK 4).
+    Returns the exit code of the run's verdict (GREEN 0, RED 1, ABORTED 2).
     `scope_stopper(run)` is called after `pass_ended ABORTED`; the default
     stops `pipe-<run>.scope` when this process runs inside it. `clock` is the
     run's monotonic clock (a fake one in the self-tests, TV-K1)."""

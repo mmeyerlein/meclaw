@@ -1,0 +1,13 @@
+{"ts": "2026-11-23T11:35:07Z", "model": "claude-haiku-5-5", "probe": "refusal:temperature", "status": "http 400", "worst": 0.000758, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:07Z", "model": "claude-haiku-5-5", "probe": "refusal:top_p", "status": "http 400", "worst": 0.000742, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:07Z", "model": "claude-haiku-5-5", "probe": "refusal:thinking_enabled", "status": "http 400", "worst": 0.0111, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:08Z", "model": "claude-haiku-5-5", "probe": "refusal:thinking_disabled", "status": "ok", "worst": 0.000796, "cost": 8.4e-05, "cost_source": "usage_tokens"}
+{"ts": "2026-11-23T11:35:09Z", "model": "claude-haiku-5-5", "probe": "refusal:tool_choice_any", "status": "ok", "worst": 0.011744, "cost": 0.0014, "cost_source": "usage_tokens"}
+{"ts": "2026-11-23T11:35:17Z", "model": "claude-haiku-5-5", "probe": "refusal:temperature", "status": "http 400", "worst": 0.000758, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:17Z", "model": "claude-haiku-5-5", "probe": "refusal:top_p", "status": "http 400", "worst": 0.000742, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:17Z", "model": "claude-haiku-5-5", "probe": "refusal:thinking_enabled", "status": "http 400", "worst": 0.0111, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:18Z", "model": "claude-haiku-5-5", "probe": "refusal:thinking_disabled", "status": "ok", "worst": 0.000796, "cost": 8.4e-05, "cost_source": "usage_tokens"}
+{"ts": "2026-11-23T11:35:19Z", "model": "claude-haiku-5-5", "probe": "refusal:tool_choice_any", "status": "ok", "worst": 0.011744, "cost": 0.0014, "cost_source": "usage_tokens"}
+{"ts": "2026-11-23T11:35:19Z", "model": "claude-haiku-5-5", "probe": "refusal:text_before_tool_result", "status": "http 400", "worst": 0.00199, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:20Z", "model": "claude-haiku-5-5", "probe": "refusal:unknown_field", "status": "http 400", "worst": 0.000766, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:20Z", "model": "claude-haiku-5-5", "probe": "refusal:no_version", "status": "http 400", "worst": 0.000704, "cost": 0.0, "cost_source": "none"}

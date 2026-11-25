@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """One command from the release gate to the website, with one halt.
 
-    scripts/release.sh prepare <x.y.z> --wave <wave> --strand <relgate> [--host <lane>] [--decide K=V]... [--issue N]
+    scripts/release.sh prepare <x.y.z> --wave <wave> --strand <relgate> [--host <lane>] [--issue N]
     scripts/release.sh publish <x.y.z> --wave <wave> [--title <text>]
+    scripts/release.sh asset <x.y.z>
     common: [--repo <main tree>] [--config <toml>] [--reason <text>] [--dry-run]
 
 WHY THIS EXISTS
@@ -26,9 +27,10 @@ coordinator before anything goes public:
            CHANGELOG intro, then `check_roadmap_anchors.py` green; GH #1518,
            after the gate since GH #1533), `make_export.py` on the release
            head (master plus those two record commits) with the release
-           receipt, the release notes out of the CHANGELOG section, a check
-           that the website already carries the new `Current version:`
-           paragraph.
+           receipt, the release notes out of the CHANGELOG section, the
+           website's new `Current version:` paragraph out of the CHANGELOG
+           intro (the one before moves into the history of a file that keeps
+           one, `Previous: ...`; a website commit, no push; GH #1592).
            Ends with the four-line release request and exit 0.
   publish  master and origin/main unchanged since prepare (else exit 2), push
            main, `github-main`, master fast-forward to the release head,
@@ -37,8 +39,17 @@ coordinator before anything goes public:
            discussion, the website (version, test count, sitemap date), its
            deploy as a file list, `publish_docs.sh`, a live check (`curl -L`:
            it follows the server's slash redirect, GH #1396) and the
-           website push. Ends with one line `RELEASE x.y.z tag=... ci=...
-           release=... website=...`.
+           website push, then `asset` as its last step. Ends with one line
+           `RELEASE x.y.z tag=... ci=... release=... website=...`.
+  asset    `gh release download` of the release's binary tarball
+           (`meclaw-<x.y.z>-<target>.tar.gz`, target `[asset] target`,
+           default x86_64-unknown-linux-musl) with its `.sha256` sibling; a
+           sum that differs is red and lands nothing. Else the binary goes to
+           `<dir>/meclaw-<x.y.z>-asset` (`[asset] dir`, default ~/kb/bin)
+           beside `meclaw-<x.y.z>-asset.origin.json` (version, commit of the
+           tag, sha256 of the binary, source), and one JSON line names version,
+           commit and sha256. A binary already there with the same sum stays;
+           one with another sum is red. Up to 0.89.6 a hand command.
 
 THE GATE'S LANE
 ===============
@@ -63,9 +74,18 @@ WHAT IS NOT HERE
 ================
 Hosts, paths and IDs: they live in a private config file
 (`~/.config/meclaw/release.toml`, `--config`), never in this script. Text:
-the release notes and the discussion are taken from the CHANGELOG section,
-the website's `Current version:` paragraph is written by hand before prepare
-ends; this script only moves versions, the test count and the sitemap date.
+the release notes, the discussion and the website's `Current version:`
+paragraph are taken from the CHANGELOG section; a paragraph already there for
+the release (written by hand) stays as it is.
+
+THE ONE RED THAT CAN BE ACCEPTED
+================================
+A red public CI run (`ci`) is accepted with
+`--accept-red ci:"OR-<id>: <reason>"` (the ruling id is mandatory, else exit 2):
+the step ends GREEN with `ci: failure-accepted-OR-<id>` and an `accepted` line
+with the reason in the state; the acceptance is the reason of its retry. Up to
+0.89.2 that line was written into the state by hand (GH #1592). The release run
+builds the assets and takes no acceptance.
 No `cd`, no environment prefixes: every git call is `git -C`, every tool is
 called by its path.
 
@@ -74,12 +94,14 @@ Exit: 0 done (prepare: halted at the request), 1 a red step, 2 a refusal
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -93,11 +115,13 @@ PREPARE = ("master", "worktree", "german-scan", "german-strings", "gate", "count
            "export", "notes", "website-check")
 PUBLISH = ("verify", "push", "github-main", "master-ff", "tag", "ci", "release-run",
            "release-notes", "discussion", "website", "deploy", "docs", "live-check",
-           "website-push")
+           "website-push", "asset")
 # Steps that check, never act: they run on every call and are never skipped.
 ALWAYS = {"master", "verify"}
 
 DEFAULT_CONFIG = Path.home() / ".config" / "meclaw" / "release.toml"
+ASSET_DIR = Path.home() / "kb" / "bin"
+ASSET_TARGET = "x86_64-unknown-linux-musl"
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 SEMVER = r"\d+\.\d+\.\d+"
 # Every place on the website that names the current release (the 0.77.0 deploy:
@@ -119,6 +143,12 @@ SITE_PATTERNS = (
 URL_BLOCK = re.compile(r"<url>.*?</url>", re.S)
 SITE_MARKER = re.compile(r"/releases/tag/v" + SEMVER + r"|Current version: " + SEMVER)
 TESTS_RE = re.compile(r"(The release gate passed )\d+( tests)")
+CURRENT = "Current version: "
+PREVIOUS = "Previous: "
+# --accept-red: the steps a red can be accepted for, and the ruling it cites
+# (OR-DT.ZI.decide-or: an owner's answer cites the ruling that carries it).
+ACCEPTABLE = ("ci",)
+ACCEPT_RE = re.compile(r"^(?P<step>[\w-]+):(?P<why>\s*(?P<ruling>OR-[\w.-]*\w)\s*:\s*\S.*)$")
 
 
 class Refusal(Exception):
@@ -214,6 +244,70 @@ def read(cmd):
 
 def git(repo, *args):
     return read(["git", "-C", repo, *args])
+
+
+def sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def fetch_asset(version, root, cfg):
+    """The release's binary into the asset folder, checked against the release's sum.
+
+    Returns {version, commit, sha256} and prints it as one JSON line."""
+    repo = cfg.get("gh_repo")
+    if not repo:
+        raise Red("asset: the config carries no gh_repo")
+    acfg = cfg.get("asset") or {}
+    name = f"meclaw-{version}-{acfg.get('target', ASSET_TARGET)}"
+    tag = f"v{version}"
+    commit = git(root, "rev-parse", f"{tag}^{{commit}}")
+    folder = Path(os.path.expanduser(str(acfg.get("dir", ASSET_DIR))))
+    dest = folder / f"meclaw-{version}-asset"
+    origin = folder / f"{dest.name}.origin.json"
+    folder.mkdir(parents=True, exist_ok=True)
+    # staged beside the target: a red check leaves nothing, a green one is one rename
+    with tempfile.TemporaryDirectory(dir=folder, prefix=".asset-") as tmp:
+        run(["gh", "release", "download", tag, "-R", repo, "-D", tmp, "-p", name + ".tar.gz*"],
+            timeout=600, what="gh release download")
+        tgz, sumfile = Path(tmp) / f"{name}.tar.gz", Path(tmp) / f"{name}.tar.gz.sha256"
+        if not tgz.exists() or not sumfile.exists():
+            raise Red(f"asset: {tag} has no {tgz.name} with its .sha256")
+        want = (sumfile.read_text().split() or [""])[0]
+        have = sha256_of(tgz)
+        if have != want:
+            raise Red(f"asset {tgz.name}: sha256 {have[:12]} differs from the release's {want[:12]}")
+        with tarfile.open(tgz) as tf:
+            try:
+                member = tf.getmember(f"{name}/meclaw")
+            except KeyError:
+                raise Red(f"asset {tgz.name}: no {name}/meclaw inside") from None
+            if not member.isfile():
+                raise Red(f"asset {tgz.name}: {name}/meclaw is no file")
+            data = tf.extractfile(member).read()
+        sha = hashlib.sha256(data).hexdigest()
+        if dest.exists():
+            if sha256_of(dest) != sha:
+                raise Red(f"asset: {dest} exists with another sha256; move it aside first")
+        else:
+            staged = Path(tmp) / "meclaw"
+            staged.write_bytes(data)
+            staged.chmod(0o755)
+            os.replace(staged, dest)
+        if not origin.exists():
+            staged = Path(tmp) / "origin.json"
+            staged.write_text(json.dumps({
+                "version": version, "commit": commit, "sha256": sha, "tag": tag, "tgz_sha256": have,
+                "source": f"GH release asset {tgz.name} of {repo} via gh release download "
+                          f"(sha256 file checked)",
+                "made_by": "scripts/release.sh asset", "made_at": now()}, sort_keys=True) + "\n")
+            os.replace(staged, origin)
+    out = {"version": version, "commit": commit, "sha256": sha}
+    print(json.dumps(out), flush=True)
+    return out
 
 
 def lane_module():
@@ -427,6 +521,38 @@ def rewrite_site_text(rel, text, version, tests, date, url):
     return text
 
 
+def site_paragraph(version, intro, tests):
+    """The website's `Current version:` paragraph of `version` out of the
+    CHANGELOG intro: code marks and issue links go (the hand text of 0.89.6 is
+    the intro without them, llms.txt:80), a link keeps its text, the test count
+    closes it (GH #1592; `step_website` moves the count as before)."""
+    text = ISSUE_LINK_GROUP.sub("", intro or "")
+    text = MD_LINK.sub(r"\1", ISSUE_LINK.sub(r"\1", text)).replace("`", "")
+    text = " ".join(text.split())
+    if text and text[-1] not in ".!?":
+        text += "."
+    return f"{CURRENT}{version}. {text} The release gate passed {tests} tests."
+
+
+def write_current_paragraph(text, version, para):
+    """`text` with `para` as its `Current version:` paragraph. One already on
+    `version` stays byte-equal (a hand text wins); the one before goes into
+    the history as `Previous: ...` where the file keeps one (llms-full.txt),
+    else it is replaced (llms.txt). A file without the paragraph stays."""
+    paras = text.split("\n\n")
+    for i, old in enumerate(paras):
+        if not old.startswith(CURRENT):
+            continue
+        if old.startswith(f"{CURRENT}{version}."):
+            return text
+        if any(p.startswith(PREVIOUS) for p in paras):
+            paras[i:i + 1] = [para, PREVIOUS + old[len(CURRENT):]]
+        else:
+            paras[i] = para
+        return "\n\n".join(paras)
+    return text
+
+
 class Release:
     def __init__(self, args, cfg):
         self.a = args
@@ -471,6 +597,9 @@ class Release:
                 print(f"release: {step} done, skipped")
                 continue
             if last == "RED" and step not in ALWAYS:
+                accepted = self.a.accepted.get(step)
+                if accepted and not self.a.reason:
+                    self.a.reason = "accept-red " + accepted[1]
                 if not self.a.reason:
                     raise Refusal(f"step {step} was red; fix it, then pass --reason <text> to run it again")
                 self.state.add(step=step, event="retry", reason=self.a.reason)
@@ -624,8 +753,6 @@ class Release:
                "--strand", self.a.strand, "--wave", self.a.wave, "--wait-admission"]
         if host:
             cmd += ["--host", host]
-        for d in self.a.decide or []:
-            cmd += ["--decide", d]
         _, out = run(cmd, check_rc=False, what="gate release")
         summary = [line for line in out.splitlines() if line.startswith("GATE-SUMMARY ")]
         receipt = self.root / "plans" / self.wdir / "receipts" / self.a.strand / "latest" / "receipt.json"
@@ -706,6 +833,27 @@ class Release:
 
     def step_website_check(self):
         site, files = self.site_files()
+        # GH #1592 (nr. 44): website-check was red on 0.84.0-0.89.6 seven times
+        # until an agent wrote this paragraph by hand; now prepare writes it.
+        para = site_paragraph(self.v, self.data.get("intro"), self.data.get("tests"))
+        written = []
+        for rel in files:
+            if not rel.endswith(".txt"):
+                continue
+            old = (site / rel).read_text()
+            new = write_current_paragraph(old, self.v, para)
+            if new != old:
+                (site / rel).write_text(new)
+                written.append(rel)
+        if written:
+            run(["git", "-C", site, "add", "--", *written], what="website add")
+            with tempfile.NamedTemporaryFile("w", suffix=".msg", delete=False) as f:
+                f.write(f"v{self.v}: Absatz Current version aus dem CHANGELOG-Intro, "
+                        f"Vorgänger in die Historie\n")
+            try:
+                run(["git", "-C", site, "commit", "-q", "-F", f.name], what="website commit")
+            finally:
+                os.unlink(f.name)
         missing = []
         for rel in files:
             if rel.endswith(".txt") and "Current version:" in (site / rel).read_text():
@@ -756,7 +904,7 @@ class Release:
             raise Red(f"{e} (if v{self.v} now exists locally, delete it before --reason)") from e
         return {"tag": git(self.root, "rev-parse", f"v{self.v}^{{commit}}")}
 
-    def watch(self, workflow):
+    def watch(self, workflow, accept=None):
         repo = self.need("gh_repo")
         ci = self.cfg.get("ci") or {}
         tries, pause = int(ci.get("find_tries", 30)), float(ci.get("find_interval_s", 10))
@@ -779,11 +927,18 @@ class Release:
         verdict = json.loads(read(["gh", "run", "view", run_id, "-R", repo, "--json", "conclusion"]))
         conclusion = verdict.get("conclusion") or "none"
         if conclusion != "success":
+            if accept:
+                # GH #1592 (nr. 46): the owner's acceptance, with its ruling
+                ruling, why = accept
+                self.state.add(step="ci", event="accepted", run=run_id, conclusion=conclusion,
+                               reason=why)
+                return run_id, f"failure-accepted-{ruling}"
             raise Red(f"{workflow} run {run_id}: {conclusion}")
         return run_id, conclusion
 
     def step_ci(self):
-        run_id, verdict = self.watch((self.cfg.get("ci") or {}).get("workflow", "ci"))
+        run_id, verdict = self.watch((self.cfg.get("ci") or {}).get("workflow", "ci"),
+                                     accept=self.a.accepted.get("ci"))
         return {"ci": verdict, "ci_run": run_id}
 
     def step_release_run(self):
@@ -904,6 +1059,9 @@ class Release:
         return {"website": "ok"}
 
     # ---- ends -------------------------------------------------------------
+    def step_asset(self):
+        return {"asset": fetch_asset(self.v, self.root, self.cfg)["sha256"]}
+
     def request(self):
         d = self.data
         print(f"RELEASE-REQUEST {self.v} wave={self.a.wave}")
@@ -921,11 +1079,10 @@ class Release:
 
 def parse(argv):
     ap = argparse.ArgumentParser(prog="release.sh", description=__doc__.split("\n\n")[0])
-    ap.add_argument("phase", choices=("prepare", "publish"))
+    ap.add_argument("phase", choices=("prepare", "publish", "asset"))
     ap.add_argument("version")
-    ap.add_argument("--wave", required=True)
+    ap.add_argument("--wave", help="the wave (prepare, publish)")
     ap.add_argument("--strand", help="name of the release gate (prepare)")
-    ap.add_argument("--decide", action="append", help="passed to `strand.sh gate` as given")
     ap.add_argument("--host", help="the lane of the release gate (prepare; default: the reachable "
                                    "build lane with the most vCPU)")
     ap.add_argument("--issue", help="issue number for the test-count and the roadmap commit")
@@ -934,9 +1091,23 @@ def parse(argv):
     ap.add_argument("--config", default=str(DEFAULT_CONFIG))
     ap.add_argument("--reason", help="why a red step runs again")
     ap.add_argument("--dry-run", action="store_true", help="name the steps, run only the checks")
+    ap.add_argument("--accept-red", action="append", default=[],
+                    help='accept a red step (publish; only ci): ci:"OR-<id>: <reason>"')
     args = ap.parse_args(argv)
+    args.accepted = {}
+    for given in args.accept_red:
+        m = ACCEPT_RE.match(given)
+        if not m:
+            ap.error(f'--accept-red wants <step>:"OR-<id>: <reason>" (the ruling id is mandatory), '
+                     f"got: {given}")
+        if m["step"] not in ACCEPTABLE:
+            ap.error(f"--accept-red names {m['step']}, which takes no acceptance (only: "
+                     f"{' '.join(ACCEPTABLE)}; the release run builds the assets)")
+        args.accepted[m["step"]] = (m["ruling"], m["why"].strip())
     if not VERSION_RE.match(args.version):
         ap.error(f"{args.version} is not x.y.z")
+    if args.phase != "asset" and not args.wave:
+        ap.error(f"{args.phase} needs --wave <wave>")
     if args.phase == "prepare" and not args.strand:
         ap.error("prepare needs --strand <relgate name>")
     if not args.repo:
@@ -953,6 +1124,12 @@ def main(argv=None):
         if Path(args.config).exists():
             with open(args.config, "rb") as f:
                 cfg = tomllib.load(f)
+        if args.phase == "asset":
+            if args.dry_run:
+                print(f"DRY asset -- would download v{args.version}")
+                return 0
+            fetch_asset(args.version, Path(args.repo).resolve(), cfg)
+            return 0
         rel = Release(args, cfg)
         if args.phase == "prepare":
             rc = rel.steps(PREPARE)

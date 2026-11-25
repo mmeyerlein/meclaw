@@ -1763,6 +1763,60 @@ class TestLaneGuards(LaneTestCase):
         self.assertNotIn('"reserved_g": 77', str(cm.exception))
 
 
+    def test_lane_guard_clears_its_own_target_when_that_reaches_the_need(self):
+        # w1 leaseklar (#1620, OR-W1-93): the hygiene in front of the floor kept the
+        # run's own warm target, ended "short", and the executor aborted the run
+        # with "only N G free" -- 9 times cleared by hand. Its own target goes
+        # last, and only when that reaches reserve + expected; else it stays and
+        # the run aborts as before.
+        # Gate fix round 2: the free space is injected -- the guard's hygiene runs as
+        # a script on the host's stdin, so the kit here is a copy whose hygiene.py
+        # reads `free` instead of statvfs. The real disk, shared with parallel shards
+        # and builds, moved between a measurement here and the guard (TV-K1).
+        free = 100
+        lane_sync = self.kit_with_free_g(free)
+        self.remote.mkdir()
+        os.environ["MECLAW_LANE_FLOOR_G"] = "1"
+        own = self.remote / "target"
+        # (size, cold need beyond the floor, cargo, gone). Fix round 1: free + it reaching
+        # the warm need (expected) but not the cold one keeps it; no cold need (an older
+        # dispatch) or no cargo (the target is not this run's) never clears it.
+        for size, cold, cargo, gone in ((5, free + 20, True, False),
+                                         (40, free + 60, True, False),
+                                         (80, free + 60, True, True),
+                                         (80, None, True, False),
+                                         (80, free + 60, False, False)):
+            with self.subTest(size=size, cold=cold, cargo=cargo):
+                own.mkdir(exist_ok=True)
+                (own / ".hygiene-bytes").write_text(str(size * 2 ** 30))
+                with mock.patch.object(lane, "LANE_SYNC", lane_sync):
+                    lane.guard(self.a, "kit", cargo=cargo, expected_g=free + 20, cold_g=cold)
+                self.assertEqual(gone, not own.exists())
+
+    def kit_with_free_g(self, free_g):
+        """A copy of lane_sync.sh and the files it reads, whose hygiene.py sees
+        `free_g` G free on every path (the seam `Ctx.free_g` defaults to) and
+        probes a legacy cargo lock in the test's directory, not the host's."""
+        kit = self.tmp / "kit"
+        (kit / "pipeline").mkdir(parents=True)
+        here = REPO / "scripts"
+        shutil.copy2(here / "lane_sync.sh", kit / "lane_sync.sh")
+        shutil.copy2(here / "pipeline" / "kit_python.sh", kit / "pipeline" / "kit_python.sh")
+        src = (here / "pipeline" / "hygiene.py").read_text()
+        tail = '\nif __name__ == "__main__":'
+        self.assertEqual(1, src.count(tail))
+        src = src.replace(tail, "\n\ndef _default_free_g(path):\n    return %r\n%s" % (float(free_g), tail))
+        # Fix round 3: the host's cargo lock is the hygiene's "legacy run" -- held, it
+        # removes nothing. The strand gate holds it for its whole run, beside this
+        # station, and MECLAW_GATE_LOCK of store_isolation never reaches a hygiene
+        # behind the narrow point: the copy probes a lock of its own.
+        legacy = 'DEFAULT_LEGACY_LOCK = "/tmp/meclaw-w26-cargo.lock"'
+        self.assertEqual(1, src.count(legacy))
+        src = src.replace(legacy, "DEFAULT_LEGACY_LOCK = %r" % str(self.tmp / "legacy-cargo.lock"))
+        (kit / "pipeline" / "hygiene.py").write_text(src)
+        return str(kit / "lane_sync.sh")
+
+
 class TestLaneHold(LaneTestCase):
     """W1 hand-over: push+run on a lane under a lane-side flock on the build
     path, which no token skip bypasses (else a parallel push rewrites the

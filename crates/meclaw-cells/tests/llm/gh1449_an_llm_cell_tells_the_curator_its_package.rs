@@ -334,7 +334,6 @@ fn every_llm_cell_with_the_package_line_declares_the_lane() {
     for brain in [
         "templates/talky/brain/config.json",
         "templates/talky/quick/config.json",
-        "templates/talky/quick_spec/config.json",
         "templates/talky/quick_bridge/config.json",
         "templates/cogny/brain/config.json",
     ] {
@@ -497,7 +496,7 @@ fn build_tree(td: &TempDir, base_url: &str) {
         v["params"]["night_from_utc"] = json!("00:00");
         v["params"]["night_until_utc"] = json!("00:00");
     });
-    for cell in ["brain", "quick", "quick_spec", "quick_bridge"] {
+    for cell in ["brain", "quick", "quick_bridge"] {
         patch(root, &format!("main/talky/{cell}/config.json"), |v| {
             v["params"]["base_url"] = json!(base_url);
             v["params"]["model"] = json!(START);

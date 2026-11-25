@@ -21,6 +21,11 @@
 //! so this file draws it the way the member's README writes it out and measures that the
 //! pair travels end to end.
 //!
+//! **Since GH #1597** the app rim's edge is no longer the member's: `./apps -> ./channels`
+//! carried every view into the container whether a screen of that name stood there or
+//! not. The ONE edge with the ternary is now drawn by the mutation that grows the
+//! screen, at the member, straight to that screen (`instance_edges` below).
+//!
 //! Guarded like every other template-reading test (GH #49).
 
 use meclaw_cells::code::CodeCellFactory;
@@ -76,36 +81,27 @@ fn copy_cells(src: &std::path::Path, dst: &std::path::Path) {
 // ══════════════════════════════════════════════════════ 1. the widened edge
 
 #[test]
-fn the_app_rim_carries_the_withdrawal_beside_the_view() {
+fn the_member_carries_no_view_into_its_channels() {
     let Some(root) = shipped() else { return };
     let cfg = read_json(&root.join("config.json"));
     let edges = cfg["params"]["graph"]["edges"]
         .as_array()
         .expect("the member ships a graph");
 
+    // GH #1597: the ONE edge that carries what an app draws out of the apps container
+    // -- `view` and `withdraw` in one ternary -- is the screen's, drawn at the member
+    // straight to that screen by the mutation that grows it (`instance_edges` below
+    // writes it out). A static `./apps -> ./channels` carried every view into the
+    // container whether a screen of that name stood there or not, and the ones no
+    // screen took ended there as `hive_no_route` (measured in the orga lab).
     let rim: Vec<&Value> = edges
         .iter()
         .filter(|e| e["from"] == json!("./apps") && e["to"] == json!("./channels"))
         .collect();
-    assert_eq!(
-        rim.len(),
-        1,
-        "ONE edge carries what an app draws out of the apps container. A twin for the \
-         withdrawal would be a second thing to keep in step with the first, and the two \
-         are one lane pair of one producer: {rim:#?}"
-    );
-    let cond = rim[0]["condition"].as_str().unwrap_or_default();
-    for lane in ["view", "withdraw"] {
-        assert!(
-            cond.contains(&format!("hop.route == '{lane}'")),
-            "the app rim does not carry `{lane}`. A view outlives its turn, so ending one \
-             is a message: {cond}"
-        );
-    }
     assert!(
-        cond.contains("context.channel_node") && cond.contains("!= ''"),
-        "both lanes still need a screen named on the context, or the container has \
-         nowhere to send them: {cond}"
+        rim.is_empty(),
+        "the member carries an app's view into its channels container, whether a \
+         screen stands there or not: {rim:#?}"
     );
 
     let meta = read_json(&root.join("template.json"));
@@ -289,8 +285,9 @@ fn instance_edges() -> Vec<Value> {
             "modifier": {"set_context": {"channel_node": format!("'{SCREEN_NAME}'"),
                                          "channel": format!("'{SCREEN_NAME}'")}}
         }),
+        // GH #1597: the screen's own way down, at the member, straight out of `./apps`.
         json!({
-            "from": "./channels", "to": format!("./channels/{SCREEN_NAME}"),
+            "from": "./apps", "to": format!("./channels/{SCREEN_NAME}"),
             "condition": format!(
                 "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && \
                  has(context.channel_node) && context.channel_node == '{SCREEN_NAME}'"),
@@ -520,18 +517,15 @@ async fn a_view_goes_up_and_comes_down_again_on_the_same_road() {
     h.shutdown().await;
 }
 
-/// **The member's own half, on its own.** `./apps -> ./channels` is what `member@1.8.0`
-/// moved; the down-edge onto the screen is the instantiating mutation's, as its `view`
-/// twin always was.
-///
-/// This is the shape of the risk the wave has to hand on, measured rather than described:
-/// with the member half in place and the mutation's half missing, the withdrawal REACHES
-/// `./channels` — so the level carries it — and then stops there as a dead letter. That
-/// is what a screen grown before `builder@1.11.0` does, once per withdrawal, and it is
-/// why `templates/member/README.md` says the edge has to be redrawn rather than leaving
-/// the reader to find it in the DLQ.
+/// **Without the screen's edge, nothing enters the channels.** Since GH #1597 the
+/// member draws no `./apps -> ./channels`: the way down is the screen's, drawn with it.
+/// An app that writes for a screen this member does not have (the orga lab: an app
+/// installed beside no screen) used to have its view carried into the container and
+/// dead-lettered THERE, under the container's name. Now it never leaves the app's own
+/// container: the dead letter, if any, names `./apps`, where the app stands that was
+/// installed for a missing screen, and `./channels` sees nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_member_half_carries_the_withdrawal_to_the_container_and_no_further() {
+async fn without_the_screens_edge_nothing_enters_the_channels() {
     if skip() {
         return;
     }
@@ -542,37 +536,38 @@ async fn the_member_half_carries_the_withdrawal_to_the_container_and_no_further(
 
     h.send(inject("in_drop")).await;
 
-    // Delivered AT the container: that half is the member's and it is what 1.8.0 added.
+    // The positive event: the withdrawal left the app.
     let rows = wait_for_log(&h, |(to, headers)| {
-        to.ends_with("/person/channels") && headers.contains("\"withdraw\"")
+        to.ends_with("/person/apps") && headers.contains("\"withdraw\"")
     })
     .await;
     assert!(
-        rows.iter()
-            .any(|(to, headers)| to.ends_with("/person/channels")
-                && headers.contains("\"withdraw\"")),
-        "`./apps -> ./channels` has to carry the withdrawal as far as the container -- \
-         that is the half `member@1.8.0` moved, and it is the half this template can \
-         have. Log:\n{rows:#?}"
+        !rows.is_empty(),
+        "the app's withdrawal never left the app. Log:\n{rows:#?}"
     );
 
-    // And no further, because nothing drew the mutation's half. Absence is read
-    // once the colony settled (TV-A2): no mailbox, ticket or output holds work,
-    // so a delivery that follows from the withdrawal has reached the sink by
-    // now, or never will -- no window is waited out.
+    // Absence once the colony settled (TV-A2): no mailbox, ticket or output holds
+    // work, so a delivery that follows from the withdrawal has happened by now, or
+    // never will -- no window is waited out.
     h.quiesce().await;
     let stray = rx.try_recv();
     assert!(
         stray.is_err(),
-        "nothing reaches the screen without the mutation's down-edge: {stray:?}"
+        "nothing reaches the screen without the screen's own down-edge: {stray:?}"
     );
     let dlq = dead_letters(&h).await;
     assert!(
-        dlq.iter()
-            .any(|(code, target)| code == "hive_no_route" && target.ends_with("/person/channels")),
-        "and the withdrawal ends as `hive_no_route` AT the container, once per withdrawal. \
-         This is exactly what a screen grown before `builder@1.11.0` does, and \
-         `templates/member/README.md` says so where a wirer will read it: {dlq:?}"
+        !dlq.iter()
+            .any(|(_, target)| target.ends_with("/person/channels")),
+        "the withdrawal ended in the channels container, where no screen of that name \
+         stands (GH #1597): {dlq:?}"
+    );
+    assert!(
+        !log_rows(&h)
+            .await
+            .iter()
+            .any(|(to, _)| to.ends_with("/person/channels")),
+        "the member carried the withdrawal into its channels container (GH #1597)"
     );
     h.shutdown().await;
 }

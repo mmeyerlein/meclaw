@@ -126,7 +126,7 @@ async fn voice_duplex_gpt_live_starts_a_session_and_streams() {
 
     let opening = mock.session_start().await.expect("a session.start arrived");
     assert_eq!(opening["type"], "session.start");
-    assert_eq!(opening["session"]["model"], "gpt-live-1");
+    assert_eq!(opening["session"]["model"], "gpt-live-1.1");
     assert_eq!(opening["session"]["instructions"], "Be Egon.");
     assert_eq!(opening["session"]["audio"]["format"]["type"], "audio/pcm");
     assert_eq!(

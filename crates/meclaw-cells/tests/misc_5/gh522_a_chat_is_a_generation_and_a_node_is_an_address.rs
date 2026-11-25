@@ -86,7 +86,7 @@ fn grow(params: Value) -> Vec<Value> {
 
 fn channel_declaration() -> Value {
     grow(json!({"scope": MEMBER, "level": "channel", "name": NODE,
-                "template": "telegram-connector@2.2.8", "assistant": "egon",
+                "template": "telegram-connector@2.2.9", "assistant": "egon",
                 "bind_chat": CHAT_A, "ctx": {"member_person": "marcus"}}))[0]
         .clone()
 }
@@ -195,11 +195,13 @@ fn the_ingress_edge_promotes_the_node_and_the_chat_apart() {
 /// node. The rule holds for every kind of channel or it is not a rule.
 #[test]
 fn a_screen_and_an_app_carry_the_same_word_in_both() {
-    let screen = grow(
+    let rendered = grow(
         json!({"scope": MEMBER, "level": "screen", "name": "display-desk",
                              "template": "display@1.0.0"}),
-    )[0]
-    .clone();
+    );
+    let screen = rendered[0].clone();
+    // GH #1597: the way down is the member's, drawn behind the screen at its scope.
+    let member_half = rendered[1].clone();
     let up = edges(&screen)
         .into_iter()
         .find(|e| e["from"] == json!("./display-desk"))
@@ -212,9 +214,14 @@ fn a_screen_and_an_app_carry_the_same_word_in_both() {
         "a screen IS one room, so its address and its conversation partner are \
          the same word — that is why it needs no chat id and is not an exception"
     );
-    let down = edges(&screen)
+    let down = edges(&member_half)
         .into_iter()
-        .find(|e| e["to"] == json!("./display-desk"))
+        .find(|e| {
+            e["to"] == json!("./channels/display-desk")
+                && e["condition"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("'view'"))
+        })
         .expect("the screen's way down");
     let guard = down["condition"].as_str().expect("a condition");
     assert!(
@@ -367,7 +374,7 @@ fn the_answer_reaches_the_connector_the_turn_came_from() {
 
     // A SECOND channel in the same container, and its way back must stay shut.
     let other = grow(json!({"scope": MEMBER, "level": "channel", "name": "slack",
-                            "template": "telegram-connector@2.2.8", "assistant": "egon",
+                            "template": "telegram-connector@2.2.9", "assistant": "egon",
                             "bind_chat": CHAT_B, "ctx": {"member_person": "marcus"}}))[0]
         .clone();
     let others_way_back = edges(&other)
@@ -406,9 +413,10 @@ fn the_member_level_asks_for_the_node_and_not_for_the_chat() {
         .collect();
     assert_eq!(
         into_channels.len(),
-        2,
-        "the answer and the view are the two lanes that enter the container \
-         from a sibling; the member moved and this test did not"
+        1,
+        "the answer is the one of the two lanes that enters the container from a \
+         sibling; the view goes straight to its screen on an edge the screen's \
+         growth draws (GH #1597). The member moved and this test did not"
     );
     for e in into_channels {
         let c = e["condition"].as_str().unwrap_or_default();

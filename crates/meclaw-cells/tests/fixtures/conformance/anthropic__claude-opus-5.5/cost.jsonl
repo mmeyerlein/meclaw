@@ -1,0 +1,4 @@
+{"ts": "2026-11-23T11:34:47Z", "model": "anthropic/claude-opus-5.5", "probe": "refusal:reasoning_off", "status": "http 400", "worst": 0.00212, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:47Z", "model": "anthropic/claude-opus-5.5", "probe": "refusal:top_p", "status": "http 404", "worst": 0.002016, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:47Z", "model": "anthropic/claude-opus-5.5", "probe": "refusal:tool_choice_named", "status": "http 404", "worst": 0.003708, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:49Z", "model": "anthropic/claude-opus-5.5", "probe": "refusal:tool_choice_required", "status": "ok", "worst": 0.002088, "cost": 0.00017028, "cost_source": "usage.cost"}

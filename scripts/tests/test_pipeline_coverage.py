@@ -182,23 +182,15 @@ class CoverageTest(unittest.TestCase):
         self.assertIn('LLVM_PROFILE_FILE="$C/profiles/_build/%p-%m%c.profraw"', host)
         self.assertIn('LLVM_PROFILE_FILE="$dir/%p-%m%c.profraw"', RUNNER.read_text())
 
-    def test_coverage_stale_after_7_days_sets_finding(self):
+    def test_coverage_stale_after_7_days_journals_no_finding(self):
+        # OR-W1-P-22: a stale map blocks nothing -- no `coverage_stale` finding
         db_path = self.dir / "pipeline.db"
         now = datetime.datetime(2026, 10, 16, 3, 0, tzinfo=datetime.timezone.utc)
         fresh = {"rev": "r1", "built_at": "2026-10-10T02:00:00Z"}
         old = {"rev": "r0", "built_at": "2026-10-08T02:00:00Z"}
         self.assertFalse(coverage.check_stale(fresh, now=now, db_path=db_path))
         self.assertTrue(coverage.check_stale(old, now=now, db_path=db_path))
-        db = store.open_ro(db_path)
-        try:
-            rows = db.execute("SELECT kind, event, data FROM journal").fetchall()
-        finally:
-            store.close(db)
-        self.assertEqual(len(rows), 1)
-        kind, event, data = rows[0][0], rows[0][1], json.loads(rows[0][2])
-        self.assertEqual((kind, event), ("finding", "process_finding"))
-        self.assertEqual((data["rule"], data["subject"], data["threshold"]),
-                         ("coverage_stale", "r0", 7))
+        self.assertFalse(db_path.exists())
         cov = coverage.coverage_map("r2", "lane", [
             {"binary": "a", "module": "m", "files": {"x.rs": 1, "y.rs": 2}}], 5.0, 2)
         data = coverage.built(cov, db_path=db_path)
@@ -429,6 +421,12 @@ class CoverageTest(unittest.TestCase):
         return argparse.Namespace(op="build", lane=lane, strand="welle-dev-tempo/dt-w6",
                                   out_dir=str(self.dir / "out"), db=str(self.dir / "p.db"),
                                   scope="full")   # the parser's default (S1b --scope)
+
+    def test_coverage_has_no_suspension_switch(self):
+        # OR-W1-P-22 (R-W1-5) settles R-79-11: no switch, no reader, `build` by hand stays
+        self.assertFalse(hasattr(coverage, "suspension"))
+        self.assertFalse(hasattr(coverage, "SWITCH_ENV"))
+        self.assertFalse((SCRIPTS.parent / ".config" / "coverage.toml").exists())
 
     def test_coverage_lane_reads_the_kits_host_file_variable(self):
         # review I2: the kit reads MECLAW_LANES_FILE (strand.sh lanes_file).
@@ -1294,6 +1292,43 @@ class BuildRevTest(unittest.TestCase):
         self.assertEqual(5, res.returncode, res.stdout + res.stderr)
         self.assertIn("not commit %s" % self.first, res.stderr)
         self.assertFalse((self.dir / "cov").exists())
+
+
+
+class CoverageLaneLeaseTest(unittest.TestCase):
+    """d54s lanekit (Nr. 59): the build takes the lane by lease before the lane
+    run and gives it back after; a lane another holder leases is skipped (exit 3)."""
+
+    setUp = CoverageTest.setUp
+    tearDown = CoverageTest.tearDown
+    build_args = CoverageTest.build_args
+
+    def test_the_build_skips_a_leased_lane_and_takes_a_free_one(self):
+        hosts = self.dir / "lanes"
+        hosts.write_text("lane-a user@lane-a.invalid\n")
+        db = store.open(str(self.dir / "p.db"))
+        self.addCleanup(db.close)
+        store.lease_take(db, "lane:lane-a", "welle-y/other", ttl_s=3600)
+        with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(hosts)}), \
+                mock.patch.object(coverage, "lane_up", return_value=True), \
+                mock.patch.object(coverage.subprocess, "run") as run, \
+                mock.patch.object(sys, "stderr", io.StringIO()) as err:
+            self.assertEqual(3, coverage._cmd_coverage(self.build_args("lane-a")))
+            self.assertIn("leased", err.getvalue())
+            run.assert_not_called()
+        store.lease_release(db, "lane:lane-a", "welle-y/other")
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(store.lease_who(db, "lane:lane-a"))
+            return subprocess.CompletedProcess(cmd, 3)
+        with mock.patch.dict(os.environ, {"MECLAW_LANES_FILE": str(hosts)}), \
+                mock.patch.object(coverage, "lane_up", return_value=True), \
+                mock.patch.object(coverage.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(sys, "stderr", io.StringIO()):
+            coverage._cmd_coverage(self.build_args("lane-a"))
+        self.assertEqual("welle-dev-tempo/dt-w6", seen[0]["holder"])
+        self.assertIsNone(store.lease_who(db, "lane:lane-a"), "released after the build")
 
 
 if __name__ == "__main__":

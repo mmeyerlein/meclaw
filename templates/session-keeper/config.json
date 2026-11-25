@@ -35,6 +35,10 @@
           "route": "in_import",
           "because": "one part of such a document, for a hive that is already running. It is the other half of `in_export` and the return leg of the same document: the seed set under this hive was read once, when the `cell.db` was created, and is inert for ever after -- so everything the source decided AFTER the walk has no way in except a message. The body is ONE export part, and applying the same part twice leaves the same state, which is what makes a partial transfer repairable by repeating it (GH #471)",
           "context": []
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
@@ -61,6 +65,14 @@
         {
           "route": "dump",
           "because": "the receipt of one applied import part: `hop.rows_written` counts the inserts it dispatched, so zero means the target already had every row, and `hop.export_part` of `hop.export_of` locates it in the document and `hop.export_final` marks the last one. Since 0.30.0 the lane carries NOTHING ELSE -- an export writes its own files and reports on `export_done` (GH #555), so the `dump_kind` key that told the two apart is gone with the distinction. Drain it with a PLAIN `hop.route == 'dump'` edge -- an edge that tests a second key reads as no drain under the required_drains probe"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -404,6 +416,100 @@
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'reject'",
           "modifier": {
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin",
+              "keeper_meta"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./night",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/night')"
+        },
+        {
+          "from": ".",
+          "to": "./sessions",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/sessions')"
+        },
+        {
+          "from": "./night",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin",
+              "keeper_meta"
+            ]
+          }
+        },
+        {
+          "from": "./night",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin",
+              "keeper_meta"
+            ]
+          }
+        },
+        {
+          "from": "./sessions",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "keeper_audience",
+              "keeper_body",
+              "keeper_session",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "ses_phase",
+              "store_origin",
+              "keeper_meta"
+            ]
+          }
+        },
+        {
+          "from": "./sessions",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "keeper_audience",
               "keeper_body",

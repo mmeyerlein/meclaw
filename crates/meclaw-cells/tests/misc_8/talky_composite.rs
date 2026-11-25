@@ -341,11 +341,7 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
     });
-    // #1398: the quick voice's siblings carry its model and endpoint.
-    patch(root, "main/talky/quick_spec/config.json", |v| {
-        v["params"]["base_url"] = json!(base_url);
-        v["params"]["model"] = json!("gpt-4o-mock");
-    });
+    // #1398: the quick voice's sibling `quick_bridge` carries its model and endpoint.
     patch(root, "main/talky/quick_bridge/config.json", |v| {
         v["params"]["base_url"] = json!(base_url);
         v["params"]["model"] = json!("gpt-4o-mock");
@@ -770,10 +766,7 @@ async fn a_tool_round_without_its_call_is_answered_by_the_brain() {
     patch(root, "main/talky/quick/config.json", |v| {
         v["params"]["base_url"] = json!(quick.base_url);
     });
-    // #1398: the quick voice's siblings carry its model and endpoint.
-    patch(root, "main/talky/quick_spec/config.json", |v| {
-        v["params"]["base_url"] = json!(quick.base_url);
-    });
+    // #1398: the quick voice's sibling `quick_bridge` carries its model and endpoint.
     patch(root, "main/talky/quick_bridge/config.json", |v| {
         v["params"]["base_url"] = json!(quick.base_url);
     });

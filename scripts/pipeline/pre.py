@@ -146,6 +146,87 @@ def diff_paths(repo, base):
     return sorted(p for p in paths if p)
 
 
+# w1 fruehrot (#1607): the bound of the corpus check in `tree_deviation`
+# (Regel 12; the check itself takes about a quarter of a second).
+CORPUS_CHECK_TIMEOUT_S = 120
+
+
+def strand_worktree(repo):
+    """A strand worktree: a branch with a `/` in a linked worktree (W4,
+    `strand.sh` `pre_applies`) -- where the pre stamp and the check `tree` apply."""
+    branch = _git(repo, "symbolic-ref", "--short", "-q", "HEAD").strip()
+    if not branch or "/" not in branch:
+        return False
+    gd = _git(repo, "rev-parse", "--git-dir").strip()
+    common = _git(repo, "rev-parse", "--git-common-dir").strip()
+    if not gd or not common:
+        return False
+    return (os.path.realpath(os.path.join(repo, gd))
+            != os.path.realpath(os.path.join(repo, common)))
+
+
+def _wave_dirs(repo):
+    """The wave directories of the strand's branch: `turnaround.branch_wave`, and
+    the branch prefix itself when that cannot say (no report there yet)."""
+    from pipeline import turnaround
+    branch = _git(repo, "symbolic-ref", "--short", "-q", "HEAD").strip()
+    prefix = branch.split("/", 1)[0] if "/" in branch else None
+    return {w for w in (turnaround.branch_wave(repo), prefix) if w}
+
+
+def _stale_corpus(repo):
+    """The seed corpus when it does not match its sources (`corpus-committed`'s
+    check, `plan.CORPUS_TOOL --check`), else None; a tree without the tool has none."""
+    from pipeline import lane, plan as plan_mod
+    tool = os.path.join(repo, plan_mod.CORPUS_TOOL)
+    if not os.path.isfile(tool):
+        return None
+    try:
+        res = subprocess.run(lane.python_argv(tool, "--check"), cwd=repo, capture_output=True,
+                             text=True, timeout=CORPUS_CHECK_TIMEOUT_S,
+                             env=gitenv.without_repo_env(os.environ))
+    except subprocess.TimeoutExpired:
+        return "%s (its check did not end within %d s)" % (plan_mod.CORPUS, CORPUS_CHECK_TIMEOUT_S)
+    return None if res.returncode == 0 else "%s (stale against its sources)" % plan_mod.CORPUS
+
+
+def tree_deviation(repo):
+    """w1 fruehrot (#1607): where a strand worktree differs from its commit -- the
+    overlay (tracked changes, untracked files) without the wave's post-gate paths
+    (`plans/<wave>/` `turnaround.POST_GATE` and `receipts/`), plus the seed corpus
+    when it is stale. In d54s two strand gates ran 1 631 s and 1 431 s red on such
+    a tree; the strand gate refuses it (`gate._tree_refusal`), pre grades it RED."""
+    from pipeline import turnaround
+    waves = _wave_dirs(repo)
+    out = []
+    for p in overlay_paths(repo):
+        parts = p.split("/")
+        if (len(parts) > 2 and parts[0] == "plans" and parts[1] in waves
+                and (parts[2] == "receipts" or turnaround.post_gate(parts[2:]))):
+            continue
+        out.append(p)
+    stale = _stale_corpus(repo)
+    return out + ([stale] if stale else [])
+
+
+def describe_deviation(paths, limit=8):
+    """The paths of `tree_deviation` for one line: the first `limit` and a count."""
+    more = len(paths) - limit
+    return ", ".join(paths[:limit]) + (" and %d more" % more if more > 0 else "")
+
+
+def tree_check(repo):
+    """pre's check `tree` (w1 fruehrot, #1607): a strand worktree that differs from
+    its commit is RED -- the strand gate would refuse it (`gate._tree_refusal`)."""
+    if not strand_worktree(repo):
+        return []
+    t0 = time.monotonic()
+    bad = tree_deviation(repo)
+    why = ("the tree differs from its commit: %s -- commit or restore it; a strand gate "
+           "grades a commit" % describe_deviation(bad)) if bad else ""
+    return [Result("tree", time.monotonic() - t0, "RED" if bad else "GREEN", why)]
+
+
 def git_dir(repo):
     d = _git(repo, "rev-parse", "--git-dir").strip()
     return d if os.path.isabs(d) else os.path.join(repo, d)
@@ -1033,6 +1114,7 @@ def run_pre(repo, base=None, runner=None, allow_bump=None, strand=None, lane=Non
         lane_f = pool.submit(lane_half, cmds, runner) if (cmds and runner) else None
         results = local_half(paths, repo, ctx)
         results += turnaround_checks(repo, paths)
+        results += tree_check(repo)
         results += lifted_check(repo, strand)
         results += ut.result()
         if lane_f is not None:

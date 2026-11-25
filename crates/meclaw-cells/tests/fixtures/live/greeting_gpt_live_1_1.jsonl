@@ -1,0 +1,106 @@
+{"recording":"gpt-live","model":"gpt-live-1.1","protocol":"/v1/live/sessions","config_hash":"fnv1a64:6bf8caa40ac980a8","audio_rate":24000}
+{"kind":"session.started","gap_ms":895,"payload":{"event_id":"event_Enk1CewDAgax0vdTY7wgV","type":"session.started","client_event_id":"start","session":{"id":"live_u1_Enk1Bp3oNDoKJum0v0b1jpBSQKdyVcPR","expires_at":1795530873,"model":"gpt-live-1.1","instructions":"You are a friendly companion on a phone line. Keep every answer short.","audio":{"output":{"voice":"marin"},"format":{"type":"audio/pcm","rate":24000}},"delegation":{"type":"client"},"status":"active","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"Greet the caller now in English, one sentence. Begin immediately, then pause and listen."}]}]}}}
+{"kind":"session.output_audio.delta","gap_ms":87,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":105,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":101,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":98,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":20,"payload":{"type":"session.output_transcript.delta","start_ms":0,"end_ms":200,"delta":" Hi there","event_id":"event_Enk1CuOd3H0zUG3EjROpr"}}
+{"kind":"session.output_audio.delta","gap_ms":80,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":4,"payload":{"type":"session.output_transcript.delta","start_ms":200,"end_ms":400,"delta":",","event_id":"event_Enk1DO2HjNpbByzu8i0e7"}}
+{"kind":"session.output_audio.delta","gap_ms":96,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":71,"payload":{"type":"session.output_transcript.delta","start_ms":400,"end_ms":600,"delta":" thanks","event_id":"event_Enk1D3xZeYTehJRrAMZl2"}}
+{"kind":"session.output_audio.delta","gap_ms":29,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":4,"payload":{"type":"session.output_transcript.delta","start_ms":600,"end_ms":800,"delta":" for","event_id":"event_Enk1DpdChzOuNglTPJd2b"}}
+{"kind":"session.output_audio.delta","gap_ms":96,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":39,"payload":{"type":"session.output_transcript.delta","start_ms":800,"end_ms":1000,"delta":" calling","event_id":"event_Enk1DpkT7tZIh5QwNKvXg"}}
+{"kind":"session.output_audio.delta","gap_ms":62,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":27,"payload":{"type":"session.output_transcript.delta","start_ms":1200,"end_ms":1400,"delta":" —","event_id":"event_Enk1DoNkkT4GdGe0JJir6"}}
+{"kind":"session.output_audio.delta","gap_ms":73,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":102,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":8,"payload":{"type":"session.output_transcript.delta","start_ms":1400,"end_ms":1600,"delta":" how","event_id":"event_Enk1ELNWmK4Yyf5b9Yecw"}}
+{"kind":"session.output_audio.delta","gap_ms":90,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":83,"payload":{"type":"session.output_transcript.delta","start_ms":1600,"end_ms":1800,"delta":" can","event_id":"event_Enk1EPapnT5cy1HMEbA22"}}
+{"kind":"session.output_audio.delta","gap_ms":18,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":15,"payload":{"type":"session.output_transcript.delta","start_ms":1800,"end_ms":2000,"delta":" I help","event_id":"event_Enk1E2kZ15T2XtoA4VA56"}}
+{"kind":"session.output_audio.delta","gap_ms":85,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_transcript.delta","gap_ms":78,"payload":{"type":"session.output_transcript.delta","start_ms":2000,"end_ms":2200,"delta":" today?","event_id":"event_Enk1E17tGuExplQxrLFq8"}}
+{"kind":"session.output_audio.delta","gap_ms":21,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":101,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":101,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":101,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":103,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":98,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":102,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":98,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":101,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":104,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":97,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":101,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":101,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":102,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":98,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":101,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":103,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":102,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":99,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":100,"payload":{"type":"session.output_audio.delta"},"audio_ms":100}
+{"kind":"session.output_audio.delta","gap_ms":351,"payload":{"type":"session.output_audio.delta"},"audio_ms":60}
+{"kind":"session.closed","gap_ms":297,"payload":{"event_id":"event_Enk1LCgedzLdraEtTXC0e","type":"session.closed","reason":"close_requested","session":{"id":"live_u1_Enk1Bp3oNDoKJum0v0b1jpBSQKdyVcPR","expires_at":1795530873,"model":"gpt-live-1.1","instructions":"You are a friendly companion on a phone line. Keep every answer short.","audio":{"output":{"voice":"marin"},"format":{"type":"audio/pcm","rate":24000}},"delegation":{"type":"client"},"status":"active","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"Greet the caller now in English, one sentence. Begin immediately, then pause and listen."}]}]},"usage":{"seconds":9},"client_event_id":"close"}}

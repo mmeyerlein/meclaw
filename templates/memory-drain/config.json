@@ -14,6 +14,10 @@
             "channel"
           ],
           "because": "one closed session as a single write batch; the ledger is keyed on the promoted session_id and a batch without one cannot be told apart from its own repeat. The provenance of the turns travels the same way and is NOT optional (#269): `audience_set` (a JSON list of participants in affinity vocabulary, `*` alone meaning universal) and `channel` are required on a batch that carries turns, because the memory hive's own in_episode lane requires them and this adapter is the thing that speaks that lane. Without either, the batch is refused on `reject` and NOTHING is written to the ledger -- a guessed audience is worse than a missing turn, and a batch consumed into the ledger but refused downstream would be lost for good"
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
@@ -24,6 +28,14 @@
         {
           "route": "reject",
           "because": "a batch this adapter would not take: the participant set or the room is not on it (`hop.reject_reason` is then 'missing_audience' or 'missing_channel'), or the adapter's own ledger did not answer the op it was asked (`store_refused`, with the ledger's code in `hop.store_error` and the refused op in `hop.store_operation` -- GH #343; that variant is a REPORT, not a refusal to take the batch: refused at the last step of the chain the episodes have already left, and the body names the step so a reader is not told the opposite of what happened). The body says which and why. For the two PROVENANCE reasons nothing was parked and nothing was marked, so the same batch delivered again over an edge that carries its provenance still drains whole; for 'store_refused' how much had already happened depends on the step, and the body names it. Drain it: undrained, nobody ever learns that the day never became a memory"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -39,7 +51,7 @@
         {
           "from": ".",
           "to": "./drain",
-          "condition": "has(hop.route) && hop.route.startsWith('in_')"
+          "condition": "has(hop.route) && hop.route.startsWith('in_') && !(has(hop.route) && hop.route == 'in_params')"
         },
         {
           "from": "./drain",
@@ -63,6 +75,39 @@
           "to": ".",
           "condition": "has(hop.route) && !hop.route.startsWith('in_') && hop.route != 'lstore'",
           "modifier": {
+            "delete_context": [
+              "drain_origin",
+              "drain_phase"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./ledger",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/ledger')"
+        },
+        {
+          "from": "./ledger",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "drain_origin",
+              "drain_phase"
+            ]
+          }
+        },
+        {
+          "from": "./ledger",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "drain_origin",
               "drain_phase"

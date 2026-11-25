@@ -23,6 +23,7 @@
 //! the speech-to-text provider wants and the rate the text-to-speech provider
 //! emits are both declared in the `hello` frame, and the client adapts.
 
+pub mod audio_report;
 pub mod b64;
 pub mod call_marks;
 pub mod call_usage;
@@ -35,6 +36,7 @@ pub mod g711;
 pub mod io;
 pub mod link;
 pub mod live_turns;
+pub mod out_lead;
 pub mod params;
 pub mod providers;
 pub mod service;

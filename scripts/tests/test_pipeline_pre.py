@@ -1717,7 +1717,9 @@ class Gate(unittest.TestCase):
                                      r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: docs/a\.md ")
 
     def test_gate_accepts_stamp_within_24h_same_tree(self):
-        write(self.wt, "docs/a.md", "# a\n\nnew\n")
+        # w1 fruehrot (#1607): pre grades a strand worktree that differs from its
+        # commit RED (check `tree`) -- the change is committed first.
+        self.commit_in_wt("docs/a.md", "# a\n\nnew\n")
         res = self.strand("pre", "--no-lane")
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
         self.assertRegex(res.stdout.splitlines()[-1], SUMMARY)
@@ -1786,6 +1788,45 @@ class Gate(unittest.TestCase):
         git(self.main, "checkout", "-q", "-b", "x/main-pass")
         res = self.strand("gate", "--wave", "w-2026-01-01", "--strand", "m", cwd=self.main)
         self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+
+
+
+class TreeCheck(Fixture):
+    """w1 fruehrot (#1607): pre grades a strand worktree that differs from its
+    commit RED, naming the files -- the same rule the strand gate refuses with."""
+
+    def worktree(self):
+        wt = os.path.join(self._tmp.name, "wt")
+        git(self.root, "worktree", "add", "-q", "-b", "w/s1", wt)
+        return wt
+
+    def tree_line(self, lines):
+        return [ln for ln in lines if ln.startswith("PRE tree ")]
+
+    def test_a_dirty_strand_worktree_is_red(self):
+        wt = self.worktree()
+        write(wt, "docs/a.md", "# a\n\nchanged\n")
+        lines = []
+        doc = pre.run_pre(wt, out=lines.append)
+        self.assertEqual("RED", doc["verdict"])
+        got = self.tree_line(lines)
+        self.assertEqual(1, len(got), lines)
+        self.assertIn("RED", got[0])
+        self.assertIn("docs/a.md", got[0])
+
+    def test_a_clean_strand_worktree_is_green(self):
+        wt = self.worktree()
+        lines = []
+        pre.run_pre(wt, out=lines.append)
+        got = self.tree_line(lines)
+        self.assertEqual(1, len(got), lines)
+        self.assertIn("GREEN", got[0])
+
+    def test_post_gate_paths_of_the_wave_do_not_count(self):
+        wt = self.worktree()
+        write(wt, "plans/w/berichte/s1.md", "# s1\n")
+        write(wt, "plans/w/receipts/s1/x/receipt.json", "{}\n")
+        self.assertEqual([], pre.tree_deviation(wt))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+{"ts": "2026-11-23T11:35:00Z", "model": "openai/gpt-6-luna", "probe": "refusal:reasoning_off", "status": "ok", "worst": 5.19e-05, "cost": 4.36e-06, "cost_source": "usage.cost"}
+{"ts": "2026-11-23T11:35:00Z", "model": "openai/gpt-6-luna", "probe": "refusal:temperature", "status": "http 404", "worst": 5.02e-05, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:00Z", "model": "openai/gpt-6-luna", "probe": "refusal:top_p", "status": "http 404", "worst": 4.94e-05, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:35:01Z", "model": "openai/gpt-6-luna", "probe": "refusal:tool_choice_named", "status": "ok", "worst": 9.16e-05, "cost": 1.505e-05, "cost_source": "usage.cost"}
+{"ts": "2026-11-23T11:35:01Z", "model": "openai/gpt-6-luna", "probe": "refusal:tool_choice_required", "status": "ok", "worst": 5.11e-05, "cost": 4.36e-06, "cost_source": "usage.cost"}

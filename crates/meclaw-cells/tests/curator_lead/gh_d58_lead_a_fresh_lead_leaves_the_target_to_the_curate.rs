@@ -80,7 +80,7 @@ fn gh_d58_lead_a_fresh_lead_leaves_the_target_to_the_curate() {
         "talky's lead is the template `lead`: {}",
         talky_lead["cell"]
     );
-    for knob in ["path_routes", "fallback", "spec_target", "bridge_target"] {
+    for knob in ["path_routes", "fallback", "bridge_target"] {
         assert!(
             talky_lead["override_params"]["lead"][knob]
                 .as_str()

@@ -1,4 +1,4 @@
-# `meclaw-os@2.4.17`
+# `meclaw-os@2.5.0`
 
 The colony shell: the outermost of the four composition levels, and the tree everything
 else is grown into. It holds no cell of its own. It holds five occupants, one empty
@@ -77,7 +77,7 @@ level's own responsibility being exercised — never a right the organisation le
 
 | Occupant | What it is | Why it is at THIS level |
 |---|---|---|
-| `access` | a `ref` to the `access` template — the capability broker, with its own interior `vault` | every organisation asks the same broker; two brokers are two answers to one question |
+| `access` | a `ref` to the `access` template — the capability broker, with its own interior `vault` | the operating cells of the colony ask one broker here; everything of the person asks the member's broker, and no other level carries one |
 | `argus` | a `ref` to the `argus` template — the control loop | one colony, one loop; it ships with every goal disabled |
 | `builder` | a `ref` to the `builder` template — the intake that drafts a manifest. Its ref sets `recipes.model_registry_scope` to `/os/orgs`, so a grown assistant's brains become subscribers of the registry beside it | one authoring path per colony; a second baumeister would be a second audit trail |
 | `llm-registry` | a `ref` to the `llm-registry` template — the catalogue of model packages, the replacements and the tier index, and the hand that pushes a package into a brain | one colony, one answer to "which model does this brain run, and why": two registries would push two packages at one brain. Since 1.9.0 |
@@ -113,6 +113,7 @@ open state — so the shell draws no boundary of its own around its occupants.
 | `in_lifecycle` | — | the front door: birth, sleep or wake for a node somewhere in the colony |
 | `in_export` | — | the `orgs` container: hand a member's memory out as a versioned document. The usual sender is the front door, whose `export` lane this level re-stamps onto it |
 | `in_import` | — | the `orgs` container: one part of such a document, on its way back into the memory of the member it belongs to. The return leg of `in_export`, crossing untouched — the shell reads no part and decides nothing about what may enter |
+| `in_params` | — | the front door: a params-only update for one running cell, named by its absolute path in `hop.subscriber` ([#1353](https://github.com/mmeyerlein/meclaw/issues/1353)). What it carries and answers: `templates/operator/README.md` § A parameter update |
 
 | Out | What it carries |
 |---|---|
@@ -131,6 +132,7 @@ open state — so the shell draws no boundary of its own around its occupants.
 | `close_report` | what one close pass did to an ended session. Nothing here triggers the pass and nothing here reads the receipt |
 | `stamp` | the route stamp of one turn (GH #1304), raised inside a member only when a surface's route knob `stamp_out` is "1": path, intent, the product's own choices, no text and no turn notes. Nothing here reads it |
 | `catalogue` | what one reconciliation of the baumeister's corpus against the colony's own template registry did: how many names the registry holds, how many the corpus already carried, how many rows were written and which. Nothing here reads it — the shell drives the nudge, so the shell hands out the report |
+| `params_receipt` | the answer of the cell an `in_params` update named, applied or refused, in its own words. **Drain it:** it is the only answer an update gets |
 
 Both broker lanes demand a promoted `context.requester`, and the shell demands it too. A
 level forwards a requirement; it cannot satisfy one. An edge that carries `in_request` into
@@ -138,17 +140,21 @@ this shell without having promoted the requester somewhere upstream is refused w
 `hive_contract` before anything is staged — a grant issued to whoever asked loudest is the
 one failure the broker cannot recover from afterwards.
 
-## The eighty edges
+## The ninety-four edges
 
-Fifty-five of them are a door or an exit, and every declared lane has at least one. The
+Fifty-nine of them are a door or an exit, and every declared lane has at least one. The
 broker knows nothing about the loop, the loop asks the colony rather than the broker, and
 neither of them knows an organisation exists.
 
-**Twenty-five wire two occupants to each other, and that is what owning a baumeister, a
+**Thirty-five wire two occupants to each other, and that is what owning a baumeister, a
 front door and a model registry looks like.** Four of them are the credential road since
 #801: the judge of `./argus` and the translator of `./llm-registry` ask the shell's own
 `./access` for their key and are answered sealed. One since #1444 carries the answer to a
 role question from `./orgs` back to `./argus` (*The way back of a role question* below).
+Ten since #1353 carry a params-only update from the front door to the sibling its
+`hop.subscriber` lies under (`./orgs`, `./access`, `./argus`, `./builder`, `./llm-registry`)
+and that cell's answer back, re-stamped `in_params_answer`; the other four of that road are
+the door in and the three exits of the receipt.
 Until R6 every edge here touched the rim, and it was tempting to read that as a rule. It
 was a coincidence of who lived at this level: `assistant` wires `./cogny -> ./tools` and
 `member` wires `./assistants -> ./firewall`, because a level owns what its siblings must
@@ -394,8 +400,8 @@ back to `./llm-registry`, on `model_refused` and the same address test on
 `hop.refused_subscriber`, restamped to the registry's `in_refused` lane, where the hand marks the
 row and `show` names it until the next push or a `reset` (`templates/llm-registry/README.md`
 § A refused push). `./argus` and `./builder` send it out themselves (since `argus@1.2.1`
-and since `builder@1.15.1`); for a generation or a member the builder draws one way back per composite at
-`/os/orgs` beside its push edges. `builder/compose` has its way back although the shell does not
+and since `builder@1.15.1`); for a member the builder draws one way back per composite at
+`/os/orgs` beside its push edges, for a generation (since [#1616](https://github.com/mmeyerlein/meclaw/issues/1616)) one off the generation's own door. `builder/compose` has its way back although the shell does not
 announce it: its push road stands, and an operator who subscribes it gets its refusals too.
 Nothing of it crosses the rim -- `model_refused` and `in_refused` are consumed by a sibling --
 so this level declares no new lane.
@@ -403,7 +409,8 @@ so this level declares no new lane.
 **The push goes into `./orgs` and no further from here.** `update` names its subscriber on
 `hop.subscriber`; this level restamps it `in_model` and hands it to the container, and the
 last hop is an edge the builder's `grow_level assistant` draws at `/os/orgs` when it grows a
-generation -- one per brain, onto the composite's `in_model` door, addressed by that path.
+generation -- one per brain, onto the generation's own `in_model` door (since
+[#1616](https://github.com/mmeyerlein/meclaw/issues/1616); the `assistant` level hands it to the rim that holds the brain), addressed by that path.
 A push for a path nobody grew an edge for dead-letters at `/os/orgs` as `hive_no_route`,
 which is the loud form of "this subscriber has no road".
 
@@ -614,7 +621,7 @@ in it at all**.
 seed-ref/
 ├── colony.json            substrate defaults. two lines.
 ├── main/config.json       type: "hive", one edge, and not one cell
-└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.4.17"}}
+└── main/os/config.json    {"cell": {"type": "ref", "template": "meclaw-os@2.5.0"}}
 ```
 
 ```bash
@@ -700,12 +707,13 @@ root tree:
 
 ```json
 {"scope": "/",
- "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.4.17"}],
+ "diff": {"add_nodes": [{"name": "os", "template": "meclaw-os@2.5.0"}],
           "add_edges": []}}
 ```
 
-One node and no edges at all: the shell is the outermost boundary, so what reaches it comes
-from outside the colony and what leaves it leaves the colony. The broker, the control loop,
+One node and no edges at all: the shell is the outermost boundary of the colony's operation.
+Only the colony's `door` and `sink` stand beside it at the root, because the door belongs to the
+colony and not to its operation (`docs/colony-architecture.md`). The broker, the control loop,
 the `orgs` container, the baumeister, the submitter, the front door and every edge between them
 came with the template.
 
@@ -722,7 +730,7 @@ edge crosses into it:
 
 ```json
 {"scope": "/os",
- "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.2.30"}],
+ "diff": {"add_nodes": [{"name": "orgs/acme", "template": "org@2.2.31"}],
           "add_edges": [{"from": "./orgs", "to": "./orgs/acme",
                          "condition": "has(hop.route) && hop.route == 'in_turn'"},
                         {"from": "./orgs/acme", "to": "./orgs",

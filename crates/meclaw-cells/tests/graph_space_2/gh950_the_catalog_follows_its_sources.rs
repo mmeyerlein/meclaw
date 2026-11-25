@@ -1026,13 +1026,23 @@ fn the_hive_and_its_store_are_what_the_build_spec_names() {
             "in_pulled",
             "in_lib",
             "in_tool",
-            "in_schemas"
+            "in_schemas",
+            // GH #1353: a params-only update for the store.
+            "in_params"
         ]),
         "the lanes into the hive (GH #950 § 1, `source_described` OR-BC-68)"
     );
     assert_eq!(
         lanes("emits"),
-        set(&["pull", "answer", "tool_result", "tool_schemas"]),
+        set(&[
+            "pull",
+            "answer",
+            "tool_result",
+            "tool_schemas",
+            // GH #1353: the answer of the cell an `in_params` update named.
+            "params_applied",
+            "params_refused"
+        ]),
         "the lanes out of the hive (GH #950 § 1)"
     );
 

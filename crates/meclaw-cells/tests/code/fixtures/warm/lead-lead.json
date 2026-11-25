@@ -1,5 +1,5 @@
 {
-  "source": "by hand from the lead's contract (lanes lead_ask, lead_note, lead_spec; GH #1447), ids as placeholders; no probe whose answer carries handle_ms",
+  "source": "by hand from the lead's contract (lanes lead_ask, lead_note; GH #1447; lead_spec left with the speculation, GH #1584), ids as placeholders; no probe whose answer carries handle_ms",
   "probes": [
     {
       "hop": {

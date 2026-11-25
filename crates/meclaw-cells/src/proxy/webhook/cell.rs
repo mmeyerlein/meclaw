@@ -126,8 +126,10 @@ impl WebhookCell {
                         "proxy/webhook: the sealed secret opened empty -- the mount stays closed");
                     return;
                 };
-                tracing::info!(grant = %accepted.grant,
-                    "proxy/webhook: secret received sealed and opened in RAM -- the mount opens");
+                // GH #1501: the "opened" line is written by the mount half once
+                // the secret stands there (`run_io`), not here: here the mount
+                // is still closed, and a POST between the line and the handover
+                // got `503 credential pending` under load (gate snap d58-2).
                 let _ = reconfig_tx.send(HookReconfig::Credential { secret }).await;
             }
             Err(refusal) => match refusal.detail() {
@@ -236,7 +238,20 @@ impl LongRunningCell for WebhookCell {
         reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
-            if self.credential.is_some()
+            // GH #1353: on the params lane an update or nothing, and every key
+            // of this platform is immutable: refused, with the shared answer to
+            // the update's sender. Before the sealed box below.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            let lane_detail = push
+                .on_lane()
+                .then(|| push.lane_refusal().unwrap_or_else(refuse_params_update));
+            if let Some(detail) = &lane_detail
+                && push.refused(sink, INVALID_INPUT, detail).await
+            {
+                return;
+            }
+            if lane_detail.is_none()
+                && self.credential.is_some()
                 && let meclaw_core::Body::Inline(v) = &msg.body
                 && v.get("sealed").is_some()
             {
@@ -245,7 +260,9 @@ impl LongRunningCell for WebhookCell {
             }
             let params_slot = matches!(&msg.body, meclaw_core::Body::Inline(v)
                 if v.get("params").is_some());
-            let detail = if params_slot {
+            let detail = if let Some(detail) = lane_detail {
+                detail
+            } else if params_slot {
                 refuse_params_update()
             } else {
                 "a webhook proxy is one-way: it receives requests at its mount and takes no \

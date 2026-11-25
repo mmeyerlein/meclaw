@@ -8,7 +8,7 @@ executed there (`lane.exec_stream`), every event folded into the store
 (`schedule.ingest`). The lines it prints are the ones of `scripts/gate.sh`:
 `GATE ...` per station as it ends, `GATE-SUMMARY ...`, plus `GATE-PLAN ...`
 before the start and `GATE-LANE ...` at the end. Exit: GREEN 0, RED 1,
-ABORTED or a refused/lost pass 2, queued 3, ASK 4.
+ABORTED or a refused/lost pass 2, queued 3.
 
 Local run data lives under `~/.local/state/meclaw/pipeline/` (`runs/<run>/`,
 `metadata/<sha256>.json`, `local-fingerprint.json`).
@@ -36,16 +36,17 @@ from . import cache, cpus, events, flakes, full_pass, gitenv, lane, plan, progre
 from . import register as satellites
 
 MODES = ("strand", "integration", "release")
-ASKING_STATIONS = ("persona-receipt",)
-EXIT_BY_VERDICT = {"GREEN": 0, "RED": 1, "ABORTED": 2, "ASK": 4}
+# No verdict asks the owner since GH #1593 (ADR-0054): the one station that
+# asked is gone, and so is its frame (ASK, exit 4, --decide; d54s kit F1).
+EXIT_BY_VERDICT = {"GREEN": 0, "RED": 1, "ABORTED": 2}
 PRE_MODULE = "%s.pre" % __package__
 DEFAULT_LOCK = "/tmp/meclaw-w26-cargo.lock"
-VALUE_FLAGS = ("--base", "--only", "--archive", "--log-dir", "--decide", "--host", "--strand",
+VALUE_FLAGS = ("--base", "--only", "--archive", "--log-dir", "--host", "--strand",
                "--wave", "--reason", "--repo", "--slots", "--holder", "--cache")
 SWITCHES = {"--fail-fast": "fail_fast", "--plan-only": "plan_only", "--no-nice": "no_nice",
             "--lane": "lane", "--resync": "resync", "--no-precheck-stop": "no_precheck_stop",
             "--no-pre": "no_pre", "--wait-admission": "wait_admission", "--full": "full",
-            "--any-lane": "any_lane"}
+            "--any-lane": "any_lane", "--collect": "collect"}
 # The stations cache switch (GH #1162, messvertrag section 1): `off` makes no
 # lookup, so every planned station runs; results are still recorded under the
 # same keys (the key never sees the switch, later runs keep their hits).
@@ -57,14 +58,14 @@ STORE_EXIT = 6
 USAGE = """usage: pipeline.py gate <strand|integration|release> [--base <rev>] [--only <stations>]
          [--mode <strand|integration|release>]
          [--archive <dir>] [--log-dir <dir>] [--fail-fast] [--plan-only] [--no-nice]
-         [--lane] [--resync] [--no-precheck-stop] [--decide <station>=without:"OR-<id>: <reason>"]
+         [--lane] [--resync] [--no-precheck-stop]
          [--host <lane>] [--strand <name>] [--wave <wave>] [--no-pre --reason <text>]
          [--repo <path>] [--slots <n,...>] [--wait-admission] [--holder <n>] [--full]
-         [--cache on|off] [--any-lane]
+         [--cache on|off] [--any-lane] [--collect]
 
 Plans one pass of the gate and runs it -- here when no station needs cargo,
 else on a lane the scheduler admits. Exit: GREEN 0, RED 1, ABORTED 2,
-queued 3, ASK 4; a refused argument is 2, a lane that refuses this
+queued 3; a refused argument is 2, a lane that refuses this
 tree 5, a store error at the admission 6. The mode stands first or as
 `--mode <m>` anywhere; two different modes are refused.
 
@@ -88,6 +89,13 @@ wave so too, until a GREEN full pass clears the mark (`full_pass`, #1165).
 --cache off (or MECLAW_GATE_CACHE=off) looks nothing up in the stations cache:
 every planned station runs, results are still recorded; GATE-PLAN and GATE-LANE
 say `cache=off`, and a CACHED station in such a pass turns it RED (a defect).
+A strand pass stops at its first red station (`--fail-fast` is its default): the
+running stations are stopped, the rest never start, and GATE-SUMMARY ends with
+`-- stopped at <station> after <s> s`; --collect runs every station. integration,
+release and the merge gate (MECLAW_GATE_MODE=merge) collect. A strand gate of a
+strand worktree refuses a tree that differs from its commit (exit 2, the paths
+named) before any station; the reports of its wave (`plans/<wave>/` berichte,
+straenge, recheck, RESTLISTE.md, receipts) do not count.
 integration and release wait for the widest lane (most threads); --any-lane
 lets them take a narrower one. GATE-LANE names the lane's threads (`vcpu=`)."""
 
@@ -185,7 +193,6 @@ class Opts:
         self.mode = ""
         self.base = self.only = self.archive = self.host = self.strand = self.wave = None
         self.reason = self.repo = self.slots = self.holder = self.cache = None
-        self.decide = []
         for attr in SWITCHES.values():
             setattr(self, attr, False)
         self.help = False
@@ -259,9 +266,7 @@ def parse(argv, err):
                 print("gate: %s needs a value" % a, file=err)
                 return 2
             v = argv.pop(0)
-            if a == "--decide":
-                o.decide.append(v)
-            elif a == "--log-dir":
+            if a == "--log-dir":
                 o.archive = v
             elif a == "--only":  # a list for the plan and the executor, never a string (B-I1)
                 o.only = [n.strip() for n in v.split(",") if n.strip()] or None
@@ -278,11 +283,6 @@ def parse(argv, err):
         print("gate: --lane needs --base <sha> -- a build host has no reliable master; "
               "the kit computes the merge base where it does", file=err)
         return 2
-    for d in o.decide:
-        bad = _decide_error(o.mode, d)
-        if bad:
-            print("gate: " + bad, file=err)
-            return 2
     if schedule.strand_colon_error(o.strand):
         print("gate: " + schedule.strand_colon_error(o.strand), file=err)
         return 2
@@ -297,34 +297,16 @@ def parse(argv, err):
     if o.no_pre and not (o.reason or "").strip():
         print("gate: --no-pre needs --reason <text> -- the skip is written into the receipt", file=err)
         return 2
+    # w1 fruehrot (#1607): in d54s five strand gates ran red to the end (6 583 s)
+    # although their finding stood after 68-85 s -- a strand pass stops at its
+    # first red station. The merge gate (a strand pass under
+    # MECLAW_GATE_MODE=merge), integration and release keep collecting.
+    if (o.mode == "strand" and not o.collect
+            and os.environ.get("MECLAW_GATE_MODE", "") != "merge"):
+        o.fail_fast = True
+    if o.collect:
+        o.fail_fast = False
     return o
-
-
-# OR-DT.ZI.decide-or: an owner's answer cites the ruling that carries it.
-DECIDE_RULING_RE = re.compile(r"OR-[\w.-]*\w")
-
-
-def _decide_error(mode, d):
-    if mode not in ("integration", "release"):
-        return "--decide answers a question only integration and release ask (this is %s)" % mode
-    if "=" not in d or ":" not in d.split("=", 1)[1]:
-        return '--decide wants <station>=without:"<reason>", got: %s' % d
-    st, rest = d.split("=", 1)
-    ans, why = rest.split(":", 1)
-    if st not in ASKING_STATIONS:
-        return "--decide names %s, which never asks (asking stations: %s)" % (st, " ".join(ASKING_STATIONS))
-    if ans != "without":
-        return ("--decide %s=%s -- the only answer is 'without'; the other two answers are "
-                "measurements, not switches" % (st, ans))
-    if not why.strip():
-        return "--decide %s=without needs a reason -- the owner's call is written into the receipt" % st
-    if "\t" in why or "\n" in why:
-        return ("--decide %s: the reason must be one line without tabs (it is one field of a "
-                "tab-separated record)" % st)
-    if not DECIDE_RULING_RE.search(why):
-        return ('--decide %s=without needs the ruling id in the reason (OR-<id>, OR-DT.ZI.decide-or), '
-                'e.g. %s=without:"OR-DT.W5.persona-paths: <reason>"' % (st, st))
-    return ""
 
 
 # --- helpers -------------------------------------------------------------------------------
@@ -348,10 +330,20 @@ def target_dir(repo):
     return os.path.join(repo, "target")
 
 
-def holder_key(repo, strand, wave, holder=None):
-    """The lease holder `<wave>/<name>[:<holder>]` the way `strand.sh token` forms it."""
-    key = _holder_key(repo, strand, wave)
-    return "%s:%s" % (key, holder) if key and holder else key
+def holder_key(repo, strand, wave, holder=None, db=None):
+    """The lease holder `<wave>/<name>[:<holder>]` the way `strand.sh token` forms it,
+    a satellite's as `<repo>@...` (`schedule.repo_key`, w1 leaseklar #1620). With the
+    store `db`, the bare key of a lease an older kit took for this tree, as the
+    token verbs read it (`schedule._legacy_key`)."""
+    legacy = _holder_key(repo, strand, wave)
+    legacy = "%s:%s" % (legacy, holder) if legacy and holder else legacy
+    key = schedule.repo_key(schedule.repo_of(repo), legacy)
+    if db is None or key == legacy:
+        return key
+    try:
+        return schedule._legacy_key(db, key, legacy, repo)
+    except Exception:  # noqa: BLE001 -- an unreadable store keys the new way
+        return key
 
 
 def _holder_key(repo, strand, wave):
@@ -365,18 +357,33 @@ def strand_of(repo, strand="", wave=""):
 
 
 def _pre_applies(repo):
-    """Does the pre stamp apply here? A strand worktree: a branch with a `/`
-    in a linked worktree -- the main tree's passes never need a stamp (W4,
-    `strand.sh` `pre_applies`)."""
-    branch = _git(repo, "symbolic-ref", "--short", "-q", "HEAD")
-    if not branch or "/" not in branch:
-        return False
-    gd = _git(repo, "rev-parse", "--git-dir")
-    common = _git(repo, "rev-parse", "--git-common-dir")
-    if not gd or not common:
-        return False
-    return (os.path.realpath(os.path.join(repo, gd))
-            != os.path.realpath(os.path.join(repo, common)))
+    """Does the pre stamp apply here? A strand worktree (`pre.strand_worktree`, the
+    one rule of pre's check `tree` too) -- the main tree's passes never need a
+    stamp (W4, `strand.sh` `pre_applies`). Without pre here nothing applies."""
+    pre = _pre_module()
+    return bool(pre is not None and pre.strand_worktree(repo))
+
+
+def _tree_refusal(o, repo, err):
+    """w1 fruehrot (#1607): a strand gate of a strand worktree grades a commit.
+    In d54s sprechmarke and kanalkante ran 1 631 s and 1 431 s red on a tree that
+    differed from its commit (`corpus-committed` said so after 2 s, as a NOTE).
+    A tree that differs (`pre.tree_deviation`: dirty paths, a stale corpus) is
+    refused here, before the plan and any station: exit 2, the paths named.
+    `--lane` (the lane's detached tree) and the merge gate are no strand
+    worktree's pass. Returns the exit of a refusal, or 0."""
+    if (o.mode != "strand" or o.lane or os.environ.get("MECLAW_GATE_MODE", "") == "merge"
+            or not _pre_applies(repo)):
+        return 0
+    pre = _pre_module()
+    bad = pre.tree_deviation(repo)
+    if not bad:
+        return 0
+    print("gate: refused -- the tree differs from its commit %s: %s -- commit or restore "
+          "it, then `strand.sh pre` and the gate again" % (
+              _git(repo, "rev-parse", "--short=8", "HEAD"), pre.describe_deviation(bad)),
+          file=err)
+    return 2
 
 
 def _pre_stamp(o, repo, err):
@@ -761,7 +768,7 @@ def _held_lane(db, repo, o):
     unreadable store holds none). A batch holder `<wave>/S1+S2` speaks for the
     member that holds the lane, as its admission does (`schedule._batch_speaker`;
     re-check v2-r3-lease n1)."""
-    key = holder_key(repo, o.strand, o.wave, o.holder)
+    key = holder_key(repo, o.strand, o.wave, o.holder, db=db)
     if not key:
         return ""
     try:
@@ -1013,10 +1020,6 @@ class _Pass:
             print(self.lost_line(), file=self.out)
         if verdict == "RED":
             print("gate: RED -- fix everything listed, then run the gate again as a whole.", file=self.out)
-        elif verdict == "ASK":  # the owner's way forward (#1149)
-            from . import questions
-            asking = [s.get("name") for s in v2.get("stations") or [] if s.get("verdict") == "ASK"]
-            print(questions.block(asking, self.o.mode).rstrip("\n"), file=self.out)
         return EXIT_BY_VERDICT.get(verdict, 2)
 
     def write_legacy(self, v2):
@@ -1253,7 +1256,7 @@ def _flags(o, lock, stations=()):
     return {"+lock_file": lock, "+nice": not o.no_nice, "+fail_fast": o.fail_fast,
             "+no_precheck_stop": o.no_precheck_stop, "+only": _only(o.only, stations),
             "+resync": o.resync,
-            "decide": list(o.decide), "archive": o.archive,
+            "archive": o.archive,
             "no_pre": {"reason": o.reason} if o.no_pre else None}
 
 
@@ -1402,6 +1405,18 @@ def _guard_expected_g(adm, env):
     raw = env.get("MECLAW_LANE_FLOOR_G") or "60"
     floor = int(raw) if raw.isdigit() else 60
     return max(own, int(float(need)) - floor)
+
+
+def _guard_cold_g(adm, env):
+    """The cold need beyond the floor (`cold_need_free_g` less `MECLAW_LANE_FLOOR_G`),
+    None without one (no cargo, an older dispatch): the hygiene clears the run's own
+    warm target only when that stays covered (w1 leaseklar #1620, fix round 1)."""
+    cold = ((adm.dispatch or {}).get("budget") or {}).get("cold_need_free_g")
+    if cold is None or not adm.cargo:
+        return None
+    raw = env.get("MECLAW_LANE_FLOOR_G") or "60"
+    floor = int(raw) if raw.isdigit() else 60
+    return max(_guard_expected_g(adm, env), int(float(cold)) - floor)
 
 
 def _local_budget(stations):
@@ -1843,7 +1858,7 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
         else:
             _sync(db, lanes, o.host)
         kw = dict(repo=doc.get("repo") or "meclaw", mode=o.mode,
-                  strand=holder_key(repo, o.strand, o.wave, o.holder), wave=o.wave or "",
+                  strand=holder_key(repo, o.strand, o.wave, o.holder, db=db), wave=o.wave or "",
                   base=doc.get("base"), lane_pref=o.host, now=None,
                   tree_name=schedule.lane_tree_name(doc.get("repo"), repo), any_lane=bool(o.any_lane),
                   # K14: a merge candidate's gate waits ahead of the strands
@@ -1936,7 +1951,8 @@ def _run_lane(o, repo, doc, metadata, db, out, err, meta_path=None):
             # hygiene in front of the floor reserves this admission's size.
             # The admission's build path (Delta A M-neu-4): `tree/` with cargo, else `wt/<name>`.
             tree, _target = lane.guard(ln, name, cargo=adm.cargo,
-                                       expected_g=_guard_expected_g(adm, os.environ))
+                                       expected_g=_guard_expected_g(adm, os.environ),
+                                       cold_g=_guard_cold_g(adm, os.environ))
             held = lane.hold(ln, tree)
         except lane.LaneError as exc:
             print("gate: lane %s refused the run:\n  %s" % (adm.lane, str(exc).replace("\n", "\n  ")),
@@ -2071,7 +2087,7 @@ def run_gate(args, out, err):
         return 2
     satellite = satellites.is_satellite(repo)
     if not o.plan_only:
-        refused = _pre_stamp(o, repo, err)
+        refused = _tree_refusal(o, repo, err) or _pre_stamp(o, repo, err)
         if refused:
             return refused
     # The cached `cargo metadata` feeds the plan too: without it a rdeps()/all()/t0
@@ -2220,7 +2236,7 @@ def _satellite_lane_plan(o, repo, ln, kit=None, run_root=None, lane_cpu=None):
 
 def _cmd_gate(args):
     """`pipeline.py gate`. GH #1199 (V2-A8): an exit that is neither a verdict
-    (0 GREEN, 1 RED, 4 ASK) nor a pass that printed its GATE-SUMMARY is a
+    (0 GREEN, 1 RED) nor a pass that printed its GATE-SUMMARY is a
     refusal before the pass -- its last stderr line goes to stdout too (when
     that is another file) and to the lease, so a wrapper keeping one stream
     and `token who` see it."""
@@ -2243,7 +2259,7 @@ def _cmd_gate(args):
                                    % output_stalled(), out=sys.stdout, err=sys.stderr,
                                    holder=_gate_holder(args.argv), code=2,
                                    word="ABORTED (exit 2)")
-        if rc not in (0, 1, 4) and not out.marked:
+        if rc not in (0, 1) and not out.marked:
             progress.refuse("gate", err.last or "no reason printed", out=sys.stdout,
                             err=sys.stderr, holder=_gate_holder(args.argv), code=rc,
                             word="REFUSED (exit %d)" % rc)
@@ -2545,7 +2561,7 @@ def _test(argv, out, err):
     archive_root = os.path.join(plans, wdir, "receipts", name)
 
     db = store.open()
-    holder = holder_key(repo, strand_in, wave_in, holder_n)
+    holder = holder_key(repo, strand_in, wave_in, holder_n, db=db)
     host = _lease_gate(db, repo, holder, host, out, err)
     try:
         ln = lane.find_lane(host)

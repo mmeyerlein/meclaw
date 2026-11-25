@@ -20,7 +20,6 @@ to `test_gate_plan.py`): the gate line format, the summary line, the receipt
 JSON, `--only`, `--plan-only`, and the keep-going / `--fail-fast` split.
 """
 
-import datetime
 import fcntl
 import importlib.util
 import json
@@ -448,8 +447,8 @@ class TestReceipt(GateShTestCase):
              "plan", "started", "finished", "stations", "verdict",
              "owner_decisions"},
             set(doc))
-        # Always present, empty without a `--decide`: a reader never has to
-        # tell "no decision" from "an older runner".
+        # Always present and empty (no owner answers a station here): the
+        # receipt keeps its shape for every reader.
         self.assertEqual([], doc["owner_decisions"])
         self.assertEqual(["ok", "bad", "after"], doc["plan"])
         self.assertEqual("strand", doc["mode"])
@@ -663,227 +662,44 @@ class TestSlowTests(GateShTestCase):
             self.assertEqual(0, res.returncode, mode)
 
 
-class TestPersonaReceipt(GateShTestCase):
-    """GH #882, R-GT-3 -- a stale persona measurement is a QUESTION, not red.
+class TestNoPersonaArm(GateShTestCase):
+    """GH #1593 (ADR-0054): the `persona-receipt` arm and its question are gone.
 
-    The committed persona report (`workshop/evals/persona/last_run.json`) is
-    measured against a fingerprint of its sources. When those sources move, the
-    report no longer describes the tree -- but that is not a finding about the
-    commit: the persona may be exactly as good as before. Turning it silently
-    red is what the owner ruled out on 22.09. So a pass ASKS: the line says
-    `ASK`, the summary says `ASK`, the exit code is 4, and the runner prints
-    three answers. It cannot ask interactively -- every station runs with
-    </dev/null -- so the answer is a second run.
-
-    The checker's exit codes are a contract with the arm (OR-GT-S3):
-    0 covered, 3 stale, 4 missing, 5 incomplete, 6 red, anything else RED.
+    No committed persona report ever existed, so every integration and release
+    pass ended ASK on it and went on with the standing answer "without". The
+    station is no longer planned; a row of that name is a plain station now,
+    and no station asks, so `--decide` has nothing to answer.
     """
 
-    TEXTS = {0: ("covered", "53 sources, report of 2026-09-28T10:00:00+02:00"),
-             3: ("stale", "templates/talky/brain/config.json (changed) (+3 more)"),
-             4: ("missing", "no committed report at workshop/evals/persona/last_run.json"),
-             5: ("incomplete", "the committed report is incomplete (aborted: budget)"),
-             6: ("red", "red blocks: memory")}
+    ROW = ("persona-receipt\tfingerprint\t0\t"
+           "bash -c 'echo \"PERSONA-RECEIPT stale x\"; exit 3'\t\n")
 
-    @staticmethod
-    def row(rc, state, text):
-        return ("persona-receipt\tfingerprint\t0\t"
-                "bash -c 'echo \"PERSONA-RECEIPT %s %s\"; exit %d'\t\n"
-                % (state, text, rc))
-
-    def plan_for(self, rc, extra=""):
-        state, text = self.TEXTS.get(rc, ("error", "the checker broke"))
-        return self.plan_file(self.row(rc, state, text) + extra)
-
-    def run_mode(self, mode, rc, *args, extra=""):
+    def run_mode(self, mode, *args):
         base = () if mode == "strand" else ("--base", "HEAD~1")
         return run_gate(self.repo, mode, *(base + args),
-                        plan=self.plan_for(rc, extra), dry=False)
+                        plan=self.plan_file(self.ROW), dry=False)
 
-    @staticmethod
-    def rows(res):
-        return {r["name"]: r for r in gate_lines(res.stdout)}
+    def test_a_persona_receipt_row_is_a_plain_station(self):
+        for mode in ("strand", "integration"):
+            res = self.run_mode(mode)
+            rows = {r["name"]: r for r in gate_lines(res.stdout)}
+            self.assertEqual("RED", rows["persona-receipt"]["verdict"], "%s: %s" % (mode, res.stdout))
+            self.assertEqual(1, res.returncode, mode)
+            self.assertNotIn("gate: ASK", res.stdout, mode)
 
-    @staticmethod
-    def summary(res):
-        found = [m.groupdict() for m in
-                 (SUMMARY_LINE.match(ln) for ln in res.stdout.splitlines()) if m]
-        return found[0] if found else None
+    def test_decide_is_an_unknown_argument(self):
+        # d54s kit F1 (R-54-8): no station asks, the --decide frame is gone.
+        res = self.run_mode("integration", "--decide", "persona-receipt=without:OR-T.1 x")
+        self.assertEqual(2, res.returncode, res.stdout + res.stderr)
+        self.assertIn("unknown argument: --decide", res.stderr)
+        self.assertNotIn("GATE-SUMMARY", res.stdout)
 
-    def test_a_stale_persona_receipt_is_a_note_in_a_strand(self):
-        res = self.run_mode("strand", 3)
-        row = self.rows(res)["persona-receipt"]
-        self.assertEqual("NOTE", row["verdict"], res.stdout)
-        self.assertIn(self.TEXTS[3][1], row["reason"])
-        self.assertIn("measure and commit", row["reason"])
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        s = self.summary(res)
-        self.assertEqual(("0", "0", "GREEN"), (s["green"], s["total"], s["verdict"]))
-
-    def test_every_checker_state_is_a_note_in_a_strand(self):
-        want = {
-            0: "covers its sources",
-            4: "no persona report yet; measure and commit one",
-            5: "the committed report is incomplete; measure and commit a full one",
-            6: "the committed report is red (%s)" % self.TEXTS[6][1],
-        }
-        for rc, reason in want.items():
-            res = self.run_mode("strand", rc)
-            row = self.rows(res)["persona-receipt"]
-            self.assertEqual(("NOTE", reason), (row["verdict"], row["reason"]),
-                             "rc %d: %s" % (rc, res.stdout))
-            self.assertEqual(0, res.returncode, "rc %d" % rc)
-
-    def test_a_stale_persona_receipt_asks_in_the_passes(self):
-        # ADR-0029 anchor: the name of this test is pinned there.
-        text = self.TEXTS[3][1]
-        for mode in ("integration", "release"):
-            res = self.run_mode(mode, 3)
-            row = self.rows(res)["persona-receipt"]
-            self.assertEqual(("ASK", text), (row["verdict"], row["reason"]),
-                             "%s: %s" % (mode, res.stdout))
-            self.assertEqual("ASK", self.summary(res)["verdict"], mode)
-            self.assertEqual(4, res.returncode, "%s: %s" % (mode, res.stdout + res.stderr))
-            out = res.stdout
-            self.assertIn("gate: ASK -- a question for the owner, not a finding.", out)
-            self.assertIn("  persona-receipt: %s\n" % text, out)
-            self.assertIn("run_persona.py --live --engine local", out)
-            self.assertIn("--engine paid --budget-eur", out)
-            self.assertIn('--decide persona-receipt=without:"', out)
-            self.assertIn('scripts/gate.sh %s --decide persona-receipt=without:"OR-<id>: <reason>"'
-                          % mode, out)
-            doc = self.last_receipt(mode)
-            self.assertEqual("ASK", doc["verdict"], mode)
-            self.assertEqual([], doc["owner_decisions"], mode)
-            self.assertEqual("ASK", doc["stations"][0]["verdict"], mode)
-
-    def test_a_missing_report_asks_and_is_not_red(self):
-        res = self.run_mode("integration", 4)
-        verdicts = [r["verdict"] for r in gate_lines(res.stdout)]
-        self.assertIn("ASK", verdicts, res.stdout)
-        self.assertNotIn("RED", verdicts, res.stdout)
-        self.assertEqual(self.TEXTS[4][1], self.rows(res)["persona-receipt"]["reason"])
-        self.assertEqual(4, res.returncode, res.stdout + res.stderr)
-
-    def test_an_incomplete_report_asks(self):
-        # OR-GT-S4: an aborted run is a missing measurement, not a finding.
-        res = self.run_mode("integration", 5)
-        self.assertEqual("ASK", self.rows(res)["persona-receipt"]["verdict"], res.stdout)
-        self.assertEqual(4, res.returncode)
-
-    def test_a_current_red_report_stays_red(self):
-        res = self.run_mode("integration", 6)
-        row = self.rows(res)["persona-receipt"]
-        self.assertEqual(("RED", self.TEXTS[6][1]), (row["verdict"], row["reason"]),
-                         res.stdout)
-        self.assertEqual(1, res.returncode)
-        # "without" answers a missing measurement; it never outvotes a finding.
-        res = self.run_mode("integration", 6, "--decide", "persona-receipt=without:OR-T.1 x")
-        self.assertEqual("RED", self.rows(res)["persona-receipt"]["verdict"], res.stdout)
-        self.assertEqual(1, res.returncode)
-        self.assertIn("unused", res.stderr)
-        self.assertEqual([], self.last_receipt("integration")["owner_decisions"])
-
-    def test_a_covering_report_is_green_in_the_passes(self):
-        for mode in ("integration", "release"):
-            res = self.run_mode(mode, 0)
-            self.assertEqual("GREEN", self.rows(res)["persona-receipt"]["verdict"], mode)
-            s = self.summary(res)
-            self.assertEqual(("1", "1", "GREEN"), (s["green"], s["total"], s["verdict"]))
-            self.assertEqual(0, res.returncode, mode)
-            self.assertNotIn("gate: ASK", res.stdout)
-
-    def test_a_broken_checker_is_red_in_every_mode(self):
-        # OR-GT-S3: a crashed checker is never a note and never a question.
-        for rc in (1, 2):
-            for mode in ("strand", "integration"):
-                res = self.run_mode(mode, rc)
-                row = self.rows(res)["persona-receipt"]
-                self.assertEqual("RED", row["verdict"], "%s rc %d: %s" % (mode, rc, res.stdout))
-                if mode == "strand":
-                    self.assertEqual("the checker failed (exit %d)" % rc, row["reason"])
-                self.assertEqual(1, res.returncode, "%s rc %d" % (mode, rc))
-
-    def test_without_is_recorded_in_the_receipt(self):
-        reason = "OR-T.1 ships without a fresh run"
-        res = self.run_mode("integration", 3, "--decide",
-                            "persona-receipt=without:" + reason)
-        row = self.rows(res)["persona-receipt"]
-        self.assertEqual(("NOTE", "owner decided: without -- " + reason),
-                         (row["verdict"], row["reason"]), res.stdout)
-        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
-        s = self.summary(res)
-        self.assertEqual(("0", "0", "GREEN"), (s["green"], s["total"], s["verdict"]))
-        self.assertNotIn("gate: ASK", res.stdout)
-        self.assertNotIn("unused", res.stderr)
-        rev = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
-        doc = json.loads((self.gate_dir() / ("integration-%s.json" % rev)).read_text())
-        self.assertEqual("GREEN", doc["verdict"])
-        self.assertEqual(1, len(doc["owner_decisions"]), doc["owner_decisions"])
-        dec = doc["owner_decisions"][0]
-        self.assertEqual({"station", "decision", "reason", "at"}, set(dec))
-        self.assertEqual(("persona-receipt", "without", reason),
-                         (dec["station"], dec["decision"], dec["reason"]))
-        datetime.datetime.fromisoformat(dec["at"])
-        self.assertEqual(doc, self.last_receipt("integration"))
-
-    def test_decide_is_refused_outside_the_passes(self):
-        for mode in ("strand", "ci"):
-            res = run_gate(self.repo, mode, "--decide", "persona-receipt=without:OR-T.1 x",
-                           plan=self.plan_for(3), dry=False)
-            self.assertEqual(2, res.returncode, mode)
-            self.assertIn("--decide answers a question only integration and release ask",
-                          res.stderr, mode)
-            self.assertNotIn("GATE-SUMMARY", res.stdout, mode)
-
-    def test_decide_syntax_is_checked(self):
-        for bad in ("persona-receipt=with:x", "persona-receipt=without",
-                    "persona-receipt=without:", "persona-receipt=without:   ",
-                    "corpus-committed=without:x", "persona-receipt",
-                    "persona-receipt=without:a\tb", "persona-receipt=without:a\nb",
-                    "persona-receipt=without:no ruling id"):
-            res = self.run_mode("integration", 3, "--decide", bad)
-            self.assertEqual(2, res.returncode, "%r: %s" % (bad, res.stdout + res.stderr))
-            self.assertIn("gate: --decide", res.stderr, bad)
-            self.assertNotIn("GATE-SUMMARY", res.stdout, bad)
-
-    def test_an_unused_decision_says_so_and_records_nothing(self):
-        res = self.run_mode("integration", 0, "--decide", "persona-receipt=without:OR-T.1 x")
-        self.assertEqual("GREEN", self.rows(res)["persona-receipt"]["verdict"])
-        self.assertEqual(0, res.returncode)
-        self.assertIn("gate: --decide persona-receipt unused -- "
-                      "the station did not ask in this run", res.stderr)
-        self.assertEqual([], self.last_receipt("integration")["owner_decisions"])
-
-    def test_red_wins_over_ask_and_the_question_is_still_printed(self):
-        res = self.run_mode("integration", 3, extra="bad\tscope-bad\t0\tfalse\t\n")
-        self.assertEqual("RED", self.summary(res)["verdict"], res.stdout)
-        self.assertEqual(1, res.returncode)
-        self.assertEqual("ASK", self.rows(res)["persona-receipt"]["verdict"])
-        # All findings of ONE run: the question is not lost behind the red.
-        self.assertIn("gate: ASK as well -- a question for the owner, not a finding.",
-                      res.stdout)
-        for answer in ("    1. measure again on the local model",
-                       "    2. measure again on a paid provider",
-                       "    3. go on without a fresh measurement"):
-            self.assertIn(answer, res.stdout)
-        self.assertEqual("RED", self.last_receipt("integration")["verdict"])
-
-    def test_ask_is_in_neither_half_of_the_count(self):
-        res = self.run_mode("integration", 3, extra="ok\tscope-ok\t0\ttrue\t\n")
-        s = self.summary(res)
-        self.assertEqual(("1", "1", "ASK"), (s["green"], s["total"], s["verdict"]),
-                         res.stdout)
-        self.assertEqual(4, res.returncode)
-
-    def test_the_running_receipt_says_ask(self):
-        # OR-GT-S6: a receipt read mid-run by the export audit must not say GREEN.
-        res = self.run_mode("integration", 3, extra="second\tscope\t0\tcat '{receipt}'\t\n")
-        self.assertEqual(4, res.returncode, res.stdout + res.stderr)
-        mid = json.loads(self.station_log("second", mode="integration")
-                         .read_text().split("\n", 1)[1])
-        self.assertEqual("ASK", mid["verdict"])
-        self.assertIsNone(mid["finished"])
+    def test_the_runner_carries_no_persona_question(self):
+        src = GATE_SH.read_text()
+        self.assertNotIn("persona-receipt", src)
+        self.assertNotIn("PERSONA-RECEIPT", src)
+        for gone in ("ASKING_STATIONS", "ASK_EXIT", "print_question", "--decide", "decisions_file"):
+            self.assertNotIn(gone, src)
 
     def test_the_persona_suite_stops_behind_a_red_precheck(self):
         # `persona-cases` boots the binary (run_persona.py --self-test), so a
@@ -892,29 +708,6 @@ class TestPersonaReceipt(GateShTestCase):
         m = re.search(r'^PRECHECK_STOP_ALSO="([^"]*)"', src, re.M)
         self.assertIsNotNone(m)
         self.assertIn("persona-cases", m.group(1).split())
-
-    def test_the_two_measure_commands_stand_verbatim_in_the_runner(self):
-        # J's self-test holds `measure_commands()` against these lines; they
-        # must be literal text in gate.sh, never assembled from a variable.
-        src = GATE_SH.read_text()
-        for line in (
-                "LOCAL_LLM_MODEL=<model id served at LOCAL_LLM_BASE_URL> python3 "
-                "workshop/evals/persona/run_persona.py --live --engine local "
-                "--budget-eur <EUR>",
-                "python3 workshop/evals/persona/run_persona.py --live --engine paid "
-                "--budget-eur <EUR>"):
-            self.assertIn("         " + line + "\n", src)
-
-    def test_the_real_checker_speaks_the_arms_codes(self):
-        path = REPO / "workshop" / "evals" / "persona" / "fingerprint.py"
-        private_tree.require("workshop/evals/persona/fingerprint.py")
-        spec = importlib.util.spec_from_file_location("persona_fingerprint", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        self.assertEqual(0, mod.EXIT_COVERED)
-        self.assertEqual((3, 4, 5, 6), (mod.EXIT_STALE, mod.EXIT_MISSING,
-                                        mod.EXIT_INCOMPLETE, mod.EXIT_RED))
-        self.assertEqual(2, mod.EXIT_ERROR)
 
 
 class TestTreeStamp(GateShTestCase):
@@ -3334,7 +3127,6 @@ sys.exit(int(os.environ.get("SHELL_EXIT") or 0))
 _ALL_FLAGS = ["--base", "abc123", "--only", "precheck,unit", "--fail-fast",
               "--plan-only", "--archive", "/tmp/a dir", "--log-dir", "/tmp/l",
               "--no-nice", "--resync", "--no-precheck-stop",
-              "--decide", 'persona-receipt=without:"OR-T.1 no time, sorry"',
               "--no-pre", "--reason", "a reason with spaces",
               "--strand", "kit", "--wave", "welle-x"]
 
@@ -3386,8 +3178,8 @@ class TestShell(unittest.TestCase):
         self.assertLessEqual(len(text.splitlines()), 80)
         res = subprocess.run(["bash", "-n", str(GATE_SHELL)], capture_output=True, text=True)
         self.assertEqual(0, res.returncode, res.stderr)
-        argv = ["ci", "--plan-only", "--base", "0" * 40, "--decide",
-                'x=without:"a b"', "--archive", "/tmp/a dir"]
+        argv = ["ci", "--plan-only", "--base", "0" * 40, "--only",
+                "a b", "--archive", "/tmp/a dir"]
         res = self.shell(*argv)
         self.assertEqual(0, res.returncode, res.stderr)
         self.assertEqual([["legacy"] + argv], self.calls())

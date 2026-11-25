@@ -237,6 +237,21 @@ class TheFilterGrammar(unittest.TestCase):
         self.assertIn("Retries gibt es nicht im blockierenden Pfad", text)
         self.assertIn('`flaky-result = "fail"`', text)
 
+    def test_agents_md_stays_within_its_character_budget(self):
+        """GH #1612 (wave w1): every session in this tree loads AGENTS.md in full
+        (CLAUDE.md is only `@AGENTS.md`), so its size is paid on every turn.
+        The cut from 49 136 characters left pointers to the canonical places in
+        `docs/` and moved history to `archive/CLAUDE-phase-lessons.md`; this
+        holds the line so the file cannot grow back into a second rule book."""
+        private_tree.require("AGENTS.md")   # GH #1199: AGENTS.md does not travel
+        chars = len((REPO / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertLessEqual(
+            chars, 17_000,
+            "AGENTS.md has %d characters, the budget is 17000 (GH #1612): every session "
+            "loads it in full. Move detail to its canonical place in docs/ and leave a "
+            "pointer, history to archive/CLAUDE-phase-lessons.md -- do not raise the limit."
+            % chars)
+
     def test_perf_tests_are_outside_every_gate_tier(self):
         """TV-P2 (tv-p1c § 6): a `perf_*` test is `#[ignore]` and runs only in
         the profile `perf` (`scripts/test-tier.sh perf`: `--run-ignored only`,

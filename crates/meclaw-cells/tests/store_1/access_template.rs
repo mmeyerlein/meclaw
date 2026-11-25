@@ -1768,8 +1768,23 @@ fn the_hive_is_sealed_to_its_own_path_and_states_its_lanes() {
             })
             .collect()
     };
-    assert_eq!(lanes("accepts"), vec!["in_request", "in_invoke"]);
-    assert_eq!(lanes("emits"), vec!["grant", "ack", "connect", "error"]);
+    // GH #1353: `in_params` is a params-only update for one cell, answered on
+    // `params_applied` or `params_refused`.
+    assert_eq!(
+        lanes("accepts"),
+        vec!["in_request", "in_invoke", "in_params"]
+    );
+    assert_eq!(
+        lanes("emits"),
+        vec![
+            "grant",
+            "ack",
+            "connect",
+            "error",
+            "params_applied",
+            "params_refused"
+        ]
+    );
     // Requirement 2: not one of them is the name of a cell in here.
     for lane in lanes("accepts").iter().chain(lanes("emits").iter()) {
         for cell in ["policy", "invoke", "store", "sweep", "clock", "vault"] {
@@ -1794,10 +1809,12 @@ fn the_hive_is_sealed_to_its_own_path_and_states_its_lanes() {
     };
     assert_eq!(door_to("in_request"), vec!["./policy"]);
     assert_eq!(door_to("in_invoke"), vec!["./invoke"]);
+    // GH #1353: the params door has one edge per overlay cell.
+    assert_eq!(door_to("in_params"), vec!["./clock", "./store"]);
     assert_eq!(
         edges.iter().filter(|e| e["from"] == ".").count(),
-        2,
-        "two doors, one per accepted lane: {edges:?}"
+        4,
+        "four doors: one per lane, and one per overlay cell for the params lane: {edges:?}"
     );
 }
 

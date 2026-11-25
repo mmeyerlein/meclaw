@@ -13,7 +13,7 @@
 //!   `chars_per_token`, less a tenth), so an append over it leaves in parts
 //!   as shipped, and an instance can move both numbers;
 //! - the parts keep their order and end at sentence ends;
-//! - the waiting-time instruction (`horizon`) is cut like every append;
+//! - the waiting-time advise (`horizon`) is cut like every append;
 //! - a refusal that names the append is reported on the error lane as
 //!   `advise_append_refused`, with the section and the length of that append;
 //! - a refused answer fails its delegation at once: the fallback sentence is
@@ -260,9 +260,9 @@ async fn gh_d54g_deleg_the_parts_keep_their_order_and_cut_at_sentence_ends() {
     );
 }
 
-/// Pin 3: the waiting-time instruction goes through the same cut. On a quiet
+/// Pin 3: the waiting-time advise goes through the same cut. On a quiet
 /// line a `horizon_text` longer than the instance's ceiling leaves as
-/// instructions in parts, in order, with the seconds filled in.
+/// commentary in parts, in order, with the seconds filled in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gh_d54g_deleg_the_waiting_advise_is_split_like_any_append() {
     let horizon_text = "The answer takes about {seconds} seconds. Keep the talk going until \
@@ -283,7 +283,7 @@ async fn gh_d54g_deleg_the_waiting_advise_is_split_like_any_append() {
         "a waiting advise over the ceiling is cut: {parts:?}"
     );
     for part in &parts {
-        assert_eq!(part.kind, AppendKind::Instructions, "{part:?}");
+        assert_eq!(part.kind, AppendKind::Commentary, "{part:?}");
         assert!(part.content.chars().count() <= 80, "{part:?}");
         assert!(
             part.content.ends_with('.'),

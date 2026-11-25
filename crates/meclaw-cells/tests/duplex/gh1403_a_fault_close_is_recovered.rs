@@ -219,7 +219,7 @@ async fn caller_ended_session(extra: Value) -> (Vec<DuplexEvent>, Value, Vec<Val
     let start = mock.session_start().await.expect("a session.start arrived");
     assert_eq!(
         start,
-        session_start_frame(&params, provider.format(), None),
+        session_start_frame(&params, provider.format(), None, true),
         "the opening is the adapter's own frame"
     );
     (events, start, mock.client_events().await)

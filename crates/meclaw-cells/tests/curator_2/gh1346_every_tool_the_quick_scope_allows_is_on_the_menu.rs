@@ -116,11 +116,7 @@ fn every_tool_the_quick_scope_allows_is_on_the_menu() {
     let allow = json!({"allow": ["web", "weather", "story_read", "orga"]});
     let mut h = Hive::with(&[]).reporting_composite_with(
         "talky",
-        &[
-            ("quick", allow.clone()),
-            ("quick_spec", allow.clone()),
-            ("quick_bridge", allow),
-        ],
+        &[("quick", allow.clone()), ("quick_bridge", allow)],
     );
 
     // The stub run: the stamp names the op, the menu holds its family.

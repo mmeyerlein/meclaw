@@ -6,7 +6,7 @@
 //! no behaviour. This corpus is the oracle for that promise: each case drives
 //! the shipped curator hive (`support/curator_hive.rs`) at its rim -- the
 //! messages a talky or cogny composite hands it (`in_curate`, the taps of
-//! the model's answers on `in_llm`, the spec lanes, the clock's strikes, the
+//! the model's answers on `in_llm`, the clock's strikes, the
 //! summarizer's answers) -- and records, step by step, what leaves the hive
 //! (route, the selector keys of the hop (`HOP_KEYS`) and body of every
 //! message to the parent, the body of every request to the summarizer) and
@@ -67,17 +67,13 @@ const TALKY_LEAD_MARKER: &str = "templates/talky/lead/config.json";
 const LEAD_KNOBS: &[&str] = &[
     "path_routes",
     "recall_to_fallback",
-    "spec_ahead",
-    "spec_tools",
     "fast_max_iter",
     "ask_pending_ms",
     "departures",
     "fallback",
-    "spec_target",
     "bridge_target",
     "errand_tool",
     "errand_family",
-    "delta_speculation",
     "interrupt_on_delta",
     "interrupt_questions",
 ];
@@ -85,7 +81,7 @@ const LEAD_KNOBS: &[&str] = &[
 /// The hop keys of a message leaving the hive that the corpus compares, byte
 /// for byte (OR-d38-3.o9.1): the keys the edges out of `./curator` in
 /// `templates/talky/config.json` and `templates/cogny/config.json` select on
-/// (`route` -- recorded beside the hop --, `spec`, `iter`, `curator_call`,
+/// (`route` -- recorded beside the hop --, `iter`, `curator_call`,
 /// `finish_reason`, `gap_ask`, `refused_subscriber`) or lift into the
 /// context by their modifiers, where the next cell's edges select on them
 /// (`interim`, `summarize`, `summary_call`, `summary_token`,
@@ -96,7 +92,6 @@ const LEAD_KNOBS: &[&str] = &[
 /// identity the hop repeats (`session_id`, `turn_id`, `audience_set`). A key
 /// a message does not carry is not recorded; any other hop key is free.
 const HOP_KEYS: &[&str] = &[
-    "spec",
     "iter",
     "curator_call",
     "finish_reason",
@@ -197,7 +192,7 @@ enum Composite {
 /// Set 0.56, `assistant` overrides of `talky/curator/policy` (the phone).
 fn set_policy_phone() -> Value {
     json!({"quick_tools": "web,weather,story_read,orga", "fast_max_iter": 3,
-           "delta_speculation": true, "live_feed": true, "live_feed_section": "renew",
+           "live_feed": true, "live_feed_section": "renew",
            "recall_to_fallback": "1", "window_target": 100000, "keep_recent_tokens": 80000,
            "keep_rounds": 1, "rebuild_to": 0.45, "notes_share": 0.04, "topic_aging": "1",
            "state_block": "1", "state_lines": 8, "summarizer_self": "0"})
@@ -355,7 +350,7 @@ fn moved_into_profiles<'a>(
         left.push((cell, k, v));
     }
     let (comp, cells): (&str, &[&str]) = match composite {
-        Composite::Talky => ("talky", &["brain", "quick", "quick_spec", "quick_bridge"]),
+        Composite::Talky => ("talky", &["brain", "quick", "quick_bridge"]),
         Composite::Cogny => ("cogny", &["brain"]),
     };
     let mut out = Vec::new();
@@ -624,36 +619,6 @@ impl Run {
 
     fn reply_text(&mut self, route: &str, text: &str) {
         self.reply(route, "stop", usage(1200), json!([said(text)]));
-    }
-
-    /// The collector's early curate of `turn` (`spec_ahead`): no path.
-    fn spec(&mut self, turn: &str, text: &str) {
-        let (mut ctx, mut hop) = self.seam_parts(turn, "0", "", json!({"spec": "1"}));
-        ctx["path"] = json!("");
-        hop["path"] = json!("");
-        let body = json!({"messages": [user(text)]});
-        self.step(&format!("spec {turn}"), |h| {
-            h.lane("in_curate", ctx, hop, body)
-        });
-    }
-
-    /// The quick voice's answer to the spec call, held by the policy.
-    fn spec_answer(&mut self, text: &str) {
-        let call = self.call_on("quick");
-        let mut ctx = call.context.clone();
-        for k in ["curator_call", "turn_id", "session_id", "iter"] {
-            ctx.insert(k.into(), call.hop[k].clone());
-        }
-        ctx.insert("spec".into(), json!("1"));
-        let body = json!({"messages": [said(text)]});
-        self.step("spec answer", |h| {
-            h.lane(
-                "in_spec_llm",
-                Value::Object(ctx),
-                json!({"finish_reason": "stop", "model": "test-model", "tokens_prompt": 10}),
-                body,
-            )
-        });
     }
 
     /// The memory names a topic of `turn` (a `topic` mark in the ledger,
@@ -934,54 +899,11 @@ fn way_research(mut r: Run) {
     r.finish(&["research", "quick", "brain"]);
 }
 
-/// quick_spec kept: the early curate, the held answer, a `simple` stamp
-/// without a tool keeps it.
-fn way_spec_kept(mut r: Run) {
-    r.say("t0", "talk", stamp("", ""), "Hello.");
-    r.reply_text("brain", "Hello!");
-    r.spec("t1", "How do you spell rhythm?");
-    r.spec_answer("R-H-Y-T-H-M.");
-    r.say("t1", "simple", stamp("", ""), "How do you spell rhythm?");
-    r.finish(&["quick", "spec_release"]);
-}
-
-/// quick_spec dropped: the held answer called no tool, the stamp needs one;
-/// the normal tool round runs instead.
-fn way_spec_dropped(mut r: Run) {
-    r.say("t0", "talk", stamp("", ""), "Hello.");
-    r.reply_text("brain", "Hello!");
-    r.spec("t1", "What is the weather in Berlin?");
-    r.spec_answer("It is sunny.");
-    r.say(
-        "t1",
-        "simple",
-        stamp("tool", "weather"),
-        "What is the weather in Berlin?",
-    );
-    r.reply(
-        "quick",
-        "tool_calls",
-        usage(900),
-        json!([tool_call("c1", "web_search")]),
-    );
-    r.tool_result(
-        "t1",
-        "1",
-        "simple",
-        stamp("", "weather"),
-        "12 degrees, cloudy",
-    );
-    r.reply_text("quick", "It is 12 degrees and cloudy.");
-    r.finish(&["quick"]);
-}
-
 /// clarify: the stamp says the words mean more than one thing; the brain
-/// asks back, no tool, the held guess dropped.
+/// asks back, no tool.
 fn way_clarify(mut r: Run) {
     r.say("t0", "talk", stamp("", ""), "Hello.");
     r.reply_text("brain", "Hello!");
-    r.spec("t1", "The choir in Dresden, search please.");
-    r.spec_answer("SPECGUESS the choir sings on Friday.");
     r.say(
         "t1",
         "clarify",
@@ -1130,12 +1052,6 @@ fn way_unstamped(mut r: Run) {
     r.finish(&["brain"]);
 }
 
-const SPEC: [(&str, &str, &str); 2] = [("policy", "spec_ahead", "1"), ("policy", "spec_tools", "")];
-
-fn spec_knobs() -> Vec<(&'static str, &'static str, Value)> {
-    SPEC.iter().map(|(c, k, v)| (*c, *k, json!(v))).collect()
-}
-
 macro_rules! cases {
     ($($name:ident: $way:ident, $knobs:ident, $channel:ident, $own:expr;)*) => {
         /// The names of the cases of `cases!`.
@@ -1169,18 +1085,10 @@ cases! {
     research_text_set056: way_research, Set056, Text, [];
     research_phone_template: way_research, Template, Phone, [];
     research_phone_set056: way_research, Set056, Phone, [];
-    spec_kept_text_template: way_spec_kept, Template, Text, spec_knobs();
-    spec_kept_text_set056: way_spec_kept, Set056, Text, spec_knobs();
-    spec_kept_phone_template: way_spec_kept, Template, Phone, spec_knobs();
-    spec_kept_phone_set056: way_spec_kept, Set056, Phone, spec_knobs();
-    spec_dropped_text_template: way_spec_dropped, Template, Text, spec_knobs();
-    spec_dropped_text_set056: way_spec_dropped, Set056, Text, spec_knobs();
-    spec_dropped_phone_template: way_spec_dropped, Template, Phone, spec_knobs();
-    spec_dropped_phone_set056: way_spec_dropped, Set056, Phone, spec_knobs();
-    clarify_text_template: way_clarify, Template, Text, spec_knobs();
-    clarify_text_set056: way_clarify, Set056, Text, spec_knobs();
-    clarify_phone_template: way_clarify, Template, Phone, spec_knobs();
-    clarify_phone_set056: way_clarify, Set056, Phone, spec_knobs();
+    clarify_text_template: way_clarify, Template, Text, [];
+    clarify_text_set056: way_clarify, Set056, Text, [];
+    clarify_phone_template: way_clarify, Template, Phone, [];
+    clarify_phone_set056: way_clarify, Set056, Phone, [];
     tool_text_template: way_tool, Template, Text, [];
     tool_text_set056: way_tool, Set056, Text, [];
     tool_phone_template: way_tool, Template, Phone, [];
@@ -1313,7 +1221,7 @@ fn every_fixture_has_its_case() {
 /// changed byte in a body is not.
 #[test]
 fn the_order_within_a_step_is_free_the_bytes_are_not() {
-    let path = repo(&format!("{FIXTURES}/spec_kept_text_template.json"));
+    let path = repo(&format!("{FIXTURES}/quick_text_template.json"));
     if !path.is_file() {
         return;
     }

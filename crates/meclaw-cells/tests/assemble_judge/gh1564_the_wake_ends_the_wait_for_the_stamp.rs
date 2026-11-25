@@ -2,7 +2,7 @@
 //!
 //! WHY this file exists: `route_wait_ms` of the collector is the one bound of
 //! the wait for the route stamp (GH #1562), but the fan-in measured the window
-//! leg's age only when a leg LANDED. Under `spec_ahead` every other leg is in
+//! leg's age only when a leg LANDED. Under the former `spec_ahead` (gone, GH #1584) every other leg was in
 //! before the speculation fires, so nothing landed after the bound: the turn
 //! waited for its stamp, and with a decider of 5 000 ms the answer waited
 //! 5.0 s (lab os10, trace 01a1e851-0bbc) -- against "the answer waits only W"
@@ -29,8 +29,8 @@ const REC: &str = "2999-01-01T00:00:00.000400Z";
 const LATER: &str = "2999-01-01T00:00:00.100000Z";
 const AGED: &str = "2000-01-01T00:00:00.000000Z";
 
-fn knob(w: i64, spec: &str) -> Vec<(&'static str, Value)> {
-    vec![("route_wait_ms", json!(w)), ("spec_ahead", json!(spec))]
+fn knob(w: i64) -> Vec<(&'static str, Value)> {
+    vec![("route_wait_ms", json!(w))]
 }
 
 fn row(role: &str, payload: Value, fired: i64, rec: &str) -> Value {
@@ -110,8 +110,10 @@ fn curates(out: &[Value]) -> Vec<&Value> {
 
 #[test]
 fn gh1564_the_wake_fires_the_turn_without_its_stamp() {
-    for spec in ["0", "1"] {
-        let over = knob(150, spec);
+    // GH #1584: the speculation is gone, one run without it.
+    {
+        let spec = "off";
+        let over = knob(150);
         // Every leg but the stamp is in: the fan-in orders its wake at the
         // window leg + route_wait_ms, to the millisecond (rounded up).
         let out = collect(&over, json!([window(0, REC), memory(REC)]));
@@ -189,7 +191,7 @@ fn gh1564_the_wake_fires_the_turn_without_its_stamp() {
 #[test]
 fn gh1564_a_hold_moves_the_wake_to_its_end() {
     // A route-hold notice asks for more time: the wake strikes when it ends.
-    let over = knob(150, "0");
+    let over = knob(150);
     let until = 32_472_144_000_000_i64 + 5_000; // 2999-01-01T00:00:05Z
     let hold = row("route-hold", json!({"until_ms": until}), 0, REC);
     let out = collect(&over, json!([window(0, REC), memory(REC), hold]));
@@ -201,7 +203,7 @@ fn gh1564_a_hold_moves_the_wake_to_its_end() {
 #[test]
 fn gh1564_no_bound_no_wake() {
     // route_wait_ms 0: no route leg, no order, the fan-in of before.
-    let over = knob(0, "0");
+    let over = knob(0);
     let out = collect(&over, json!([window(0, REC), memory(REC)]));
     assert!(clock(&out).is_empty(), "{out:?}");
     assert_eq!(curates(&out).len(), 1, "{out:?}");
@@ -220,7 +222,7 @@ fn gh1564_no_bound_no_wake() {
 
 #[test]
 fn gh1564_a_strike_after_the_fire_does_nothing() {
-    let over = knob(150, "1");
+    let over = knob(150);
     let out = wake_reply(&over, json!([window(1, REC), memory(REC), stamp(LATER)]));
     assert!(out.is_empty(), "{out:?}");
     // The order struck before its `remove` arrived: the refusal is no finding.
@@ -239,7 +241,7 @@ fn gh1564_a_strike_after_the_fire_does_nothing() {
 
 #[test]
 fn gh1564_the_order_dies_with_its_wait() {
-    let over = knob(150, "0");
+    let over = knob(150);
     let id = clock(&collect(&over, json!([window(0, REC), memory(REC)])))[0]["schedule_id"].clone();
     // The stamp lands last: the turn fires with it and takes the order back.
     let out = collect(&over, json!([window(0, REC), memory(REC), stamp(LATER)]));
@@ -267,7 +269,7 @@ fn gh1564_the_clock_route_is_in_the_contract() {
     // outside the declared enum is a `contract_violation` that drops the whole
     // batch, the fire beside the order included. Both orders (add, remove)
     // leave on a route the contract names.
-    let over = knob(150, "0");
+    let over = knob(150);
     let mut seen = clock(&collect(&over, json!([window(0, REC), memory(REC)])))
         .into_iter()
         .cloned()
@@ -298,7 +300,7 @@ fn gh1564_a_hold_after_the_order_moves_the_strike() {
     // Review R1 M1: a route-hold notice that landed after the order and still
     // runs when the strike reads back -- the strike orders anew at its end and
     // claims nothing.
-    let over = knob(150, "0");
+    let over = knob(150);
     let until = 32_472_144_000_000_i64 + 5_000; // 2999-01-01T00:00:05Z
     let hold = row("route-hold", json!({"until_ms": until}), 0, LATER);
     let out = wake_reply(&over, json!([window(0, REC), memory(REC), hold]));
@@ -313,7 +315,7 @@ fn gh1564_the_order_carries_the_turns_context() {
     // Review R1 C1: the window leg keeps the turn's context, the order hands it
     // to the clock (`emit_headers.wake_ctx`), and the clock's edge lifts it
     // back. The unit half: what the order carries.
-    let over = knob(150, "0");
+    let over = knob(150);
     let kept = json!({"channel": "web", "channel_node": "/m/channels/web",
                       "engine": "duplex", "audience_set": "a,b"});
     let win = row(
@@ -435,7 +437,7 @@ fn opened_window(w: i64) -> Value {
     doc["header"]["hop"]["turn_round"] = json!("[\"member:mallory\"]");
     doc["speaker"] = json!("member:mallory");
     doc["messages"][1]["speaker"] = json!("member:mallory");
-    let out = assemble(&knob(w, "0"), doc);
+    let out = assemble(&knob(w), doc);
     let row = call(in_phase(&out, "collect"), "c-collect-row")["row"].clone();
     assert_eq!(row["role"], "leg-window", "{row}");
     serde_json::from_str(row["turn"].as_str().expect("the payload")).expect("json")
@@ -484,7 +486,7 @@ fn gh1564_the_order_hands_on_only_its_own_turns_park() {
     // (a): the park names its turn, and the order hands it to the clock only
     // for that turn. A park of another turn (a row the read-back should never
     // hold, but a store that mixed them up) gives this turn no speaker.
-    let over = knob(150, "0");
+    let over = knob(150);
     let own = collect(
         &over,
         json!([
@@ -531,7 +533,7 @@ fn gh1564_only_the_clock_hands_back_a_parked_key() {
 
 #[test]
 fn gh1564_an_aged_fire_takes_the_claim_first() {
-    let over = knob(150, "0");
+    let over = knob(150);
     let rows = json!([window(0, AGED), memory(REC)]);
     // The complete set past the bound: no seam yet, the claim instead.
     let out = collect(&over, rows.clone());
@@ -567,11 +569,7 @@ fn gh1564_an_aged_fire_takes_the_claim_first() {
 // ---- Review R1 I1: of a stamp and a strike exactly one fires ----
 
 fn race_knob() -> Vec<(&'static str, Value)> {
-    vec![
-        ("route_wait_ms", json!(150)),
-        ("spec_ahead", json!("0")),
-        ("memory_tier", json!("1")),
-    ]
+    vec![("route_wait_ms", json!(150)), ("memory_tier", json!("1"))]
 }
 
 fn strike_in() -> Value {

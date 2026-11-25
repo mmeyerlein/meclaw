@@ -549,9 +549,9 @@ pub enum TurnInput {
         at_ms: u64,
     },
     /// The running total of audible model audio the connection has sent to
-    /// the client in this session (GH #1557), counted after the opening guard
-    /// and the duck. The difference to the last total goes to the model's
-    /// running block: what its audio carried is what was said.
+    /// the client in this session (GH #1557), counted after the duck. The
+    /// difference to the last total goes to the model's running block: what its
+    /// audio carried is what was said.
     Heard {
         /// Milliseconds of audible audio since the session opened.
         total_ms: u64,
@@ -1110,6 +1110,34 @@ mod tests {
             Some("dentist and at noon lunch with Anna.")
         );
         assert!(turn.cut);
+    }
+
+    /// GH #1588 (leser-37b): the red end of the gh1557 R1 duplex test, played
+    /// on the machine. Under load only the first 200-ms chunk had left the
+    /// connection when the caller hung up, so `LiveEnded` reported 200 ms:
+    /// a budget of 6 characters, and "Tomorrow" does not fit. The machine
+    /// books what went out -- nothing said, the whole answer unsaid, cut.
+    /// The fault was the test's pace, not this booking.
+    #[test]
+    fn two_hundred_heard_ms_say_no_word_of_a_long_answer() {
+        const LONG: &str = "Tomorrow at ten you have the dentist on the main street.";
+        let mut state = TurnState::new();
+        say(&mut state, Speaker::User, "What is on tomorrow?", 0, 900);
+        say(&mut state, Speaker::Assistant, LONG, 1_000, 11_000);
+        heard(&mut state, 200);
+        let turn = closed(step(
+            &mut state,
+            TurnInput::End {
+                at_ms: 11_000,
+                model_audible: true,
+            },
+            GAP,
+            BACK,
+        ));
+        assert_eq!(turn.user, "What is on tomorrow?");
+        assert_eq!(turn.assistant, None, "{turn:?}");
+        assert_eq!(turn.unsaid.as_deref(), Some(LONG), "{turn:?}");
+        assert!(turn.cut, "{turn:?}");
     }
 
     /// GH #1557 (review M3): a delegation's history holds the model's part

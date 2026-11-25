@@ -17,6 +17,7 @@ The pins: a finding in a touched file stays red, an untouched file is not
 read again, and the resolver module does not run under the switch.
 """
 
+import argparse
 import inspect
 import io
 import os
@@ -1005,6 +1006,80 @@ class TheStrandPlanHandsR8ItsFiles(unittest.TestCase):
         cmd = self.audit([self.TPL], "release")
         self.assertNotIn("--skip-cargo", cmd)
         self.assertNotIn("--r8-paths", cmd)
+
+
+@private_tree.private(MAKE_EXPORT)
+class TheDryAuditNeedsNoRemote(unittest.TestCase):
+    """GH #1617 (w1 auditlane): the integration pass runs the dry audit
+    (`--keep-going --skip-cargo`) on a lane, a host without GitHub
+    credentials. The default `--parent github-main` compared the ref with
+    `git ls-remote origin main` there and the station ended on 128 ("could
+    not read Username"). The audit builds no commit and never reads the
+    parent, so the dry shape asks the remote nothing; the release audit and
+    the build path keep the drift check. The fixture is the lane: a repository
+    whose origin cannot be reached (a path that does not exist, no network)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mx = _load_make_export()
+        cls.tmp = tempfile.TemporaryDirectory(prefix="export-audit-lane-")
+        root = cls.tmp.name
+        _git(root, "init", "-q")
+        pathlib.Path(root, "a.txt").write_text("a\n", encoding="utf-8")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "a")
+        _git(root, "branch", "github-main", "master")
+        _git(root, "remote", "add", "origin", str(pathlib.Path(root, "no-such-origin.git")))
+        cls.head = _git(root, "rev-parse", "HEAD")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def parent(self, keep_going, skip_cargo):
+        """(parent, report, git calls) of the run's parent resolution."""
+        mx = self.mx
+        calls = []
+        real_git = mx.git
+
+        def spy(*args, **kwargs):
+            calls.append(args)
+            return real_git(*args, **kwargs)
+
+        args = argparse.Namespace(parent="github-main", fresh_history=False,
+                         keep_going=keep_going, skip_cargo=skip_cargo)
+        report = []
+        with mock.patch.object(mx, "REPO", pathlib.Path(self.tmp.name)), \
+                mock.patch.dict(os.environ, {"GIT_TERMINAL_PROMPT": "0"}), \
+                mock.patch.object(mx, "git", spy):
+            return mx.export_parent(args, report), report, calls
+
+    def test_the_lane_cannot_reach_the_remote(self):
+        """The fixture holds what build04 held: ls-remote ends non-zero."""
+        with self.assertRaisesRegex(self.mx.Failure, "ls-remote"):
+            self.parent(keep_going=False, skip_cargo=False)
+
+    def test_the_dry_audit_asks_the_remote_nothing(self):
+        parent, report, calls = self.parent(keep_going=True, skip_cargo=True)
+        self.assertIsNone(parent)
+        self.assertFalse([c for c in calls if c and c[0] == "ls-remote"], calls)
+        self.assertTrue([r for r in report if "ls-remote" in r], report)
+
+    def test_the_release_audit_keeps_the_drift_check(self):
+        with self.assertRaisesRegex(self.mx.Failure, "ls-remote"):
+            self.parent(keep_going=True, skip_cargo=False)
+
+    def test_main_resolves_the_parent_here(self):
+        """The run takes its parent from export_parent, nowhere else."""
+        src = inspect.getsource(self.mx.main)
+        self.assertIn("export_parent(args, report)", src)
+        self.assertNotIn("ls-remote", src)
+
+    def test_an_explicit_parent_is_read_without_the_remote(self):
+        mx = self.mx
+        args = argparse.Namespace(parent="HEAD", fresh_history=False, keep_going=False, skip_cargo=False)
+        with mock.patch.object(mx, "REPO", pathlib.Path(self.tmp.name)):
+            self.assertEqual(mx.export_parent(args, []), self.head)
 
 
 def setUpModule():

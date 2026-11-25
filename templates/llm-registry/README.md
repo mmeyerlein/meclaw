@@ -1,4 +1,4 @@
-# `llm-registry@2.16.1`
+# `llm-registry@2.16.2`
 
 The one way to operate models in a colony -- as one hive of existing cell types. No new cell
 type, no Rust, and **no model in any resolution**: a registry that needed a model to pick a
@@ -474,7 +474,7 @@ second digit.
 
 **From the tree, in `meclaw-os`.** The builder's `grow_level assistant` draws, beside the level,
 a declaration at `/os/orgs`: one push edge per brain (`talky`, `talky-chat`, `cogny`) onto the
-composite's `in_model` door -- and one per curator summarizer (GH #877) and, since
+generation's own `in_model` door (since [#1616](https://github.com/mmeyerlein/meclaw/issues/1616); the level hands it to the rim that holds the brain) -- and one per curator summarizer (GH #877) and, since
 [#1559](https://github.com/mmeyerlein/meclaw/issues/1559), one per talky decider (`talky/decide`, `talky-chat/decide`, announced with
 `"protocol": "decisions"` and no start value, so its curve comes with its push) --, and one edge that turns every mutation receipt reaching the
 generation into an **announcement** -- a message with the brains on
@@ -516,6 +516,7 @@ refusals are journalled, never acknowledged.
 path -- the one the substrate stamps on its output -- and applies the push only when they are
 equal ([#862](https://github.com/mmeyerlein/meclaw/issues/862)). The road keeps a push where it
 was sent: the push edge carries only the pushes addressed to one cell directly in its composite,
+or, on a generation's door, to a cell behind one of its rims that the same manifest announces,
 and the submit gate refuses any edge that writes `hop.subscriber`, `hop.subscribe` or the two
 keys of a refusal, removes `hop.route`, or stamps a route it cannot list
 (`templates/submit/README.md` § The model registry's road is a form too). An edge that leaves

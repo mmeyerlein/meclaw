@@ -17,10 +17,8 @@ pub mod d53_v5_a_renewed_seed_waits_and_knows_its_name;
 pub mod d53_v7_a_crisis_interrupts_on_the_partial;
 #[path = "../support/duplex_cell.rs"]
 pub mod duplex_cell;
-pub mod fu1_the_quick_voice_speaks_before_the_stamp;
 pub mod fu2_h_the_judge_context_comes_from_the_wall;
 pub mod fu2_p1_a_clarify_turn_asks_and_the_quick_voice_has_its_prompt;
-pub mod fu2_p1_spec_rows_end_and_spec_cost_is_booked;
 pub mod fu2_p2_a_delta_is_not_decided_twice_and_the_voice_hears_what_changed;
 pub mod gh1038_the_curator_knows_what_its_window_costs;
 pub mod gh1040_the_curator_hands_the_package_to_memory;
@@ -61,6 +59,8 @@ pub mod gh1225_kp_the_push_holds_what_the_ledger_holds;
 pub mod gh1225_kr_a_failed_read_is_never_an_answer;
 pub mod gh1225_kr_a_refused_read_of_intake_writes_nothing_blind;
 pub mod gh1225_kr_a_refused_write_is_written_by_the_next_message;
+pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
+pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
 // `warm_python` is also a private module inside `curator_hive`; folding puts both in one crate
 #[allow(clippy::duplicate_mod)]
 #[path = "../support/warm_python.rs"]

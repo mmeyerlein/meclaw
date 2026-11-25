@@ -100,15 +100,26 @@ async fn emitted_arrival_on(event: PeerEvent, route: &str) -> Value {
     let mut db =
         meclaw_colony::DbConn::wrap(rusqlite::Connection::open_in_memory().expect("db"), None);
     cell.handle_event(event, &sink, &mut db).await;
-    let mut arrival = None;
-    while let Ok(Some(e)) =
-        tokio::time::timeout(std::time::Duration::from_millis(500), out.recv()).await
+    // GH #1589: the end of the emissions is an event, not 500 ms of quiet. The
+    // handler has returned and the sink -- the only sender -- is dropped, so
+    // the channel closes exactly when no producer is left, also one the
+    // handler might have spawned; a late emission keeps it open and arrives.
+    // The wait carries only the hang mark.
+    drop(sink);
+    let mut arrivals = Vec::new();
+    while let Some(e) =
+        meclaw_testing::deadline::hang("the handler's emissions to end", out.recv()).await
     {
         if e.content["header"]["route"] == json!(route) {
-            arrival = Some(e.content);
+            arrivals.push(e.content);
         }
     }
-    arrival.expect("the arrival is emitted")
+    assert!(
+        arrivals.len() <= 1,
+        "one event, one arrival -- got {}: {arrivals:?}",
+        arrivals.len()
+    );
+    arrivals.pop().expect("the arrival is emitted")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -230,14 +241,37 @@ async fn an_origin_outside_the_closed_set_is_refused_not_stamped() {
         assert_eq!(r["error_code"], json!("invalid_frame"), "origin {bad}: {r}");
     }
     // Each refusal is booked as a `Refused` event; none of them is an arrival.
-    while let Ok(Some(event)) =
-        tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
-    {
-        assert!(
-            !matches!(event, PeerEvent::Arrived { .. }),
-            "no frame with a foreign origin arrived"
-        );
+    // GH #1589: proven by a marker on the same path, not by 300 ms of quiet.
+    // The mount books a frame's event before it answers the frame, so once
+    // the marker's receipt is back, every refusal is booked ahead of the
+    // marker's arrival; anything that crossed, however late, comes first.
+    let r = post(
+        addr,
+        "say",
+        json!({"messages": [{"origin": "user", "type": "text", "text": "marker"}]}),
+    )
+    .await;
+    assert_eq!(r["result"], json!("crossed"), "the marker crosses: {r}");
+    let mut refused = 0;
+    loop {
+        match meclaw_testing::deadline::hang("the marker's arrival", rx.recv()).await {
+            Some(PeerEvent::Refused { .. }) => refused += 1,
+            Some(PeerEvent::Arrived { body, .. }) => {
+                assert_eq!(
+                    body["messages"][0]["text"],
+                    json!("marker"),
+                    "no frame with a foreign origin arrived: {body}"
+                );
+                break;
+            }
+            Some(other) => panic!("an event the test did not expect: {other:?}"),
+            None => panic!("the mount dropped its event channel"),
+        }
     }
+    assert_eq!(
+        refused, 7,
+        "each of the seven frames is booked as a refusal"
+    );
 }
 
 /// rev-L1 M-2: the claim keys in the hop are always the mount's word — a

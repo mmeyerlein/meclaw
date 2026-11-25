@@ -13,12 +13,24 @@
         {
           "route": "in_refresh",
           "because": "redraw against a fresh picture of the colony NOW, without anything having changed -- the operator gesture; a change of the graph arrives as `mutation_committed`"
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
         {
           "route": "event",
           "because": "something a person did in the browser that is not a move -- a move is written inside the display and never becomes a message at all. Nothing inside this hive consumes it, and that is the honest state (2) of GH #284: a browser event nobody wired for is `no_route` in the dead-letter queue, recorded and self-localising, rather than silently swallowed. A parent that wants one drains it"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -88,6 +100,39 @@
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'event'",
           "modifier": {
+            "delete_context": [
+              "canvy_graph",
+              "canvy_origin"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./web",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/web')"
+        },
+        {
+          "from": "./web",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "canvy_graph",
+              "canvy_origin"
+            ]
+          }
+        },
+        {
+          "from": "./web",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "canvy_graph",
               "canvy_origin"

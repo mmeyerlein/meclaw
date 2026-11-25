@@ -11,9 +11,10 @@
 //!
 //! * `seed_ask` carries `hop.limits` beside `reason` and `renewal_n`:
 //!   `{model, start_budget, feed_budget, chars_per_token, profile}`;
-//! * `start_budget` is the smaller of `seed_max_tokens` (shipped 8192) and
-//!   the provider's limit for the instructions minus the estimated size of
-//!   `instructions` and `greeting`;
+//! * `start_budget` is the smaller of `seed_max_tokens` (shipped 8192) minus
+//!   the estimated size of `greeting` (GH #1628: it is a message of the same
+//!   start input) and the provider's limit for the instructions minus the
+//!   estimated size of `instructions` and `greeting`;
 //! * `feed_budget` is `advise_max_tokens`, `chars_per_token` the rate the
 //!   cell estimates with, `profile` the param `window_profile` as it is;
 //! * the adapter trims a seed by `seed_max_tokens` and `seed_max_messages`,
@@ -182,7 +183,12 @@ async fn gh_d54g_kprofil_the_start_budget_leaves_room_for_the_instructions() {
         "room-2",
     )
     .await;
-    assert_eq!(limits["start_budget"], json!(1000), "{limits}");
+    // GH #1628: the greeting is part of the start input, so it counts there too.
+    assert_eq!(
+        limits["start_budget"],
+        json!(1000 - est(&greeting, 4)),
+        "{limits}"
+    );
 }
 
 // --- the adapter against the hermetic fake socket ---
@@ -213,7 +219,7 @@ fn adapter_params(base_url: &str, extra: Value) -> GptLiveParams {
     sj::from_value(raw).expect("the params of the live block parse")
 }
 
-fn start(provider: GptLiveDuplex) -> Session {
+fn start(provider: GptLiveDuplex, renewed: bool) -> Session {
     let (audio_in_tx, audio_in_rx) = mpsc::channel(32);
     let (audio_out_tx, audio_out_rx) = mpsc::channel(32);
     let (events_tx, events_rx) = mpsc::channel(64);
@@ -222,16 +228,18 @@ fn start(provider: GptLiveDuplex) -> Session {
         external: Duration::from_millis(5_000),
         idle: Duration::from_millis(30_000),
     });
-    let future = provider.run_session(
-        provider.format(),
-        DuplexSession {
-            audio_in: audio_in_rx,
-            audio_out: audio_out_tx,
-            events: events_tx,
-            control: control_rx,
-        },
-        IoLivenessMark::disabled(),
-    );
+    let session = DuplexSession {
+        audio_in: audio_in_rx,
+        audio_out: audio_out_tx,
+        events: events_tx,
+        control: control_rx,
+    };
+    let liveness = IoLivenessMark::disabled();
+    let future = if renewed {
+        provider.run_renewed_session(provider.format(), session, liveness)
+    } else {
+        provider.run_session(provider.format(), session, liveness)
+    };
     Session {
         events: events_rx,
         control: control_tx,
@@ -244,13 +252,21 @@ fn start(provider: GptLiveDuplex) -> Session {
 /// The texts of the start input a session with `extra` in its params opens
 /// with, given `seed`.
 async fn start_input(extra: Value, seed: &[SeedMessage]) -> Vec<String> {
+    session_input(extra, seed, false).await
+}
+
+/// [`start_input`], of the renewed session of a running call where `renewed`.
+async fn session_input(extra: Value, seed: &[SeedMessage], renewed: bool) -> Vec<String> {
     let script = LiveScript {
         session_id: "sess_limits".to_string(),
         actions: vec![LiveAction::Delay(Duration::from_secs(60))],
         ..LiveScript::default()
     };
     let mock = MockGptLive::start(script).await.expect("bind fake");
-    let mut session = start(GptLiveDuplex::new(adapter_params(&mock.base_url(), extra)));
+    let mut session = start(
+        GptLiveDuplex::new(adapter_params(&mock.base_url(), extra)),
+        renewed,
+    );
     session
         .control
         .send(DuplexControl::Seed {
@@ -338,5 +354,246 @@ async fn gh_d54g_kprofil_the_seed_is_trimmed_by_the_params() {
         kept,
         newest(6),
         "the shipped ceilings are far above the seed"
+    );
+}
+
+/// The message the turns of a seed become beside a greeting (GH #1641).
+fn folded(turns: &[SeedMessage]) -> String {
+    let mut text = "Earlier conversation, ended:".to_string();
+    for m in turns {
+        text.push_str(&format!("\n{}: {}", m.role, m.text));
+    }
+    text
+}
+
+/// One message of a seed: `text`, filled up to `chars` characters.
+fn filled(role: &str, text: &str, chars: usize) -> SeedMessage {
+    SeedMessage {
+        role: role.into(),
+        text: format!("{text}{}", "x".repeat(chars - text.len())),
+    }
+}
+
+/// GH #1641: whoever builds the start window fills it up to the `start_budget`
+/// the cell named, at the cell's rate, and the folding comes on top. The room
+/// for it is taken from the oldest turns: the fact line and a note in front of
+/// the turns and the lines behind them stay, at the limit of tokens as at that
+/// of messages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_folded_turns_leave_before_the_context_around_them() {
+    // 160 characters at four a token: 40 tokens, 8 152 are left for the seed.
+    let greeting = "g".repeat(160);
+    let extra = json!({"chars_per_token": 4, "greeting": greeting});
+    let facts = filled("developer", "Today is Tuesday.", 80);
+    let note = filled("developer", "Say this once:", 80);
+    let after = filled("developer", "Be kind.", 48);
+    // 20 + 20 + 12 tokens around 100 turns of 81: the budget, exactly.
+    let turns: Vec<SeedMessage> = (0..100)
+        .map(|i| filled("user", &format!("{i:04}"), 324))
+        .collect();
+    let mut seed = vec![facts.clone(), note.clone()];
+    seed.extend(turns.iter().cloned());
+    seed.push(after.clone());
+    let raw: u64 = seed.iter().map(|m| est(&m.text, 4)).sum();
+    assert_eq!(raw + 40, SEED_MAX_TOKENS, "the seed fills the window");
+    let kept = start_input(extra.clone(), &seed).await;
+    // 28 characters of head and 331 a line: 97 lines fit 8 100 tokens.
+    assert_eq!(
+        kept,
+        vec![
+            facts.text.clone(),
+            note.text.clone(),
+            folded(&turns[3..]),
+            after.text.clone(),
+            greeting.clone()
+        ],
+        "the three oldest turns leave, the context around them stays"
+    );
+    let total: u64 = kept.iter().map(|t| est(t, 4)).sum();
+    assert!(total <= SEED_MAX_TOKENS, "under the limit: {total}");
+
+    // 131 messages, of which 127 have room beside the greeting.
+    let turns: Vec<SeedMessage> = (0..130)
+        .map(|i| filled("user", &format!("{i:04}"), 8))
+        .collect();
+    assert_eq!(
+        start_input(extra, &[&[facts.clone()][..], &turns].concat()).await,
+        vec![facts.text, folded(&turns[4..]), greeting],
+        "the oldest turns leave at the limit of messages too"
+    );
+}
+
+/// GH #1641: a `developer` message between two turns (a delegation) belongs to
+/// the turn in front of it and leaves with it: without it, it would stand in
+/// front of the turns as context of this call. The messages around the turns
+/// leave only when no turn is left, the oldest first, as without a greeting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_stands_between_two_folded_turns_leaves_with_the_first() {
+    let greeting = "g".repeat(160);
+    let extra = |budget: u64| json!({"chars_per_token": 4, "seed_max_tokens": 40 + budget, "greeting": greeting});
+    let head = filled("developer", "Be kind.", 8);
+    let seed = [
+        head.clone(),
+        filled("user", "old", 400),
+        filled("developer", "(delegation)", 12),
+        filled("user", "new", 20),
+        filled("assistant", "Yes.", 20),
+    ];
+    // With the delegation the rest is 2 + 28 of 100 tokens: it is not the
+    // room that takes it away.
+    assert_eq!(
+        start_input(extra(100), &seed).await,
+        vec![head.text, folded(&seed[3..]), greeting.clone()],
+        "the delegation leaves with its turn"
+    );
+
+    let long = filled("developer", "long", 200);
+    let short = filled("developer", "short", 40);
+    let turn = filled("user", "hi", 20);
+    assert_eq!(
+        start_input(extra(12), &[long, short.clone(), turn]).await,
+        vec![short.text, greeting.clone()],
+        "no turn fits: they all leave, then the oldest context"
+    );
+}
+
+/// GH #1641: 127 messages of a seed have room beside a greeting, counted before
+/// the turns are folded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_folded_turns_count_as_messages_of_the_seed() {
+    let greeting = "g".repeat(160);
+    let turns: Vec<SeedMessage> = (0..128)
+        .map(|i| filled("user", &format!("{i:04}"), 8))
+        .collect();
+    assert_eq!(
+        start_input(json!({"chars_per_token": 4, "greeting": greeting}), &turns).await,
+        vec![folded(&turns[1..]), greeting],
+        "of 128 turns the oldest leaves, the greeting is last"
+    );
+}
+
+/// GH #1641: a renewed session greets nobody, so nothing is folded and the
+/// folding takes no room: a seed at the limit of tokens or of messages goes out
+/// as it came, although the block has a greeting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_renewed_session_keeps_a_seed_at_its_limit() {
+    let extra = json!({"chars_per_token": 4, "greeting": "g".repeat(160)});
+    for (n, chars) in [(4, 8_152), (128, 8)] {
+        let turns: Vec<SeedMessage> = (0..n)
+            .map(|i| filled("user", &format!("{i:04}"), chars))
+            .collect();
+        let want: Vec<String> = turns.iter().map(|m| m.text.clone()).collect();
+        let kept = session_input(extra.clone(), &turns, true).await;
+        assert!(kept == want, "{n} turns of {chars}: {} kept", kept.len());
+    }
+}
+
+/// GH #1641: the head line and the role in front of each line of the folded
+/// turns count against the input limit too; the oldest turns leave for them and
+/// no more than that, the greeting stays whole, and a seed whose last turn does
+/// not fit folds nothing at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_folded_turns_count_against_the_input_limit() {
+    // 160 characters at four a token: 40 tokens. 127 turns of 64 tokens and
+    // the greeting are 8 168 of 8 192; the 127 prefixes are 222 more.
+    let greeting = "g".repeat(160);
+    let turns: Vec<SeedMessage> = (0..127)
+        .map(|i| SeedMessage {
+            role: "user".into(),
+            text: format!("{i:04}{}", "x".repeat(252)),
+        })
+        .collect();
+    let kept = start_input(json!({"chars_per_token": 4, "greeting": greeting}), &turns).await;
+    let total: u64 = kept.iter().map(|t| est(t, 4)).sum();
+    assert!(
+        total <= SEED_MAX_TOKENS,
+        "the input stays under the limit: {total}"
+    );
+    // 28 characters of head and 263 a line: 123 lines fit 8 152 tokens.
+    assert_eq!(
+        kept,
+        vec![folded(&turns[4..]), greeting.clone()],
+        "the oldest four leave, the newest 123 stay, the greeting is last"
+    );
+    let one_more = est(&folded(&turns[3..]), 4) + est(&greeting, 4);
+    assert!(one_more > SEED_MAX_TOKENS, "no turn left for nothing");
+
+    // Nothing but the greeting is left for a turn of 5 tokens once it is
+    // folded: no head line without a turn, and what follows it stays.
+    let extra = json!({"chars_per_token": 4, "seed_max_tokens": 50, "greeting": greeting});
+    let turn = SeedMessage {
+        role: "user".into(),
+        text: "x".repeat(20),
+    };
+    let after = SeedMessage {
+        role: "developer".into(),
+        text: "Be kind.".into(),
+    };
+    assert_eq!(
+        start_input(extra.clone(), std::slice::from_ref(&turn)).await,
+        vec![greeting.clone()],
+        "no empty folded message, the greeting is never displaced"
+    );
+    assert_eq!(
+        start_input(extra, &[turn, after]).await,
+        vec!["Be kind.".to_string(), greeting.clone()],
+        "the turn leaves, the message behind it stays"
+    );
+}
+
+/// GH #1628: the greeting is the last message of the start input and is never
+/// cut; the seed gives way to it, in tokens and in messages (the provider
+/// takes 8 192 tokens and 128 messages of input). A seed that does not fit
+/// beside it at all leaves the greeting after the configured start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_seed_gives_way_to_the_greeting_at_the_input_limit() {
+    let seed = |role: &str, n: usize, chars: usize| -> Vec<SeedMessage> {
+        (0..n)
+            .map(|i| SeedMessage {
+                role: role.into(),
+                text: format!("{i:04}{}", "x".repeat(chars - 4)),
+            })
+            .collect()
+    };
+    // 160 characters at four a token: 40 tokens.
+    let greeting = "g".repeat(160);
+
+    // Four messages of 2 048 tokens fill the 8 192 exactly; beside the
+    // greeting one of them has to leave, and the greeting stays whole.
+    let four = seed("user", 4, 8_192);
+    let kept = start_input(json!({"chars_per_token": 4}), &four).await;
+    assert_eq!(kept.len(), 4, "without a greeting the seed fills the limit");
+    let kept = start_input(json!({"chars_per_token": 4, "greeting": greeting}), &four).await;
+    // GH #1641: beside a greeting the turns stand in one folded message.
+    let want = vec![folded(&four[1..]), greeting.clone()];
+    assert_eq!(kept, want, "the oldest leaves, the greeting is last");
+    let total: u64 = kept.iter().map(|t| est(t, 4)).sum();
+    assert!(total <= SEED_MAX_TOKENS, "the input stays under the limit");
+
+    // 128 messages: one leaves for the greeting. They are `developer` messages,
+    // which are sent one by one; turns are folded into one (GH #1641).
+    let many = seed("developer", 128, 8);
+    let kept = start_input(json!({"chars_per_token": 4}), &many).await;
+    assert_eq!(kept.len(), 128, "without a greeting 128 messages fit");
+    let kept = start_input(json!({"chars_per_token": 4, "greeting": greeting}), &many).await;
+    assert_eq!(kept.len(), 128, "127 of the seed and the greeting");
+    assert_eq!(kept[0], many[1].text, "the oldest message left");
+    assert_eq!(kept.last(), Some(&greeting));
+
+    // Nothing is left for the seed: the configured start and the greeting.
+    let kept = start_input(
+        json!({
+            "chars_per_token": 4,
+            "seed_max_tokens": 40,
+            "greeting": greeting,
+            "start_input": [{"role": "developer", "text": "Be kind."}],
+        }),
+        &many,
+    )
+    .await;
+    assert_eq!(
+        kept,
+        vec!["Be kind.".to_string(), greeting.clone()],
+        "a budget of 0 drops the seed, never the greeting"
     );
 }

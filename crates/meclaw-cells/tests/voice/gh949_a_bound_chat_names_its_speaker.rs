@@ -63,12 +63,12 @@ const SPEAKER: &str = "member:alex";
 /// (`SELF_BOUND_CHANNELS` in `recipes`), at the versions the tree ships.
 const SELF_BOUND: [&str; 4] = [
     "chat-channel@1.0.2",
-    "voice@2.10.1",
+    "voice@2.11.0",
     "web@2.3.1",
     "terminal@1.0.2",
 ];
-const TELEGRAM: &str = "telegram-connector@2.2.8";
-const SLACK: &str = "slack-agent@2.3.0";
+const TELEGRAM: &str = "telegram-connector@2.2.9";
+const SLACK: &str = "slack-agent@2.4.0";
 
 // ══════════════════════════════════════════════════════════════ the renderer
 

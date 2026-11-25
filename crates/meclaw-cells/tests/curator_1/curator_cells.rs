@@ -596,7 +596,7 @@ impl Hive {
                 let field = |k: &str| m.hop.get(k).and_then(Value::as_str).unwrap_or("");
                 let way = match m.route() {
                     "model_call" => match field("target") {
-                        "quick" | "quick_spec" | "quick_bridge" => "quick",
+                        "quick" | "quick_bridge" => "quick",
                         "" => "brain",
                         t => t,
                     },
@@ -809,12 +809,12 @@ fn curator_template_shape() {
             "in_slots",
             "in_llm",
             // GH #1275: the quick voice's answer to a spec call, held.
-            "in_spec_llm",
             // GH #1411 / #1415: a spec partial, passed only while its turn awaits it.
-            "in_spec_partial",
             "in_pack",
             "in_close",
             "in_model",
+            // GH #1353: a params-only update for one cell of this hive.
+            "in_params",
             "in_section",
             // GH #1306: a check of the sent answer asking for its round's words.
             "in_answer_check",
@@ -855,7 +855,10 @@ fn curator_template_shape() {
             "in_lead",
             // D58 feed (GH #1481): an order to feed a running session now,
             // taken by `./policy` with its `feed_in` on.
-            "in_feed"
+            "in_feed",
+            // GH #1587 (d54s abbruch): the voice's cancel of a superseded
+            // delegation, taken by `./policy` (it marks the parked row).
+            "in_delegation_cancel"
         ]
     );
     assert_eq!(
@@ -864,10 +867,6 @@ fn curator_template_shape() {
             // D58 target (contract point 8): one route for every call to a
             // model, whatever its target (`hop.target`); the ways are gone.
             "model_call",
-            // GH #1275: a held spec answer the normal curate kept.
-            "spec_release",
-            // GH #1411 / #1415: a spec partial the turn awaits, to the rim.
-            "partial",
             // D58 target: an errand that leaves the composite (`departs`).
             "errand",
             "turn_write",
@@ -901,11 +900,13 @@ fn curator_template_shape() {
             "live_facts",
             "live_feed",
             "propose",
-            // GH #1474: the question, the speculation's events and the notes
-            // for that lead, out through the rim.
+            // GH #1474: the question and the notes for that lead, out through
+            // the rim (GH #1584: the speculation's events are gone).
             "lead_ask",
-            "lead_spec",
-            "lead_note"
+            "lead_note",
+            // GH #1353: the answer of the cell an `in_params` update named.
+            "params_applied",
+            "params_refused"
         ]
     );
     let types: Vec<(&str, &str)> = vec![

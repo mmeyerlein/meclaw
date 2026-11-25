@@ -1,0 +1,3 @@
+{"ts": "2026-11-23T11:34:50Z", "model": "deepseek/deepseek-v4-pro", "probe": "refusal:reasoning_off", "status": "ok", "worst": 0.0003792, "cost": 5.76e-06, "cost_source": "usage.cost"}
+{"ts": "2026-11-23T11:34:51Z", "model": "deepseek/deepseek-v4-pro", "probe": "refusal:tool_choice_named", "status": "ok", "worst": 0.0007374, "cost": 0.00067537, "cost_source": "usage.cost"}
+{"ts": "2026-11-23T11:34:53Z", "model": "deepseek/deepseek-v4-pro", "probe": "refusal:tool_choice_required", "status": "ok", "worst": 0.000372, "cost": 0.00012046, "cost_source": "usage.cost"}

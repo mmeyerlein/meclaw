@@ -1,0 +1,104 @@
+{
+  "cell": {
+    "type": "code"
+  },
+  "params": {
+    "runner": "python3",
+    "runner_mode": "cold",
+    "script_inline": "\nimport sys, json\n\n# The operator's params occupant (GH #1353): the way back of a params-only update.\n#\n# The way OUT needs no cell: an update passes this hive's path and the level's\n# own edge carries it to the cell it names. What comes back is that cell's\n# answer, and this occupant hands it on as `params_receipt` -- the verdict, the\n# cell that gave it, its code and its detail, none of them read or rewritten. No\n# key is checked here and no table is kept: what a cell takes is the cell's own\n# rule (KNOWN minus IMMUTABLE), and a second copy of it would be a second truth.\n\nCARRIED = (\"params_answer\", \"applied_subscriber\", \"refused_subscriber\",\n           \"error_code\", \"finish_reason\", \"tool_call_id\")\n\ndoc = json.load(sys.stdin)\nhop = ((doc[\"envelope\"].get(\"header\") or {}).get(\"hop\") or {})\nheader = {\"route\": \"params_receipt\", \"operation\": \"operator_params\"}\nfor key in CARRIED:\n    if hop.get(key) not in (None, \"\"):\n        header[key] = hop[key]\nanswer = {\"header\": header, \"messages\": doc[\"body\"].get(\"messages\") or []}\n# A refusing cell says its detail in `meta` and sends no turn.\nif isinstance(doc[\"body\"].get(\"meta\"), dict):\n    answer[\"meta\"] = doc[\"body\"][\"meta\"]\nsys.stdout.write(json.dumps(answer))\n",
+    "external_timeout_ms": 10000,
+    "sandbox": {
+      "trust": "restricted",
+      "network": "deny",
+      "filesystem": {
+        "runtime": true
+      }
+    }
+  },
+  "contract": {
+    "version": "1.0.0",
+    "settings": {},
+    "emits": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": true
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      },
+      "hop": {
+        "route": {
+          "type": "string",
+          "values": [
+            "params_receipt"
+          ],
+          "required": true
+        },
+        "operation": {
+          "type": "string",
+          "values": [
+            "operator_params"
+          ],
+          "required": true
+        },
+        "params_answer": {
+          "type": "string",
+          "values": [
+            "params_applied",
+            "params_refused"
+          ],
+          "required": false
+        },
+        "applied_subscriber": {
+          "type": "string",
+          "required": false
+        },
+        "refused_subscriber": {
+          "type": "string",
+          "required": false
+        },
+        "error_code": {
+          "type": "string",
+          "required": false
+        },
+        "finish_reason": {
+          "type": "string",
+          "required": false
+        },
+        "tool_call_id": {
+          "type": "string",
+          "required": false
+        }
+      }
+    },
+    "consumes": {
+      "body": {
+        "messages": {
+          "type": "array",
+          "required": false
+        },
+        "meta": {
+          "type": "object",
+          "required": false
+        }
+      }
+    },
+    "capabilities": [
+      "shell:exec"
+    ]
+  },
+  "description": {
+    "purpose": "The way back of a params-only update (GH #1353): the answer of the cell the update named, handed on as `params_receipt` to whoever asked.",
+    "use_when": "Never wired by hand and never addressed by name. The level re-stamps an answer onto `in_params_answer`, and this hive's door brings it here.",
+    "not_in_scope": "No key is checked, no table is kept and nothing is remembered: what a cell takes is the cell's own rule. The update itself never comes here -- it passes the hive's path.",
+    "emits_meaning": "route params_receipt: hop.params_answer is `params_applied` or `params_refused`, hop.applied_subscriber or hop.refused_subscriber the cell that said so, hop.error_code its own code (absent when applied), and the body its own words.",
+    "consumes_meaning": "The answer as the cell gave it: its hop keys and its body.",
+    "examples": [
+      "hop { params_answer: 'params_applied', applied_subscriber: '/os/orgs/acme/members/alex/assistants/scribe/talky/quick' } -> params_receipt with the same two keys",
+      "hop { params_answer: 'params_refused', refused_subscriber: '...', error_code: 'invalid_input' } -> params_receipt with the same three keys and the cell's detail in the body"
+    ]
+  }
+}

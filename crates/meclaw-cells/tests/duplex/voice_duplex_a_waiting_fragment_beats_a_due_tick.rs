@@ -19,13 +19,15 @@
 //!
 //! # How the two are made to race on purpose
 //!
-//! Nothing about a real wake is deterministic, so the test does not wait for
-//! one. It PARKS the connection task instead: the fake's audio queue is one
-//! item deep, so a client that sends a few dozen frames fills the queue behind
-//! it and suspends the connection inside the arm that feeds the model. While it
-//! is parked the fragment is put in the event channel and the tick falls due;
-//! when the queue is drained the task resumes, and both arms are ready in the
-//! same poll, every time.
+//! The clock is paused once the cell is booted (the boot binds a socket and
+//! waits for the mount, so the test cannot carry `start_paused = true`); from
+//! there on everything is tokio timers and channels, and no wake is a matter of
+//! the machine's load. The test PARKS the connection task instead: the client stops reading its link
+//! and the model says more than the link holds, so the connection suspends
+//! inside the arm that sends the model's audio. While it is parked the fragment
+//! is put in the event channel and the tick falls due; when the client reads on
+//! the task resumes, and both arms are ready in the same poll, every time. (A
+//! model that takes no audio parks nothing any more, GH #1634.)
 
 // harness_fold: #[path = "support/duplex_cell.rs"]
 #[allow(unused_imports)]
@@ -34,33 +36,27 @@ use crate::duplex_cell; // harness_fold: mod duplex_cell;
 use duplex_cell::{FRAME_BYTES, boot_fake_clocked, duplex_params, message_text};
 use meclaw_cells::voice::contract::{DuplexEvent, Speaker};
 use meclaw_core::serde_json::json;
+use meclaw_testing::wait;
 use std::time::Duration;
 
 /// The clock of this session. Short, so the tick is overdue well before the
 /// task is let go.
 const TICK_MS: u64 = 200;
 
-/// One item: the queue the fake drains into, and the reason it stops draining.
-const AUDIO_CAP: usize = 1;
-
-/// Enough frames to fill that queue, the connection's own queue behind it
-/// (32 items) and one more — the one the connection parks on.
-const FRAMES: usize = 64;
+/// The frames of the chunk the connection parks on, far more than a link holds.
+const FRAMES: usize = 1_000;
 
 /// How long the connection stays parked. Longer than the shipped `turn_gap_ms`
 /// of 1 000 ms, so the open turn is stale by the time the task moves again.
 const PARKED: Duration = Duration::from_millis(1_500);
 
 /// A fragment waiting in the channel is taken before a tick that fell due.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "current_thread")]
 async fn a_waiting_fragment_beats_a_due_tick() {
-    let mut live = boot_fake_clocked(
-        duplex_params(json!({"default_mode": "auto"})),
-        TICK_MS,
-        AUDIO_CAP,
-    )
-    .await;
-    let (mut client, _hello) = live.connect("session=race-1&mode=auto").await;
+    let mut live =
+        boot_fake_clocked(duplex_params(json!({"default_mode": "auto"})), TICK_MS, 256).await;
+    tokio::time::pause();
+    let (mut client, _hello) = live.link("race-1", "auto").await;
     let session = live.session().await;
 
     // The caller starts a sentence.
@@ -73,22 +69,23 @@ async fn a_waiting_fragment_beats_a_due_tick() {
         })
         .await;
 
-    // And now the connection is held still. Nobody reads `live.audio`, so the
-    // fake blocks on its one-item queue, the connection's own queue fills
-    // behind it, and the connection suspends feeding the model.
-    let frame = vec![0u8; FRAME_BYTES];
-    for _ in 0..FRAMES {
-        client.send_audio(&frame).await.expect("the socket is open");
+    // And now the connection is held still. The client reads nothing, so the
+    // link fills behind one long chunk of the model's silence, and the
+    // connection suspends sending it: the chunk after it is never taken.
+    for frames in [FRAMES, 1] {
+        session
+            .audio_out
+            .send(vec![0u8; FRAME_BYTES * frames])
+            .await
+            .expect("the connection is there");
     }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(
-        live.audio.len(),
-        AUDIO_CAP,
-        "the fake's queue is full, so the connection is parked behind it"
-    );
-
+    wait::until("the connection is parked on the first chunk", || {
+        let waiting = session.audio_out.max_capacity() - session.audio_out.capacity();
+        async move { waiting == 1 }
+    })
+    .await;
     // Parked long enough for the turn to go stale and for the tick to fall due.
-    tokio::time::sleep(PARKED).await;
+    tokio::time::advance(PARKED).await;
 
     // The rest of the sentence, put in the channel while nobody is reading it.
     // On the MODEL's timeline the caller paused for 950 ms, just inside the
@@ -106,27 +103,13 @@ async fn a_waiting_fragment_beats_a_due_tick() {
         })
         .await;
 
-    // Let go, and keep letting go: every item taken off the fake's queue lets
-    // one more frame through, and the connection parks again as soon as they
-    // run out. From the first resume onwards the clock's arm and the events arm
-    // are both ready in the same poll, and the order they are written in
-    // decides what the caller said.
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    let emission = loop {
-        while live.audio.try_recv().is_ok() {}
-        match tokio::time::timeout(Duration::from_millis(25), live.emissions.recv()).await {
-            Ok(Some(e)) => {
-                if duplex_cell::emission_route(&e.content) == Some("turn") {
-                    break e.content;
-                }
-            }
-            Ok(None) => panic!("the emission channel closed before a `turn` arrived"),
-            Err(_) => assert!(
-                std::time::Instant::now() < deadline,
-                "no `turn` emission within the failure marker"
-            ),
-        }
-    };
+    // Let go: with the last frame of the chunk the task resumes, the clock's arm
+    // and the events arm are both ready in the same poll, and the order they are
+    // written in decides what the caller said.
+    for _ in 0..FRAMES {
+        client.next_audio().await;
+    }
+    let emission = live.emission("turn").await;
     assert_eq!(
         message_text(&emission, 0),
         "I wanted to ask about my appointment",

@@ -1,11 +1,12 @@
-//! #1400 -- the curator's horizon reaches the live model as ONE instruction,
+//! #1400 -- the curator's horizon reaches the live model as ONE commentary,
 //! never into running speech.
 //!
 //! WHY this file exists: the curator tells a duplex call how long the answer of
 //! a tool round or a delegation will take (`in_advise` section `horizon`, body
 //! `seconds`/`way`/`family`, no words). The words are the set's:
-//! `duplex.gpt_live.horizon_text` with `{seconds}` filled in, appended as an
-//! instruction (the `correction` channel). On a quiet line it goes at once;
+//! `duplex.gpt_live.horizon_text` with `{seconds}` filled in, appended as a
+//! commentary (a request to speak, the `fact` channel; GH #1635): an instruction
+//! is the one channel that may cut running speech. On a quiet line it goes at once;
 //! otherwise the connection holds it to the line's first quiet moment -- no
 //! spoken section open and the model's OWN speech (its audio) `spoken_quiet_ms`
 //! past, the takeover's rule (o8.6) -- because an append into running speech
@@ -107,10 +108,10 @@ async fn appends_until(live: &mut Live, content: &str) -> Vec<(AppendKind, Strin
 }
 
 /// Pin 5: while a spoken section is open (the bridge) held, and sent at the
-/// first quiet moment after it ends as ONE instruction -- the newer horizon,
+/// first quiet moment after it ends as ONE commentary -- the newer horizon,
 /// never both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_horizon_advise_becomes_one_corrected_instruction_at_the_turn_boundary() {
+async fn a_horizon_advise_becomes_one_commentary_at_the_turn_boundary() {
     // The section ends only by the caller's cancel: the fake sends no audio,
     // so no quiet of the connection's heuristic closes it, and the cap is far.
     let mut live = boot_fake_timed(params(HORIZON_TEXT), QUIET_MS, CAP_MS * 8).await;
@@ -151,10 +152,10 @@ async fn a_horizon_advise_becomes_one_corrected_instruction_at_the_turn_boundary
     assert_eq!(
         said,
         vec![(
-            AppendKind::Instructions,
+            AppendKind::Commentary,
             "The answer takes about 7 seconds; keep the talk going.".to_string()
         )],
-        "one instruction after the section's end, the newer horizon: {released:?}"
+        "one commentary after the section's end, the newer horizon: {released:?}"
     );
 }
 
@@ -187,10 +188,10 @@ async fn a_horizon_waits_while_the_model_speaks_on_its_own() {
     assert_eq!(
         after,
         vec![(
-            AppendKind::Instructions,
+            AppendKind::Commentary,
             "The answer takes about 5 seconds; keep the talk going.".to_string()
         )],
-        "one instruction at the quiet moment"
+        "one commentary at the quiet moment"
     );
 }
 
@@ -209,7 +210,7 @@ async fn a_horizon_on_a_quiet_line_goes_at_once() {
         seen,
         vec![
             (
-                AppendKind::Instructions,
+                AppendKind::Commentary,
                 "The answer takes about 4 seconds; keep the talk going.".to_string()
             ),
             (AppendKind::Thinking, "Marker.".to_string()),

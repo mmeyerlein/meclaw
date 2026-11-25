@@ -411,10 +411,13 @@ class TestGateLocal(GateCase):
         self.assertRegex(out, r"(?m)^GATE-PLAN strand \S+ stations=2 cached=2 ")
 
     def test_after_red_only_red_runs_again(self):
+        # w1 fruehrot fix 1: a strand pass stops at its first red station; the
+        # green neighbour here must end GREEN to be CACHED next time, so the red
+        # pass collects (under load tree-rules ended first and claims was SKIP).
         self.python_plan()
         self.seed_metadata()
         self.rc_file.write_text("1\n")
-        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test")
+        rc, out, err = self.gate("strand", "--collect", "--no-pre", "--reason", "test")
         self.assertEqual(rc, 1, out + err)
         self.assertEqual(self.verdicts(out), {"claims": "GREEN", "tree-rules": "RED"})
         self.rc_file.write_text("0\n")
@@ -794,24 +797,20 @@ class TestGateLocal(GateCase):
     def test_arguments_are_checked_like_gate_sh(self):
         self.python_plan()
         for argv in (["nope"], ["strand", "--bogus"], ["strand", "--lane"],
-                     ["strand", "--decide", "persona-receipt=without:x"],
-                     ["integration", "--decide", "claims=without:x"],
-                     ["integration", "--decide", "persona-receipt=with:x"],
-                     ["integration", "--decide", "persona-receipt=without: "],
-                     ["integration", "--decide", "persona-receipt=without:a\tb"],
-                     # OR-DT.ZI.decide-or: the reason cites the owner's ruling.
-                     ["integration", "--decide", "persona-receipt=without:no ruling id"],
-                     ["integration", "--decide", "persona-receipt=without:OR- bare prefix"]):
+                     ["integration", "--decide", "x=without:OR-T.1 y"]):
             rc, out, err = self.gate(*argv)
             self.assertEqual(rc, 2, "%s: %s" % (argv, out + err))
 
-    def test_decide_wants_a_ruling_id_in_the_reason(self):
-        # OR-DT.ZI.decide-or (review R3 M1): free text alone is no owner's call.
-        err = gate._decide_error("integration", "persona-receipt=without:no time")
-        self.assertIn("OR-", err)
-        for why in ("OR-DT.ZI.decide-or no fresh run", "per OR-7: ships as is"):
-            self.assertEqual("", gate._decide_error("release", "persona-receipt=without:" + why),
-                             why)
+    def test_decide_is_no_argument_any_more(self):
+        # d54s kit F1 (R-54-8): no station asks since GH #1593, so the frame
+        # (--decide, verdict ASK, exit 4) is gone -- an unknown argument.
+        self.python_plan()
+        rc, out, err = self.gate("integration", "--decide", "x=without:OR-T.1 y")
+        self.assertEqual(2, rc, out + err)
+        self.assertIn("unknown argument: --decide", err)
+        for name in ("ASKING_STATIONS", "_decide_error", "DECIDE_RULING_RE"):
+            self.assertFalse(hasattr(gate, name), name)
+        self.assertNotIn("ASK", gate.EXIT_BY_VERDICT)
 
     def test_pipeline_py_hands_every_word_to_the_gate(self):
         from scripts.pipeline import cli
@@ -2237,7 +2236,9 @@ class TestGateLane(GateCase):
 
         def guard(ln, name, **kw):
             seen.append(kw.get("expected_g"))
+            colds.append(kw.get("cold_g"))
             raise lane.LaneError(2, "stop here")
+        colds = []
         with mock.patch.object(gate.schedule, "admit", side_effect=admit), \
                 mock.patch.object(gate.lane, "guard", side_effect=guard):
             rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--host", "lane-l")
@@ -2245,6 +2246,12 @@ class TestGateLane(GateCase):
         need = adms[0].dispatch["budget"]["need_free_g"]
         self.assertGreater(need - 20, adms[0].expected_g)
         self.assertEqual(seen, [int(need - 20)])
+        # w1 leaseklar (#1620, fix round 1): the cold need less the floor travels too --
+        # the hygiene clears the run's own warm target only against it.
+        cold = adms[0].dispatch["budget"]["cold_need_free_g"]
+        self.assertGreaterEqual(cold, need)
+        self.assertEqual(colds, [int(cold - 20)])
+        self.assertIsNone(gate._guard_cold_g(mock.Mock(cargo=False, dispatch=adms[0].dispatch), {}))
         # A floor above the need never passes less than the run's own size.
         self.assertEqual(gate._guard_expected_g(adms[0], {"MECLAW_LANE_FLOOR_G": "999999"}),
                          adms[0].expected_g)
@@ -2927,6 +2934,104 @@ class TestModeFlag(unittest.TestCase):
         import io
         self.assertTrue(gate.parse(["strand", "--wait-admission"], io.StringIO()).wait_admission)
         self.assertFalse(gate.parse(["strand"], io.StringIO()).wait_admission)
+
+
+
+class TestFruehrotModes(unittest.TestCase):
+    """w1 fruehrot (#1607): a strand gate stops at its first red station unless
+    `--collect`; integration, release and the merge gate collect as before."""
+
+    def test_strand_stops_early_unless_collect(self):
+        import io
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MECLAW_GATE_MODE", None)
+            self.assertTrue(gate.parse(["strand"], io.StringIO()).fail_fast)
+            self.assertFalse(gate.parse(["strand", "--collect"], io.StringIO()).fail_fast)
+            for mode in ("integration", "release"):
+                self.assertFalse(gate.parse([mode], io.StringIO()).fail_fast, mode)
+            self.assertTrue(gate.parse(["release", "--fail-fast"], io.StringIO()).fail_fast)
+        with mock.patch.dict(os.environ, {"MECLAW_GATE_MODE": "merge"}):
+            self.assertFalse(gate.parse(["strand"], io.StringIO()).fail_fast)
+
+
+class TestFruehrotLane(GateCase):
+    """w1 fruehrot (#1607): on a lane the first red station ends the run and its
+    lane is free again -- no live run holds it."""
+
+    def setUp(self):
+        super().setUp()
+        fake_ssh.install(self.bin, PASS_SSH_TEMPLATE)
+        self.lanes_file.write_text("lane-l  builder@lane-l.invalid  threads=4  class=lane\n")
+        os.environ["MECLAW_LANE_ROOT"] = str(self.lane_root)
+        real = lane.exec_stream
+
+        def exec_stream(ln, dispatch, *a, **kw):
+            dispatch = dict(dispatch, budget=dict(dispatch.get("budget") or {},
+                                                  need_free_g=0, free_min_g=0, reserve_g=0))
+            return real(ln, dispatch, *a, **kw)
+
+        patcher = mock.patch.object(gate.lane, "exec_stream", side_effect=exec_stream)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_first_red_station_ends_the_run_and_frees_the_lane(self):
+        fifo = self.tmp / "go"
+        os.mkfifo(fifo)
+        self.plan(station("clippy", "cat %s > /dev/null; exit 1" % fifo, cargo=1, inputs=[]),
+                  station("claims", "echo x > %s; exec sleep 600" % fifo))
+        box = {}
+        t = threading.Thread(target=lambda: box.update(res=self.gate(
+            "strand", "--no-pre", "--reason", "test", "--host", "lane-l")), daemon=True)
+        t.start()
+        t.join(kit_time.HANG)
+        self.assertFalse(t.is_alive(), "the run hangs: the running station was not stopped")
+        rc, out, err = box["res"]
+        self.assertEqual(1, rc, out + err)
+        self.assertEqual({"clippy": "RED", "claims": "SKIP"}, self.verdicts(out))
+        self.assertRegex(out, r"(?m)^GATE-SUMMARY strand \S+ 0/1 \d+s RED -- stopped at clippy "
+                              r"after \d+ s$")
+        db = store.open()
+        self.assertEqual(0, db.execute("SELECT count(*) FROM items WHERE type = 'workpackage' "
+                                       "AND state = 'active'").fetchone()[0], "the lane is free")
+
+
+class TestFruehrotDirtyTree(GateCase):
+    """w1 fruehrot (#1607): sprechmarke and kanalkante (d54s) ran 1 631 s and
+    1 431 s red on a tree that differed from its commit; `corpus-committed` said
+    so after 2 s as a NOTE. A strand gate of a strand worktree now refuses such a
+    tree with exit 2 before any station, naming the files."""
+
+    def worktree(self):
+        wt = self.tmp / "wt-s1"
+        git(self.repo, "worktree", "add", "-q", "-b", "welle-x/s1", str(wt))
+        self.python_plan()
+        return wt
+
+    def test_a_dirty_strand_worktree_is_refused_before_any_station(self):
+        wt = self.worktree()
+        (wt / "README.md").write_text("changed\n")
+        (wt / "new.py").write_text("x = 1\n")
+        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--repo", str(wt))
+        self.assertEqual(2, rc, out + err)
+        self.assertIn("differs from its commit", err)
+        self.assertIn("README.md", err)
+        self.assertIn("new.py", err)
+        self.assertNotIn("GATE ", out)
+        self.assertNotIn("GATE-SUMMARY", out)
+
+    def test_a_clean_strand_worktree_and_post_gate_paths_run(self):
+        wt = self.worktree()
+        (wt / "plans" / "welle-x" / "berichte").mkdir(parents=True)
+        (wt / "plans" / "welle-x" / "berichte" / "s1.md").write_text("# s1\n")
+        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test", "--repo", str(wt))
+        self.assertEqual(0, rc, out + err)
+        self.assertIn("GATE-SUMMARY strand", out)
+
+    def test_integration_and_the_main_tree_keep_their_dirty_tree(self):
+        (self.repo / "README.md").write_text("changed\n")
+        self.python_plan()
+        rc, out, err = self.gate("strand", "--no-pre", "--reason", "test")
+        self.assertEqual(0, rc, out + err)
 
 
 def setUpModule():

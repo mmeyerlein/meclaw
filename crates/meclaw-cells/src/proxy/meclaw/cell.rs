@@ -799,6 +799,25 @@ impl LongRunningCell for MeclawCell {
         _reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            // GH #1353: on the params lane an update or nothing, and every key
+            // of this platform is immutable: nothing of it crosses, and the
+            // update's sender gets the shared answer.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if push.on_lane() {
+                let detail = push.lane_refusal().unwrap_or_else(refuse_params_update);
+                if !push.refused(sink, INVALID_INPUT, &detail).await {
+                    let r = Refusal::new(INVALID_INPUT, detail);
+                    let content =
+                        refused_emission(meclaw_core::PARAMS_LANE, &self.params.boundary, &r);
+                    let _ = sink
+                        .push(CellOutput {
+                            target: msg.target.clone(),
+                            content,
+                        })
+                        .await;
+                }
+                return;
+            }
             if let Body::Inline(body) = &msg.body
                 && body.get("sealed").is_some()
             {

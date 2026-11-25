@@ -1165,15 +1165,22 @@ cmd_hygiene() {
 # need -- on the owner's machine nobody else clears room for a 35 G target.
 hygiene_before() {
     local target="$1" wt="$2" tdir="$3" hrc own=() floor="${MECLAW_LANE_FLOOR_G:-60}" abort
-    local expected="${MECLAW_LANE_EXPECTED_G:-35}"
+    local expected="${MECLAW_LANE_EXPECTED_G:-35}" cold="${MECLAW_LANE_COLD_EXPECTED_G:-}"
     [ "${MECLAW_HYGIENE:-1}" != 0 ] || return 0
     [ -n "${MECLAW_LANE_WIPE_OK:-}" ] || own=(--own-target "$tdir")
+    # w1 leaseklar (#1620): a cargo run's own warm target goes last, only when its
+    # COLD need (reserve + cold build + aux + live) stays covered after it
+    if [ -z "${MECLAW_LANE_WIPE_OK:-}" ] && [ "${MECLAW_LANE_CARGO:-1}" = 1 ] && posint "$cold"; then
+        own+=(--own-last "$cold")
+    fi
     [ "$floor" = 0 ] || posint "$floor" || floor=60
     abort="$floor"
     [ -z "${MECLAW_LANE_WIPE_OK:-}" ] || abort=0
     if [ "$LANE_COVERAGE" = 1 ] && [ "$target" = local ]; then
         expected=$(cov_local_need_g "$tdir")
         [ "$abort" = 0 ] || abort=$(( floor + expected ))
+        # its need already counts a warm or cold target: never clear it here
+        [ "${#own[@]}" = 0 ] || own=(--own-target "$tdir")
     fi
     cmd_hygiene "$target" check \
         --reserve-g "$floor" \

@@ -230,13 +230,21 @@ impl LongRunningCell for HarnessCell {
                 self.reconfig = Some(reconfig_tx.clone());
             }
 
+            // GH #1353: on the params lane an update or nothing -- nothing is
+            // handed to the child.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                refuse_params(sink, &msg, &push, "invalid_input", &detail).await;
+                return;
+            }
+
             // β params-update slot (`config.md` § access), handled FIRST. What
             // may change is tuning; containment is immutable and a message
             // touching it gets a loud reject rather than a silent no-op.
             if let meclaw_core::Body::Inline(ref v) = msg.body
                 && v.get("params").is_some()
             {
-                self.apply_params_update(&msg, sink, db).await;
+                self.apply_params_update(&msg, &push, sink, db).await;
                 return;
             }
 
@@ -333,22 +341,48 @@ impl LongRunningCell for HarnessCell {
     }
 }
 
+/// Refuse a params update: on the params lane the shared answer (GH #1353),
+/// otherwise the error every other refusal of this cell is.
+async fn refuse_params(
+    sink: &OutputSink,
+    msg: &Message,
+    push: &crate::params_overlay::ParamsPush,
+    error_code: &str,
+    detail: &str,
+) {
+    if !push.refused(sink, error_code, detail).await {
+        emit::error(sink, msg, "__params__", error_code, detail).await;
+    }
+}
+
 impl HarnessCell {
     /// Apply a runtime params update.
     ///
     /// Only the tunables move, and only for the NEXT task: changing a budget
     /// under a running harness would be a promise this cell cannot keep, since
     /// the limits live in the child's own command line. An accepted update is
-    /// silent (the W4b convention); a rejected one names the offending key.
-    async fn apply_params_update(&mut self, msg: &Message, sink: &OutputSink, db: &mut DbConn) {
+    /// silent (the W4b convention) except on the params lane (GH #1353); a
+    /// rejected one names the offending key.
+    async fn apply_params_update(
+        &mut self,
+        msg: &Message,
+        push: &crate::params_overlay::ParamsPush,
+        sink: &OutputSink,
+        db: &mut DbConn,
+    ) {
         let meclaw_core::Body::Inline(body) = &msg.body else {
             return;
         };
+        // GH #1353: a slot addressed to another cell moves nothing.
+        if let Some(detail) = push.foreign_detail() {
+            refuse_params(sink, msg, push, "invalid_input", &detail).await;
+            return;
+        }
         let Some(update) = body.get("params").and_then(|p| p.as_object()).cloned() else {
-            emit::error(
+            refuse_params(
                 sink,
                 msg,
-                "__params__",
+                push,
                 "invalid_input",
                 "params slot: not a JSON object",
             )
@@ -361,7 +395,7 @@ impl HarnessCell {
         {
             Ok(pair) => pair,
             Err(e) => {
-                emit::error(sink, msg, "__params__", "invalid_input", &e.detail()).await;
+                refuse_params(sink, msg, push, "invalid_input", &e.detail()).await;
                 return;
             }
         };
@@ -375,10 +409,10 @@ impl HarnessCell {
         match write {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                emit::error(
+                refuse_params(
                     sink,
                     msg,
-                    "__params__",
+                    push,
                     "invalid_input",
                     &format!("cell.db params write failed: {e}"),
                 )
@@ -386,10 +420,10 @@ impl HarnessCell {
                 return;
             }
             Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                emit::error(
+                refuse_params(
                     sink,
                     msg,
-                    "__params__",
+                    push,
                     "query_timeout",
                     "params write exceeded query_timeout_ms",
                 )
@@ -400,6 +434,7 @@ impl HarnessCell {
 
         new_overlay.apply_to(&mut self.params);
         db.set_query_timeout(Some(Duration::from_millis(self.params.query_timeout_ms)));
+        push.applied(sink).await;
     }
 
     /// Accept a task: validate, record, then ask for the child — in that order.

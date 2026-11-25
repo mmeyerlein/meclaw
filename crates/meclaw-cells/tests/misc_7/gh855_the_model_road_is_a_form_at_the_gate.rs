@@ -290,6 +290,14 @@ fn a_bridge_from_a_tool_emitter_onto_the_announcement_lane_is_refused_unasked() 
     let mutate = |f: &dyn Fn(&mut Value)| {
         let mut m = grown();
         let edges = m[1]["diff"]["add_edges"].as_array_mut().expect("edges");
+        // GH #1616: the pushes onto the level's own door are legal only for
+        // the brains this announcement names, so they go; what is judged is
+        // the announcement alone.
+        edges.retain(|e| {
+            !e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("'in_model'"))
+        });
         let a = edges.iter_mut().find(|e| e["to"] == ".").expect("announce");
         f(a);
         m
@@ -635,7 +643,11 @@ fn a_brain_whose_announcement_is_no_literal_is_left_out_and_said() {
         .as_array()
         .cloned()
         .expect("the road still stands for the brain that is a literal");
-    let pushes: Vec<&Value> = road.iter().filter(|e| e["to"] != ".").collect();
+    let pushes: Vec<&Value> = road
+        .iter()
+        // GH #1353: the params road's edges stand beside them.
+        .filter(|e| e["to"] != "." && e["modifier"]["set_hop"]["route"] == "'in_model'")
+        .collect();
     let aimed_at = |cell: &str| -> Vec<&Value> {
         pushes
             .iter()
@@ -649,10 +661,7 @@ fn a_brain_whose_announcement_is_no_literal_is_left_out_and_said() {
     };
     let brains = aimed_at("brain");
     assert_eq!(brains.len(), 1, "only cogny's brain push edge: {road:?}");
-    assert_eq!(
-        brains[0]["to"],
-        "./acme/members/alex/assistants/scribe/cogny"
-    );
+    assert_eq!(brains[0]["to"], "./acme/members/alex/assistants/scribe");
     // OR-KX-P5 (GH #877): each rim's curator summarizer starts on `model`,
     // which is a literal here, so all three stay on the road.
     assert_eq!(
@@ -771,6 +780,14 @@ fn a_decisions_brain_may_be_announced_on_an_empty_start_model() {
     let with_entry = |entry: Value| {
         let mut m = grown();
         let edges = m[1]["diff"]["add_edges"].as_array_mut().expect("edges");
+        // GH #1616: the pushes onto the level's own door are legal only for
+        // the brains this announcement names, so they go; what is judged is
+        // the announcement alone.
+        edges.retain(|e| {
+            !e["condition"]
+                .as_str()
+                .is_some_and(|c| c.contains("'in_model'"))
+        });
         let a = edges.iter_mut().find(|e| e["to"] == ".").expect("announce");
         a["modifier"]["set_context"]["model_announced"] = json!(format!("'[{entry}]'"));
         m
@@ -814,4 +831,80 @@ fn a_decisions_brain_may_be_announced_on_an_empty_start_model() {
         let out = submit(&with_entry(entry), AGENT);
         assert_eq!(refused(&out), "model_announcement_form", "{what}: {out:?}");
     }
+}
+
+/// GH #1616, review I-2 of strand modelltuer: the push onto a level's own
+/// door that names a curator cell behind a rim (`<gen>/<rim>/curator/<cell>`)
+/// is legal only for a cell the SAME manifest announces. Without the
+/// announcement, with an announcement that leaves that cell out while the push
+/// stays, or for a name one storey deeper the gate refuses it unasked.
+#[test]
+fn a_push_onto_the_door_behind_a_rim_passes_only_when_announced() {
+    if !shipped() {
+        return;
+    }
+    let summarizer = format!("{GEN}/talky/curator/summarizer");
+    let is_push_for = |e: &Value, cell: &str| {
+        e["condition"]
+            .as_str()
+            .is_some_and(|c| c.contains("'in_model'") && c.ends_with(&format!("'{cell}'")))
+    };
+    let m = grown();
+    let push = m[1]["diff"]["add_edges"]
+        .as_array()
+        .and_then(|e| e.iter().find(|e| is_push_for(e, &summarizer)))
+        .cloned()
+        .unwrap_or_else(|| panic!("the rendered road pushes onto {summarizer}: {m}"));
+
+    // The push alone: nobody announces the cell.
+    let alone = json!([{"scope": m[1]["scope"], "diff": {"add_edges": [push.clone()]}}]);
+    let out = submit(&alone, AGENT);
+    assert_eq!(refused(&out), "model_push_form", "unannounced: {out:?}");
+
+    // The rendered manifest whose announcement leaves the summarizer out,
+    // its push kept.
+    let rewrite = |m: &mut Value, f: &dyn Fn(&mut Vec<Value>)| {
+        let a = m[1]["diff"]["add_edges"]
+            .as_array_mut()
+            .and_then(|e| e.iter_mut().find(|e| e["to"] == "."))
+            .expect("announce");
+        let lit = a["modifier"]["set_context"]["model_announced"]
+            .as_str()
+            .expect("announced")
+            .to_string();
+        let mut entries: Vec<Value> =
+            meclaw_core::serde_json::from_str(&lit[1..lit.len() - 1]).expect("entries");
+        f(&mut entries);
+        a["modifier"]["set_context"]["model_announced"] =
+            json!(format!("'{}'", Value::Array(entries)));
+    };
+    let mut lie = grown();
+    rewrite(&mut lie, &|entries| {
+        entries.retain(|e| e["cell_path"] != summarizer.as_str());
+    });
+    let out = submit(&lie, AGENT);
+    assert_eq!(refused(&out), "model_push_form", "left out: {out:?}");
+
+    // A name one storey deeper, announced and pushed: still not the form.
+    let deeper = format!("{GEN}/talky/x/summarizer");
+    let mut deep = grown();
+    rewrite(&mut deep, &|entries| {
+        entries.push(json!({"cell_path": deeper, "start_model": "vendor/small"}));
+    });
+    let mut deep_push = push.clone();
+    deep_push["condition"] = json!(
+        push["condition"]
+            .as_str()
+            .expect("condition")
+            .replace(&summarizer, &deeper)
+    );
+    deep[1]["diff"]["add_edges"]
+        .as_array_mut()
+        .expect("edges")
+        .push(deep_push);
+    let out = submit(&deep, AGENT);
+    assert_eq!(refused(&out), "model_push_form", "deeper: {out:?}");
+
+    // The rendered manifest itself passes (the yes half, held in gh863 too).
+    assert!(parked_and_asked(&submit(&m, AGENT)), "the rendered road");
 }

@@ -416,29 +416,45 @@ fn hexrun_at(b: &[char], i: usize) -> Option<usize> {
 /// Drive `mode` over the stream, collecting the emissions of each message
 /// separately. Strictly serial: one message in, its emissions out, then the
 /// next — so the transcript is ordered even for the `warm` pool.
+///
+/// GH #1589: a message ends at an EVENT, not at a silence. Every cell task
+/// closes each handled delivery with its consume mark on the same FIFO output
+/// channel, after every emission the handler made (GH #1015,
+/// `CellEmission::consumed_mark`). So the emissions of message N are exactly
+/// what arrives before the mark that carries N's id — zero (park), one or a
+/// fan-out. The old end was 600 ms of silence; under load the python child
+/// answered later than that, its output slid into the next slot, and the
+/// comparison read `[]` against a real answer (receipts d53-4, d58-2/3, d54g:
+/// always `[]` on one side, msg 0/1 most often). The wait for the mark
+/// carries only the hang mark `deadline::HANG`, never a verdict on time.
 async fn transcript(mode: &str) -> Vec<Vec<Value>> {
     let (tx, mut rx, _td) = spawn(mode);
     let mut out = Vec::new();
-    for msg in stream() {
+    for (i, msg) in stream().into_iter().enumerate() {
+        let id = msg.id;
         tx.send(msg).await.expect("mailbox open");
         let mut per_message = Vec::new();
-        // A `code` cell emits zero (park), one, or many messages per input.
-        // Wait a little past the first for a fan-out, and accept silence as an
-        // answer in its own right.
         loop {
-            match tokio::time::timeout(std::time::Duration::from_millis(600), rx.recv()).await {
-                Ok(Some(em)) => {
-                    let mut c = em.content.clone();
-                    // `duration_ms` is a measurement and is MEANT to differ —
-                    // it is the whole point of the mode.
-                    if let Some(h) = c.get_mut("header").and_then(|h| h.as_object_mut()) {
-                        h.remove("duration_ms");
-                    }
-                    per_message.push(scrub(&c));
-                }
-                Ok(None) => panic!("the cell dropped its output channel"),
-                Err(_) => break,
+            let what = format!("{mode}: the consume mark of message {i}");
+            let em = meclaw_testing::deadline::hang(&what, rx.recv())
+                .await
+                .unwrap_or_else(|| {
+                    panic!("{mode}: the cell dropped its output channel at message {i}")
+                });
+            if let Some(closed) = em.consumed_mark_id() {
+                assert_eq!(
+                    closed, id,
+                    "{mode}: message {i} was closed by the mark of another delivery"
+                );
+                break;
             }
+            let mut c = em.content.clone();
+            // `duration_ms` is a measurement and is MEANT to differ —
+            // it is the whole point of the mode.
+            if let Some(h) = c.get_mut("header").and_then(|h| h.as_object_mut()) {
+                h.remove("duration_ms");
+            }
+            per_message.push(scrub(&c));
         }
         out.push(per_message);
     }
@@ -456,6 +472,16 @@ async fn a_resident_assembler_answers_exactly_as_a_fresh_one_does() {
         "the two runs saw a different number of messages"
     );
     for (i, (w, r)) in warm.iter().zip(resident.iter()).enumerate() {
+        // Each slot is closed by its own consume mark, so a short slot is a
+        // real difference in what the script emitted, not a late answer.
+        assert_eq!(
+            w.len(),
+            r.len(),
+            "message {i}: a fresh namespace emitted {} messages, a persistent one {} — \
+             the shipped assembler takes a different path across messages",
+            w.len(),
+            r.len()
+        );
         assert_eq!(
             w, r,
             "message {i} of the stream differs between a fresh namespace and a \

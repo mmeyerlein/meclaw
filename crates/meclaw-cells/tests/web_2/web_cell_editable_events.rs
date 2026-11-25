@@ -19,6 +19,7 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{CellEmission, Path};
+use meclaw_testing::deadline::{HANG, scaled};
 use meclaw_testing::{surface_listener, wait_for_mount};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,7 +27,8 @@ use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-/// A node component with `x` declared editable and `label` deliberately not.
+/// A node component with `x` declared editable and `label` deliberately not,
+/// under a page root that declares `t` editable itself.
 fn seed(cell_dir: &std::path::Path) {
     let seed = cell_dir.join("seed");
     std::fs::create_dir_all(&seed).expect("seed dir");
@@ -35,7 +37,7 @@ fn seed(cell_dir: &std::path::Path) {
         concat!(
             r#"{"schema":{"name":"text","template":"text","prop_schema":"text","editable":"text","layer":"text"}}"#,
             "\n",
-            r#"{"name":"stack","template":"<main>{{children}}</main>","prop_schema":"{}","editable":"[]","layer":"content"}"#,
+            r#"{"name":"stack","template":"<main data-t=\"{{t}}\">{{children}}</main>","prop_schema":"{\"t\":\"text\"}","editable":"[\"t\"]","layer":"content"}"#,
             "\n",
             r#"{"name":"node","template":"<i data-x=\"{{x}}\">{{label}}</i>","prop_schema":"{\"x\":\"text\",\"label\":\"text\"}","editable":"[\"x\"]","layer":"content"}"#,
             "\n"
@@ -83,13 +85,17 @@ struct Live {
 }
 
 async fn start(cell_dir: &std::path::Path) -> Live {
+    start_with(cell_dir, json!({ "mount": MOUNT })).await
+}
+
+async fn start_with(cell_dir: &std::path::Path, params: Value) -> Live {
     let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
     let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/web"),
-            json!({ "mount": MOUNT }),
+            params,
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -266,6 +272,107 @@ async fn an_editable_write_reaches_every_viewer_without_a_message() {
         live.out_rx.try_recv().is_err(),
         "an editable write must emit NO message — zero topology round trip"
     );
+
+    live.join.abort();
+}
+
+/// GH #1264: an editable prop of the page ROOT is published like any other.
+///
+/// The root has no slot of its own, so its touched set is `structural` with an
+/// empty slot list. The browser lane published only for a non-empty slot list:
+/// the write was stored and answered `ok`, and the served page and every
+/// viewer kept the old picture until some other write rendered the route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1264_a_browser_write_to_a_page_root_prop_reaches_every_viewer() {
+    let td = TempDir::new().expect("td");
+    let cell_dir = td.path().join("web");
+    std::fs::create_dir_all(&cell_dir).expect("dir");
+    seed(&cell_dir);
+    let live = start(&cell_dir).await;
+
+    let mut a = join_page(live.port, "1").await;
+    let mut b = join_page(live.port, "2").await;
+
+    a.send(WsMessage::Text(
+        json!(["1", "9", format!("lv:{}", meclaw_surface::session::container_id("/web")),
+               "event", {"event": "object:set", "value": {"id": "root", "prop": "t", "value": "dusk"}}])
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("send");
+
+    let reply = next_frame(&mut a, scaled(HANG))
+        .await
+        .expect("the sender's answer");
+    assert_eq!(reply[4]["status"], json!("ok"), "{reply}");
+    for (who, ws) in [("the sender", &mut a), ("the other viewer", &mut b)] {
+        let diff = next_frame(ws, scaled(HANG))
+            .await
+            .unwrap_or_else(|| panic!("{who} receives the root's new picture"));
+        assert_eq!(diff[3], json!("diff"), "{who}: {diff}");
+        assert!(diff[4].to_string().contains("dusk"), "{who}: {diff}");
+    }
+    let page = reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
+        .await
+        .expect("get")
+        .text()
+        .await
+        .expect("text");
+    assert!(page.contains(r#"data-t="dusk""#), "the served page: {page}");
+
+    live.join.abort();
+}
+
+/// GH #1264: a browser write past `external_timeout_ms` is refused, not waited
+/// for, and nothing is written. The view has an end, so a cell that does not
+/// interrupt it fails the test instead of holding the run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1264_a_browser_write_past_the_query_timeout_is_refused_not_hung() {
+    let td = TempDir::new().expect("td");
+    let cell_dir = td.path().join("web");
+    std::fs::create_dir_all(&cell_dir).expect("dir");
+    seed(&cell_dir);
+    let live = start_with(
+        &cell_dir,
+        json!({ "mount": MOUNT, "external_timeout_ms": 300 }),
+    )
+    .await;
+    let db = rusqlite::Connection::open(live.cell_dir.join("cell.db")).expect("open");
+    db.busy_timeout(scaled(HANG)).expect("busy");
+    db.execute_batch(
+        "CREATE VIEW endless AS
+           WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 100000000)
+           SELECT i FROM n;
+         CREATE TRIGGER stuck AFTER UPDATE ON objects WHEN NEW.props LIKE '%stuck%'
+           BEGIN SELECT count(*) FROM endless; END;",
+    )
+    .expect("rig");
+
+    let mut a = join_page(live.port, "1").await;
+    a.send(WsMessage::Text(
+        json!(["1", "9", format!("lv:{}", meclaw_surface::session::container_id("/web")),
+               "event", {"event": "object:set", "value": {"id": "n1", "prop": "x", "value": "stuck"}}])
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("send");
+    let reply = next_frame(&mut a, scaled(HANG))
+        .await
+        .expect("the sender's answer");
+    assert_eq!(reply[4]["status"], json!("error"), "{reply}");
+    assert_eq!(
+        reply[4]["response"]["reason"],
+        json!("query_timeout"),
+        "{reply}"
+    );
+    let props: String = db
+        .query_row("SELECT props FROM objects WHERE id = 'n1'", [], |r| {
+            r.get(0)
+        })
+        .expect("props");
+    assert!(!props.contains("stuck"), "{props}");
 
     live.join.abort();
 }

@@ -583,7 +583,9 @@ pub async fn cell_task_stateful<C: crate::stateful_cell::StatefulCell + 'static>
                 // only connection that carries the extensions the cell installed
                 // (a `store`'s `meclaw_stem_v1` tokenizer, without which an FTS
                 // trigger cannot even open its index). A message that carries the
-                // slot never reaches `handle()`.
+                // slot never reaches `handle()` -- except on the params lane
+                // (GH #1353), where the slot is not answered and the cell refuses
+                // the message.
                 //
                 // BEFORE the consumes gate, and deliberately: `consumes` declares
                 // what the cell's `handle()` needs, and a transfer never reaches
@@ -1023,7 +1025,8 @@ async fn acquire_dispatch_slot(
 ///
 /// Long-lived task that pulls messages from the cell's mailbox and spawns a
 /// short-lived worker task per message. Concurrency is capped by a
-/// `tokio::sync::Semaphore(max_concurrency)`. Workers build their own
+/// `tokio::sync::Semaphore(max_concurrency)`; a `max_concurrency` above
+/// `Semaphore::MAX_PERMITS` counts as that ceiling. Workers build their own
 /// `OutputSink` from the consumed message and call `cell.handle(msg, &sink)`.
 ///
 /// The dispatcher itself is the registry-visible actor (RespawnFn re-spawns
@@ -1182,6 +1185,11 @@ async fn dispatch_stateless<F: crate::stateless_cell::StatelessCell + 'static>(
             }),
             None => Box::pin(std::future::pending::<()>()),
         };
+    // GH #1627: `Semaphore::new` panics above `MAX_PERMITS`, and the bound is a
+    // plain param of every stateless cell: `max_concurrency: u64::MAX` killed the
+    // task at its start. Bounded here, where the semaphore is, instead of in each
+    // factory; past the ceiling the number has no further meaning.
+    let max_concurrency = max_concurrency.min(tokio::sync::Semaphore::MAX_PERMITS);
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrency));
     loop {
         let msg = tokio::select! {
@@ -2824,6 +2832,57 @@ mod tests {
             2,
             "max_observed stays at max_concurrency throughout drain"
         );
+    }
+
+    /// GH #1627: a `max_concurrency` above what a semaphore can hold means "as
+    /// many as there are", not a panic of the cell task at its start.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh1627_an_oversized_max_concurrency_does_not_panic_the_dispatcher() {
+        use crate::stateless_cell::StatelessCell;
+
+        struct Handled(mpsc::UnboundedSender<()>);
+        #[allow(clippy::manual_async_fn)]
+        impl StatelessCell for Handled {
+            fn handle<'a>(
+                &'a self,
+                _msg: meclaw_core::Message,
+                _sink: &'a meclaw_core::OutputSink,
+            ) -> impl std::future::Future<Output = ()> + Send + 'a {
+                async move {
+                    let _ = self.0.send(());
+                }
+            }
+        }
+
+        for max_concurrency in [usize::MAX, tokio::sync::Semaphore::MAX_PERMITS + 1] {
+            let (handled_tx, mut handled) = mpsc::unbounded_channel();
+            let (in_tx, in_rx) = mpsc::channel(4);
+            let (out_tx, _out_rx) = mpsc::channel::<meclaw_core::CellEmission>(4);
+            let join = tokio::spawn(super::stateless_dispatcher(
+                meclaw_core::Path::new("/x"),
+                in_rx,
+                out_tx,
+                std::sync::Arc::new(Handled(handled_tx)),
+                max_concurrency,
+                None, // message_timeout
+                None, // peace_tx
+                None, // stop_rx
+                None, // colony_inbox_tx
+                None, // death_ack
+                None, // blob_store
+                None, // consumes
+            ));
+            // A dispatcher that died at its start has dropped the receiver;
+            // its own end below is the verdict, not this send.
+            let _ = in_tx
+                .send(meclaw_core::MessageBuilder::new(meclaw_core::Path::new("/x")).build())
+                .await;
+            drop(in_tx);
+            meclaw_testing::deadline::hang("the cell task ends", join)
+                .await
+                .unwrap_or_else(|e| panic!("{max_concurrency}: the cell task ended with {e:?}"));
+            assert_eq!(handled.recv().await, Some(()), "{max_concurrency}");
+        }
     }
 
     /// Paket-3 P3-B3: the stateless Concept-B backstop fires when a worker's

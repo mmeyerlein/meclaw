@@ -7,6 +7,7 @@ rsync argv lists against a local destination and read what arrived.
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -1701,6 +1702,101 @@ class PinPush(PinFixture):
         self.set("0.22", {"meclaw_release": "0.99.0"})
         with self.assertRaises(register.RegisterError):
             gate._satellite_transport(self.sat, True, core_root=self.core, home=self.home)
+
+class CandidateFixture(PinFixture):
+    """A candidate binary `<home>/kb/bin/meclaw-<rev12>` of the fixture's core
+    commit with its `origin.json`, and a set naming it."""
+
+    def candidate(self, data=b"candidate\n", core_sha=None, home=None):
+        r12 = self.core_sha[:12]
+        path = os.path.join(home or self.home, "kb", "bin", "meclaw-" + r12)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        with open(path + ".origin.json", "w", encoding="utf-8") as fh:
+            json.dump({"core_sha": core_sha or self.core_sha, "sha256": hashlib.sha256(data).hexdigest()},
+                      fh, indent=1)
+        return hashlib.sha256(data).hexdigest()
+
+    def candidate_set(self, digest, **over):
+        doc = {"meclaw_release": "0.90.0", "meclaw_core": self.core_sha[:9],
+               "meclaw_candidate": {"rev": self.core_sha, "sha256": digest}}
+        doc.update(over)
+        self.set("0.50", doc)
+
+
+class CandidatePins(CandidateFixture):
+    """w1 kandidat (#1606), set field `meclaw_candidate` no. 5: a set that
+    names an unreleased core candidate needs no release asset for its version;
+    the transport demands the candidate binary `~/kb/bin/meclaw-<rev12>` with
+    its `origin.json` instead, here and on the lane."""
+
+    def test_a_set_with_the_field_travels_without_a_release_asset(self):
+        self.candidate_set(self.candidate())
+        got = self.pins()
+        self.assertNotIn("0.90.0", got.versions)
+        self.assertEqual([{"rev": self.core_sha, "sha256": hashlib.sha256(b"candidate\n").hexdigest(),
+                           "rel": "kb/bin/meclaw-" + self.core_sha[:12]}], got.candidates)
+
+    def test_a_missing_candidate_binary_names_what_is_missing_and_the_build(self):
+        self.candidate_set("0" * 64)
+        with self.assertRaisesRegex(register.RegisterError, r"is missing") as cm:
+            self.pins()
+        msg = str(cm.exception)
+        self.assertIn("sets/0.50.json", msg)
+        self.assertIn("kb/bin/meclaw-%s is missing" % self.core_sha[:12], msg)
+        self.assertIn("strand.sh candidate %s" % self.core_sha, msg)
+        self.assertNotIn("0.90.0 is not in", msg)  # never a fall back to the release
+
+    def test_a_candidate_that_does_not_match_is_red(self):
+        good = self.candidate()
+        cases = {
+            "sha256": ({"meclaw_candidate": {"rev": self.core_sha, "sha256": "f" * 64}}, "sha256"),
+            "rev": ({"meclaw_core": "deadbeef1 (x)"}, "meclaw_core"),
+            "form": ({"meclaw_candidate": {"rev": self.core_sha[:12], "sha256": good}}, "40 hex"),
+            "object": ({"meclaw_candidate": "x"}, "meclaw_candidate"),
+        }
+        for name, (over, needle) in cases.items():
+            with self.subTest(case=name):
+                self.candidate_set(good, **over)
+                with self.assertRaisesRegex(register.RegisterError, r"sets/0\.50\.json") as cm:
+                    self.pins()
+                self.assertIn("sets/0.50.json", str(cm.exception))
+                self.assertIn(needle, str(cm.exception))
+        # an origin.json of another commit is red as well
+        self.candidate(core_sha="1" * 40)
+        self.candidate_set(good)
+        with self.assertRaisesRegex(register.RegisterError, r"origin\.json") as cm:
+            self.pins()
+        self.assertIn("origin.json", str(cm.exception))
+
+
+@unittest.skipUnless(shutil.which("rsync"), "rsync not installed")
+class CandidatePinPush(CandidateFixture):
+    """`push_pins` checks the candidate on the lane like the releases."""
+
+    def push(self, there):
+        from pipeline import lane
+        ln = lane.Lane(name="lane-a", ssh="", root=os.path.join(self._tmp.name, "lane"),
+                       transport="local")
+        return lane, lane.push_pins(ln, self.pins(), home_root=there)
+
+    def test_lane_push_pins_checks_the_candidate_there(self):
+        from pipeline import lane
+        self.candidate_set(self.candidate())
+        there = os.path.join(self._tmp.name, "lanehome")
+        self.candidate(home=there)
+        _, got = self.push(there)
+        self.assertEqual(["kb/bin/meclaw-" + self.core_sha[:12]], got["candidates"])
+        for what, data in (("missing", None), ("other bytes", b"stale\n")):
+            with self.subTest(case=what):
+                there = os.path.join(self._tmp.name, "lane-" + what.replace(" ", "-"))
+                os.makedirs(there)
+                if data:
+                    self.candidate(data=data, home=there)
+                with self.assertRaisesRegex(lane.LaneError, r"candidate ") as cm:
+                    self.push(there)
+                self.assertIn("candidate %s" % self.core_sha[:12], str(cm.exception))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+{"ts": "2026-11-23T11:34:56Z", "model": "openai/gpt-6.1-sol", "probe": "refusal:reasoning_off", "status": "http 400", "worst": 0.00104, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:56Z", "model": "openai/gpt-6.1-sol", "probe": "refusal:temperature", "status": "http 404", "worst": 0.001006, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:56Z", "model": "openai/gpt-6.1-sol", "probe": "refusal:top_p", "status": "http 404", "worst": 0.00099, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:58Z", "model": "openai/gpt-6.1-sol", "probe": "refusal:tool_choice_named", "status": "ok", "worst": 0.001836, "cost": 0.00030096, "cost_source": "usage.cost"}
+{"ts": "2026-11-23T11:34:59Z", "model": "openai/gpt-6.1-sol", "probe": "refusal:tool_choice_required", "status": "ok", "worst": 0.001024, "cost": 8.712e-05, "cost_source": "usage.cost"}

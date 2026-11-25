@@ -97,9 +97,13 @@ fn run_classify(args: Value) -> Value {
 fn node(params: Value) -> Result<Value, Value> {
     // The LEVEL is the declaration a manifest leads with. Since GH #585 a member
     // wish carries the two devices behind it in the SAME manifest; every other
-    // level renders exactly one declaration and nothing else.
+    // level renders exactly one declaration and nothing else -- except a screen,
+    // whose member's half follows it (GH #1597), and an app, whose receipt edge does
+    // (GH #1598).
     let want = if params["level"] == json!("member") {
-        3
+        4
+    } else if params["level"] == json!("screen") || params["level"] == json!("app") {
+        2
     } else {
         1
     };
@@ -233,7 +237,7 @@ fn an_unknown_birth_state_is_refused_by_name_and_no_manifest_comes_back() {
     let early = run_classify(json!({
         "recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "org", "name": "acme",
-                   "template": "org@2.2.30", "birth": "dormant"}}));
+                   "template": "org@2.2.31", "birth": "dormant"}}));
     assert_eq!(
         early["header"]["route"],
         json!("error"),

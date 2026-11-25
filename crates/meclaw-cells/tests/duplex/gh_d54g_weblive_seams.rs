@@ -1993,7 +1993,7 @@ async fn the_waiting_advise_is_split(access: Access) {
         "a waiting advise over the ceiling is cut: {parts:?}"
     );
     for part in &parts {
-        assert_eq!(part.kind, AppendKind::Instructions, "{part:?}");
+        assert_eq!(part.kind, AppendKind::Commentary, "{part:?}");
         assert!(part.content.chars().count() <= 80, "{part:?}");
         assert!(
             part.content.ends_with('.'),

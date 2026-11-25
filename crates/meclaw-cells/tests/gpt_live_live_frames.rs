@@ -52,9 +52,19 @@
 //! Nothing here prints, logs or asserts on the value; a missing key is a panic
 //! naming the variable, which is a name and not a secret. Budget: one session
 //! of about a hundred seconds.
+//!
+//! A second ignored test, `a_greeting_session_recorded` (wave w1, strand
+//! liveaufnahme, GH #1610), opens a session with the frames of
+//! `fixtures/live/greeting_opening_gpt_live_1_1.json`, lets the model greet and notes every
+//! server event. With `MECLAW_LIVE_RECORD=<path>` set it writes them as a
+//! recording (`meclaw_testing::mock_gpt_live::LiveRecorder`: a header line,
+//! then one line per event with its gap, audio as a duration only) that
+//! `LiveScript::from_recording` replays in the mock; without it nothing is
+//! written. Budget: one session of about fifteen seconds.
 
 use futures_util::{SinkExt, StreamExt};
 use meclaw_cells::voice::providers::gpt_live::{KEEPALIVE_PAYLOAD, session_url};
+use meclaw_testing::mock_gpt_live::{LiveRecorder, RecordingHeader};
 use serde_json::{Value as JsonValue, json};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -328,4 +338,159 @@ fn b64(bytes: &[u8]) -> String {
         });
     }
     out
+}
+
+/// The frames the recorded session opens with -- shared with the replay test,
+/// which is what makes a recording's header comparable with today's. Read at
+/// run time, not included: every test of this binary is `#[ignore]`d, so no
+/// diff plans it, and a compile-time include would tie the fixture to a binary
+/// the gate never builds for it. The replay test includes the same file.
+const OPENING_PATH: &str = "tests/fixtures/live/greeting_opening_gpt_live_1_1.json";
+
+/// The variable that names the file a recording goes to. Unset, nothing is
+/// written.
+const RECORD_ENV: &str = "MECLAW_LIVE_RECORD";
+
+/// How long the greeting is listened to before the session is closed: the
+/// measured greeting of OR-L51 took under a second to start and a sentence to
+/// end. A watch, not a deadline anything fails on.
+const GREETING_WATCH: Duration = Duration::from_secs(10);
+
+/// How long the far side gets to answer `session.close`.
+const CLOSE_GRACE: Duration = Duration::from_secs(5);
+
+/// LIVE -- one greeting session, every server event noted; written as a
+/// recording when `MECLAW_LIVE_RECORD` names a file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "live: needs a real OPENAI_API_KEY and spends session seconds"]
+async fn a_greeting_session_recorded() {
+    let opening_text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(OPENING_PATH),
+    )
+    .expect("the opening fixture is readable");
+    let opening: Vec<JsonValue> = serde_json::from_str(&opening_text).expect("the opening parses");
+    let header = RecordingHeader::for_opening(&opening, &session_url(""));
+    let mut request = session_url("wss://api.openai.com")
+        .as_str()
+        .into_client_request()
+        .expect("the session url is a websocket url");
+    let headers = request.headers_mut();
+    // The credential exists only inside this header value.
+    headers.insert(
+        "authorization",
+        format!("Bearer {}", api_key())
+            .parse()
+            .expect("the authorization header is built"),
+    );
+    // Every model call names its app (GH #1251).
+    headers.insert(
+        "x-title",
+        "meclaw-lab live-recording".parse().expect("x-title"),
+    );
+    headers.insert(
+        "http-referer",
+        "https://meclaw.ai".parse().expect("http-referer"),
+    );
+
+    let (ws, _response) = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    .expect("the handshake answered inside 20 s")
+    .expect("the handshake succeeded");
+    let (mut write, mut read) = ws.split();
+    let (start, after_start) = opening.split_first().expect("the opening starts a session");
+    write
+        .send(WsMessage::Text(Utf8Bytes::from(start.to_string())))
+        .await
+        .expect("session.start goes out");
+    let mut recorder = LiveRecorder::opened_now(header);
+
+    let mut deadline = tokio::time::Instant::now() + GREETING_WATCH;
+    let mut closing = false;
+    let mut error = None;
+    // A caller on a line sends audio even when quiet, and the model needs it:
+    // the first recording run (23.11.2026) fed nothing, heard 94 chunks of
+    // output audio with no transcript, and its greeting append ended in
+    // `context_injection_incomplete` at the close. With 20 ms of silence on
+    // the line the second run greeted, transcript and all.
+    let mut feed = tokio::time::interval(Duration::from_millis(20));
+    loop {
+        let next = tokio::select! {
+            _ = feed.tick(), if !closing => {
+                let frame = json!({
+                    "type": "session.input_audio.append",
+                    "audio": b64(&[0u8; SILENCE_FRAME]),
+                });
+                if write
+                    .send(WsMessage::Text(Utf8Bytes::from(frame.to_string())))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+            next = tokio::time::timeout_at(deadline, read.next()) => next,
+        };
+        let incoming = match next {
+            Ok(incoming) => incoming,
+            Err(_) if !closing => {
+                closing = true;
+                deadline = tokio::time::Instant::now() + CLOSE_GRACE;
+                let close = json!({ "type": "session.close", "event_id": "close" });
+                if write
+                    .send(WsMessage::Text(Utf8Bytes::from(close.to_string())))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+            Err(_) => break,
+        };
+        let text = match incoming {
+            Some(Ok(WsMessage::Text(text))) => text,
+            Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
+            Some(Ok(_)) => continue,
+        };
+        let Ok(event) = serde_json::from_str::<JsonValue>(&text) else {
+            continue;
+        };
+        recorder.note(&event, tokio::time::Instant::now());
+        match event.get("type").and_then(JsonValue::as_str) {
+            Some("session.started") => {
+                for frame in after_start {
+                    write
+                        .send(WsMessage::Text(Utf8Bytes::from(frame.to_string())))
+                        .await
+                        .expect("the opening goes out");
+                }
+            }
+            Some("session.closed") => break,
+            // Abort at the first error: a paid run is never retried here.
+            Some("error") => {
+                error = Some(event.clone());
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let kinds: Vec<&str> = recorder.events().iter().map(|e| e.kind.as_str()).collect();
+    println!("LIVE recorded {} events: {kinds:?}", kinds.len());
+    assert!(
+        error.is_none(),
+        "the session answered with an error: {error:?}"
+    );
+    assert!(
+        kinds.contains(&"session.output_audio.delta"),
+        "the model greeted: {kinds:?}"
+    );
+    if let Ok(path) = std::env::var(RECORD_ENV) {
+        std::fs::write(&path, recorder.to_jsonl()).expect("the recording is written");
+        println!("LIVE recording written to {path}");
+    }
 }

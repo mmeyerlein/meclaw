@@ -1,4 +1,4 @@
-# `builder@1.34.7`
+# `builder@1.35.0`
 
 The intake that turns a structural wish into a **manifest** — an ordered list of
 mutation declarations, ready to be submitted by whoever asked for it.
@@ -74,6 +74,8 @@ address them.
 | in | `in_ingest` | a nudge to reconcile the corpus behind this hive against the colony's own template registry. The body is not read: the message IS the nudge |
 | in | `in_model` | a model package for `./compose`, pushed by the colony's `llm-registry`: a params-only body (an empty `system` slot, no `messages`) the cell merges into its live params and answers with nothing. See *The model door*. Since 1.15.0 ([#858](https://github.com/mmeyerlein/meclaw/issues/858)) |
 | out | `model_refused` | a model push `./compose` refused: its error, with `hop.refused_subscriber` and `hop.refused_model`, instead of on `error` as `composer_failed`. `meclaw-os` carries it back to its registry. Since 1.15.1 ([#863](https://github.com/mmeyerlein/meclaw/issues/863)) |
+| in | `in_params` | a params-only update for one cell of this hive, named by `hop.subscriber` ([#1353](https://github.com/mmeyerlein/meclaw/issues/1353)) |
+| out | `params_applied`, `params_refused` | the answer of that cell |
 | out | `catalogue` | what that reconciliation did — `hop.catalogue_known`, `hop.catalogue_ingested` and the names it wrote |
 
 A build that stops says so on a lane. Never as silence, and never as an empty
@@ -115,7 +117,8 @@ the colony's `llm-registry`:
 The body is params-only -- an empty `system` slot, no `messages` -- which the `llm` cell
 merges into its live params, persists in its own `cell.db` and answers with nothing
 (`docs/cell-types.md` § `llm`). A request on any other lane cannot change the model a
-cell runs on: package keys are taken from a params-only message only (GH #853).
+cell runs on: package keys are taken from a params-only message only (GH #853). The one other lane
+that carries such a message is `in_params`, the operator's ([#1353](https://github.com/mmeyerlein/meclaw/issues/1353)).
 
 **`./compose` says what it needs, in prose.** `params.requirement` names the role, the latency,
 the context, the depth of reasoning and the price the cell can bear, and never a model; a
@@ -293,8 +296,8 @@ repairs, and a refusal a human cannot read is one they cannot answer.
 
 Growing a child into a composition level was, until `1.2.0`, a paragraph a model
 rewrote from scratch on every build: an organisation gets **26** transit edges, a
-member **26**, an assistant **40**, a channel **5**, a screen **3**, an app
-**3** — and they are the same edges every time, with the child's name
+member **26**, an assistant **41**, a channel **5**, a screen **2**, an app
+**2** — and they are the same edges every time, with the child's name
 substituted in. `examples/organism` writes all six out by hand, which is what
 made them measurable.
 
@@ -468,7 +471,7 @@ devices:
   {"scope": "/os/orgs/acme/members",
    "diff": {"add_nodes": [{"name": "alex", "template": "…"}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/channels",
-   "diff": {"add_nodes": [{"name": "display", "template": "display@2.14.0",
+   "diff": {"add_nodes": [{"name": "display", "template": "display@2.15.0",
                            "override_params": {"web": {"mount": "alex-display"}}}], "…": "…"}},
   {"scope": "/os/orgs/acme/members/alex/apps",
    "diff": {"add_nodes": [{"name": "colony-view", "template": "colony-view@1.2.1"}], "…": "…"}}]}
@@ -584,28 +587,20 @@ measured it, its second route out of the switch and the refusal that named an
 unreadable number are all gone; what refuses a member wish now is a name that
 renders no mount, and nothing else.
 
-**Since `1.10.0` a screen costs three edges, and the third is the error wire
+**Since `1.10.0` the screen's edges in the container end in the error wire
 in** ([#680](https://github.com/mmeyerlein/meclaw/issues/680),
 ADR-0039, `plans/adr/0039-a-channels-failure-reaches-the-screen-as-a-notice.md`).
 Up: `event` and `receipt`, stamped with the two channel keys and the viewer's
 `user_id`. Down: a `view` addressed by `context.channel_node`, re-stamped
 `in_view` — and, **since `1.11.0`, a `withdraw` on the same edge**, re-stamped
 `in_withdraw` by one ternary
-([#709](https://github.com/mmeyerlein/meclaw/issues/709)):
+([#709](https://github.com/mmeyerlein/meclaw/issues/709)). Since GH #1597 that
+down edge is the member's, drawn straight out of `./apps` (see below), so the
+container keeps two. A view outlives the turn that produced it, so ending one is
+a message rather than an absence. One edge and not two, because the two are one
+lane pair of one producer.
 
-```json
-{"from": ".", "to": "./display",
- "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && has(context.channel_node) && context.channel_node == 'display'",
- "modifier": {"set_hop": {"route": "hop.route == 'withdraw' ? 'in_withdraw' : 'in_view'"}}}
-```
-
-A view outlives the turn that produced it, so ending one is a message rather
-than an absence, and [`member`](../member/README.md) carries `withdraw` out of
-`./apps` beside `view`. Without this half the lane ends in the container: the first withdrawal
-of an app with several views is `hive_no_route` in the DLQ. One edge and not two,
-because the two are one lane pair of one producer.
-
-And down again: every `error` in the `channels` container, re-stamped
+And down: every `error` in the `channels` container, re-stamped
 onto the screen's `in_notice`, so a channel that failed is a system notice on
 the person's screen and not only a line in the operator's journal:
 
@@ -615,7 +610,7 @@ the person's screen and not only a line in the operator's journal:
  "modifier": {"set_hop": {"route": "'in_notice'"}}}
 ```
 
-The third edge carries **no `channel_node` guard** on purpose. A failure carries
+The error edge carries **no `channel_node` guard** on purpose. A failure carries
 no context of the screen it belongs to — it belongs to the member — and every
 channel failure in the container is a notice for that member's screen. It cannot
 loop: the display declares exactly two emissions, `event` and `receipt`, and
@@ -627,6 +622,50 @@ that ships an edge onto `./display` would ship a promise about a child it never
 creates. What the screen makes of the code (`stt_failed` → *The microphone did
 not catch that.*, and the rest of the table) is the display's, not the
 builder's: [`display`](../display/) § *A channel's failure is one of them*.
+
+**Since GH #1597 a screen is two declarations: its two edges in the
+container, and the member's half behind it.** What the MEMBER sends a screen —
+an app's view and the mutation receipt — goes from the member straight to that
+screen, on two edges at the member's scope, which no declaration standing in the
+container can name. The second declaration travels behind the screen in the same
+manifest (behind the app, in a member wish), so the door rolls it forward
+against the tree the screen just grew:
+
+```json
+{"scope": "<member>", "diff": {"add_edges": [
+  {"from": "./apps", "to": "./channels/display",
+   "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && has(context.channel_node) && context.channel_node == 'display'",
+   "modifier": {"set_hop": {"route": "hop.route == 'withdraw' ? 'in_withdraw' : 'in_view'"}}},
+  {"from": ".", "to": "./channels/display",
+   "condition": "has(hop.route) && hop.route == 'mutation_committed'"}]}}
+```
+
+The display hive takes `mutation_committed` onto its cold `compose`, so the
+receipt of the mutation that grows the screen, and the boot receipt of every
+restart, draws its page map before any app has written (GH #1590); unguarded,
+like the app level's, because a receipt carries no context. Until GH #1597 the
+[`member`](../member/README.md) carried both lanes into `./channels` on static
+edges and the screen level carried them on: in a member with no screen — or for a
+view addressed to a screen the member does not have — every one of them ended in
+the empty container as `hive_no_route`. Now an edge into the container's inside
+exists exactly when its target does, and two screens hear one receipt each.
+
+**Since GH #1598 an app hears the receipt the same way.** The `app` level draws
+its two edges in `<member>/apps`, and a second declaration at the member draws
+the receipt straight to the app — in a member wish it rides in the screen's
+member declaration, one entry and not two:
+
+```json
+{"from": ".", "to": "./apps/colony-view",
+ "condition": "has(hop.route) && hop.route == 'mutation_committed'"}
+```
+
+`install_app` draws the same edge, at the member's scope it already stands at,
+for an app that `listens` on `mutation_committed`; an app that embeds
+`simple-agent@2` brings the identical edge with the agent's rim, and the two are
+one. Until GH #1598 the `member` carried every receipt into `./apps` on a static
+edge and the app's own binding carried it on, so in a member with no app hearing
+it every receipt ended in the empty container as `hive_no_route`.
 
 **One wish is one submission, because the order is semantics.** The devices draw
 into `<member>/channels` and `<member>/apps`, scopes only the declaration in
@@ -938,7 +977,7 @@ level's own set and behind both older switches, so no index either of them rende
  "modifier": {"set_context": {"assistant": "'<name>'"}}}
 ```
 
-An assistant grown with `door: true` carries **41** edges: the level's own set and this one.
+An assistant grown with `door: true` carries **42** edges: the level's own set and this one.
 The edge takes the level's form. It is `.` → `./<name>` in the container, and
 `./assistants` → `./assistants/<name>` when `subscribe` or `credential` moved the declaration to
 the member. The absolute edge is the same either way, so the door adds no third reason for the
@@ -974,7 +1013,7 @@ for a generation of the shipped `assistant` template that lies under it, the man
 
 ```json
 {"scope": "/os/orgs", "ctx": {}, "diff": {"add_edges": [
-  {"from": ".", "to": "./<org>/members/<member>/assistants/<name>/talky",
+  {"from": ".", "to": "./<org>/members/<member>/assistants/<name>",
    "condition": "has(hop.route) && hop.route == 'in_model' && has(hop.subscriber) && hop.subscriber == '<gen>/talky/brain'",
    "modifier": {"set_hop": {"route": "'in_model'"}}},
   … the same for talky-chat and cogny …,
@@ -983,11 +1022,15 @@ for a generation of the shipped `assistant` template that lies under it, the man
    "modifier": {"set_hop": {"route": "'model_subscribe'"},
                 "set_context": {"model_generation": "'<gen>'",
                                 "model_announced": "'[{\"cell_path\":\"<gen>/talky/brain\",\"start_model\":\"<ctx.model_surface>\",\"requirement\":\"<what talky/brain states>\"}, …]'"}}}
+  {"from": "./<org>/members/<member>/assistants/<name>", "to": ".",
+   "condition": "has(hop.route) && hop.route == 'model_refused'"}
 ]}}
 ```
 
-Three push edges, one per brain onto its composite's `in_model` door and addressed by the
-brain's path, and one **announcement** edge: every mutation receipt that reaches the generation
+One push edge per brain, each onto the generation's own `in_model` door and addressed by the
+brain's path -- since [#1616](https://github.com/mmeyerlein/meclaw/issues/1616) (R-80-5) the road ends on the door the
+`assistant` level declares and never on one of its rims; the level hands each push to the rim that holds
+the cell, and the rim's door to the cell -- one way back off that same door, and one **announcement** edge: every mutation receipt that reaches the generation
 also leaves it for the container as `model_subscribe`, with the brains and their start values
 (`ctx.model_surface` for both talkies, `ctx.model` for the core), and the shell hands it to the
 registry, which makes a subscriber of each brain it does not know. So the row appears after the
@@ -1005,8 +1048,11 @@ its 2.3.2; the way back since its 2.3.4): an edge that names the road -- `in_mod
 `context.model_generation`, `context.model_announced` -- must be one of these three, byte for
 byte. A push edge starts at the declaration's container and carries only the pushes addressed
 to one cell standing directly in its composite, or to the summarizer of the curator that composite
-stands in front of (GH #877); a return edge runs from one composite under the
-container to the container itself; an announcement edge starts at a generation the same
+stands in front of (GH #877) -- or, since [#1616](https://github.com/mmeyerlein/meclaw/issues/1616), ends on the
+`in_model` door of a generation the same manifest grows and carries only the pushes for a cell
+behind one of its rims (`<rim>/<cell>`, `<rim>/curator/<cell>`) that the manifest's announcement
+names; a return edge runs from one composite under the container (or from such a generation) to
+the container itself; an announcement edge starts at a generation the same
 manifest instantiates. An agent grown one level below the container (`simple_agent`, or
 `install_app` of an app that embeds `simple-agent@2`) adds the one bare `in_model` edge: the
 level's door onto the agent, in the entry that bears it, with its push one hive deeper
@@ -1087,6 +1133,32 @@ generation announces the `decide` cell of `talky` and `talky-chat` too: an entry
 `model`) and the `requirement` of `talky/decide`, a push edge onto the rim and the rim's way back.
 The decider's calibration curve rides only on the registry's push, so without the announcement it
 answered every turn `decision_uncalibrated`.
+
+### A grown level's sealed hives are on the params road
+
+With `model_registry_scope` set, every level, app, channel, screen and agent block grown under that
+container also gets the road of a params-only update
+([#1353](https://github.com/mmeyerlein/meclaw/issues/1353)): per door hive (a sealed hive that
+accepts `in_params`) one edge onto its hive path, and one edge that brings the cell's answer back to
+the container.
+
+```json
+{"from": ".", "to": "./<org>/members/<member>/assistants/<name>/talky",
+ "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.startsWith('<gen>/talky/')",
+ "modifier": {"set_hop": {"route": "'in_params'"}}},
+{"from": "./<org>/members/<member>/assistants/<name>/talky", "to": ".",
+ "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')"}
+```
+
+The recipe draws no inner edge: those are the template's own (`scripts/hive_doors.py`). The doors of
+the shipped templates are written down in the recipe and held equal to their contracts by a test. A
+`contract` in the wish decides alone: with `accepts in_params` the road is drawn, without it none is.
+Without a contract a derivation (`<base>-<x>`) and a frozen version get no road, because an edge onto a
+hive without the door is refused with `hive_contract` and the wish with it. The edges join the
+model road's declaration where it stands last, and open one at that scope otherwise. A path that is
+no plain CEL literal gets none. The submission gate holds the push edge to exactly this form
+(`params_push_form`, `templates/submit/README.md`). Pinned in
+`crates/meclaw-colony/tests/misc/params_road_out_of_the_shell.rs`.
 
 ## A simple-agent is one block
 
@@ -1281,8 +1353,8 @@ lowest common ancestor of `./firewall`, a generation's surfaces and a device:
 | kind | edges |
 |---|---|
 | `screen` | the view edge out of the app, every declared lane plus `error`, stamped `channel_node`/`channel` with the screen; the owner edge back in on `event`/`receipt` — the two `grow_level level=app` draws |
-| `listens` | one observer edge into `./apps` per lane — `turn` off `./firewall` with the firewall's hygiene, `answer` off `./assistants`, `partial` off `./channels` — all of them UNGUARDED; beside the `answer` observer the channel-less exit `./assistants -> .`; and one binding `./apps -> ./apps/<app>` for all listened lanes. `mutation_committed` needs no observer: the member draws `. -> ./apps` itself. `close` observes the close batch of a session (`write` off `./assistants`, the batch the member's close pass takes) and restamps it `in_close` with the close pass's context (`session_id`, `audience_set`, `channel`); the body travels unchanged (`messages[]`, `rounds`, `hop.turn_count`), and `write` has a regular exit at the member, so this observer suppresses no default |
-| `offers` | a `sidecar` is read by name at the container; a `tool` is a `tool` v-lane from each of its callers, guarded on the tool names -- `callers` names brains of the generation (`talky`, `talky-chat`, `cogny`; GH #981), and an offer without it is offered to the two surfaces; a tool name reaches one cell per caller, so two offers may name the same tool only for disjoint callers; every offering cell answers the menu tick on a `schemas` v-lane, once per caller it offers something (a surface ticks a sidecar's cell too) -- which names a caller's menu shows is the app's to decide by `context.tool_caller`; the `tool_schemas` exit stamps `tool_answerer`. A result leaves in the words of its CALL and of the builder, never the app's: the call edge stamps `offer_tool` (the called name), and the `tool_result` exit lets a result out only when `offer_tool` is one of the offered names, restamping `hop.tool_name` from it and `context.assistant` (the generation), `context.audience_set` (the member's round, as for `reads` -- a round parked in the app's context could be rewritten by its inner edges, so a `tool` offer needs `ctx.member_person`) and `tool_answerer` as literals (GH #963 review N-1, GH #965) |
+| `listens` | one observer edge into `./apps` per lane — `turn` off `./firewall` with the firewall's hygiene, `answer` off `./assistants`, `partial` off `./channels` — all of them UNGUARDED; beside the `answer` observer the channel-less exit `./assistants -> .`; and one binding `./apps -> ./apps/<app>` for all listened lanes. `mutation_committed` needs no observer and no binding: it is ONE edge `. -> ./apps/<app>` from the member straight to the app, unguarded (GH #1598). `close` observes the close batch of a session (`write` off `./assistants`, the batch the member's close pass takes) and restamps it `in_close` with the close pass's context (`session_id`, `audience_set`, `channel`); the body travels unchanged (`messages[]`, `rounds`, `hop.turn_count`), and `write` has a regular exit at the member, so this observer suppresses no default |
+| `offers` | a `sidecar` is read by name off `./assistants`, straight into the app (GH #1598); a `tool` is a `tool` v-lane from each of its callers, guarded on the tool names -- `callers` names brains of the generation (`talky`, `talky-chat`, `cogny`; GH #981), and an offer without it is offered to the two surfaces; a tool name reaches one cell per caller, so two offers may name the same tool only for disjoint callers; every offering cell answers the menu tick on a `schemas` v-lane, once per caller it offers something (a surface ticks a sidecar's cell too) -- which names a caller's menu shows is the app's to decide by `context.tool_caller`; the `tool_schemas` exit stamps `tool_answerer`. A result leaves in the words of its CALL and of the builder, never the app's: the call edge stamps `offer_tool` (the called name), and the `tool_result` exit lets a result out only when `offer_tool` is one of the offered names, restamping `hop.tool_name` from it and `context.assistant` (the generation), `context.audience_set` (the member's round, as for `reads` -- a round parked in the app's context could be rewritten by its inner edges, so a `tool` offer needs `ctx.member_person`) and `tool_answerer` as literals (GH #963 review N-1, GH #965) |
 | `observes_tool_calls` | per surface of the generation one `tool` v-lane into `at` — the offer's own edge (same guard on the tool names, same stamp) with another target, restamped `route` (default `in_tool_call`), drawn as a tap |
 | `observes_tool_results` | as a string: two `tool_result` v-lanes into the named cell, from the generation's `./tools` and from `./memory-hive` (unchanged since #599). As an object: one off the generation's `./tools` and one off every holder a result enters the generation from -- `./memory-hive`, `./apps` (the other apps' results, the container as source so the install order does not matter, `context.tool_answerer` excluding the observer's own results), `./file-space`, `./objects`, `./librarian` and `./channels` (#995; a resident only if `residents_present` names it, like `runs`) -- guarded on the EFFECTIVE tool name (the answerer's `hop.tool_name`, else the name the call carried out as `context.called_tool`; the residents write none) and restamped `route` (default `in_tool_result`) and `tool_name` (that effective name); all taps, and every holder guarded on `context.assistant` |
 | `pins` | ONE edge from the named cell straight onto the generation, `pin` restamped `in_pin` (body `{pins: [{text, source, until?}], replace_sources?}`); the generation hands it to the curator of each of its brains (`talky`, `talky-chat`, `cogny`). The edge starts at the declared cell, so a `pin` of an app that declares none stays unrouted; an app that seals its rim has to name that cell among its ports |

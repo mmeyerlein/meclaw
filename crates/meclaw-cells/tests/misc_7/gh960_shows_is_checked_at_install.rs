@@ -247,9 +247,10 @@ fn the_presenter_draws_its_question_its_answers_and_the_empty_answer() {
         "the untaken question comes back as an answer of nobody: {empty}"
     );
 
-    // Its other words are drawn as for any app.
+    // Its other words are drawn as for any app: the receipt from the member straight
+    // to the app (GH #1598).
     assert!(
-        got.iter().any(|e| e["from"] == "./apps"
+        got.iter().any(|e| e["from"] == "."
             && e["to"] == "./apps/presenter"
             && e["condition"] == "has(hop.route) && hop.route == 'mutation_committed'"),
         "{got:#?}"

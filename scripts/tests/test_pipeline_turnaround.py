@@ -956,6 +956,112 @@ class GateBaseTest(Case):
         self.assertTrue(call["gate_reuse"].startswith("full"))
 
 
+class StackGateBaseTest(Case):
+    """w1 stapelmerge (#1603): a batch whose members ONE GREEN full receipt on
+    the stack tip covers plans like a one-strand merge -- base = the stack tip,
+    the diff is what the merge point writes plus master's move. Any other batch
+    (no member carries the others, no covering receipt, a receipt on another
+    tree, a resolved conflict, a revert) plans from master."""
+
+    PLAN = GateBaseTest.PLAN
+
+    def full_receipt(self, name, s, base):
+        d = self.f.receipt(name, "20260102T000000Z-%s" % s["tip"][:8], "strand", s["tip"], "GREEN")
+        doc = json.loads(tm.read(d, "last-strand.json"))
+        doc.update({"base": base, "dirty": False, "plan": list(self.PLAN),
+                    "stations": [{"name": n, "verdict": "GREEN"} for n in self.PLAN],
+                    "owner_decisions": []})
+        tm.write(d, "last-strand.json", json.dumps(doc) + "\n")
+        tm.write(d, "plan.json", json.dumps({"mode": "strand", "rev": s["tip"], "base": base,
+                                             "stations": [{"name": n} for n in self.PLAN]}) + "\n")
+        return d
+
+    def stack(self, top_receipt=True):
+        """S1 on master, S2 on S1 (the stack tip carries S1)."""
+        base = self.f.head()
+        s1 = self.f.strand("S1", 101, {"templates/a/foo.txt": "foo\n"}, in_branch=True)
+        s2 = self.f.strand("S2", 102, {"templates/a/bar.txt": "bar\n"}, in_branch=True,
+                           base=s1["branch"])
+        self.full_receipt("S1", s1, base)
+        if top_receipt:
+            self.full_receipt("S2", s2, base)
+        return base, s1, s2
+
+    def merged(self):
+        rc, _, err = self.f.merge(["S1", "S2"])
+        self.assertEqual(rc, 0, err)
+        return self.f.gate_calls()[-1], err
+
+    def test_stack_receipt_on_the_tip_plans_from_the_tip(self):
+        _, _, s2 = self.stack()
+        call, err = self.merged()
+        self.assertEqual(call["gate_base"], s2["tip"])
+        self.assertTrue(call["gate_reuse"].startswith("stage:merge stack S2"), call["gate_reuse"])
+        self.assertIn("master unmoved", call["gate_reuse"])
+        self.assertIn("merge: gate base %s" % s2["tip"][:9], err)
+        self.assertEqual(call.get("stack"), "S2")
+
+    def test_stack_with_master_moved_plans_the_master_move_too(self):
+        _, _, s2 = self.stack()
+        self.f.master_commit({"docs/other.md": "Moved.\n"})
+        call, _ = self.merged()
+        self.assertEqual(call["gate_base"], s2["tip"])
+        self.assertIn("master moved", call["gate_reuse"])
+        planned = tm.git(self.f.root, "diff", "--name-only", call["gate_base"], call["rev"]).split()
+        self.assertIn("docs/other.md", planned)   # over-selection allowed, under-selection never
+
+    def test_stack_without_a_covering_receipt_plans_from_master(self):
+        self.stack(top_receipt=False)   # S2 has the fixture's plain receipt only
+        call, _ = self.merged()
+        self.assertEqual(call["gate_base"], call["base"])
+        self.assertTrue(call["gate_reuse"].startswith("full"), call["gate_reuse"])
+
+    def test_independent_strands_plan_from_master(self):
+        base = self.f.head()
+        s1 = self.f.strand("S1", 101, {"templates/a/foo.txt": "foo\n"}, in_branch=True)
+        s2 = self.f.strand("S2", 102, {"templates/a/bar.txt": "bar\n"}, in_branch=True)
+        self.full_receipt("S1", s1, base)
+        self.full_receipt("S2", s2, base)
+        call, _ = self.merged()
+        self.assertEqual(call["gate_base"], call["base"])
+        self.assertIn("no member carries the others", call["gate_reuse"])
+
+    def ctx_of(self, names):
+        receipts = {}
+        for n in names:
+            s = merge.Strand(self.f.root, n, tm.WAVE)
+            tip = tm.git(self.f.root, "rev-parse", s.branch)
+            receipts[n] = merge.preconditions(s, tip, no_pre="test")
+        return [merge.Strand(self.f.root, n, tm.WAVE) for n in names], {"receipts": receipts}
+
+    def test_a_resolved_conflict_plans_from_master(self):
+        base, _, _ = self.stack()
+        strands, ctx = self.ctx_of(["S1", "S2"])
+        rev, why = merge.gate_base(self.f.root, base, strands, ctx,
+                                   resolved="CHANGELOG.md: kept both [Unreleased] sides")
+        self.assertEqual(rev, base)
+        self.assertIn("resolved", why)
+
+    def test_a_receipt_on_another_tree_plans_from_master(self):
+        base, s1, s2 = self.stack()
+        strands, ctx = self.ctx_of(["S1", "S2"])
+        ctx["receipts"]["S2"] = dict(ctx["receipts"]["S2"], rev=s1["tip"])
+        rev, why = merge.gate_base(self.f.root, base, strands, ctx)
+        self.assertEqual(rev, base)
+        self.assertIn("another tree", why)
+
+    def test_a_revert_in_the_stack_plans_from_master(self):
+        base, _, s2 = self.stack()
+        commit(s2["wt"], {"templates/a/bar.txt": "bar2\n"}, 'Revert "x"\n\nThis reverts commit abc.')
+        tip = tm.git(self.f.root, "rev-parse", "welle-test/S2")
+        self.f.stamp(s2["wt"])
+        self.full_receipt("S2", dict(s2, tip=tip), base)
+        strands, ctx = self.ctx_of(["S1", "S2"])
+        rev, why = merge.gate_base(self.f.root, base, strands, ctx)
+        self.assertEqual(rev, base)
+        self.assertIn("revert", why)
+
+
 # --- (c) --------------------------------------------------------------------------
 
 class OnePassTest(Case):
@@ -1048,12 +1154,16 @@ class PlanOnlyTest(Case):
         real, calls = turnaround.offending, []
 
         def offending(paths, repo, wave=None):
-            calls.append(list(paths))
-            return real(paths, repo, wave) if len(calls) == 1 else {NOTES: "vetoed"}
+            # `plan_only` asks twice since `merge --check` (`gaps_of` before
+            # the lease, w1 #1602); every other caller is the candidate's diff.
+            caller = sys._getframe(1).f_code.co_name
+            calls.append((caller, list(paths)))
+            return real(paths, repo, wave) if caller == "plan_only" else {NOTES: "vetoed"}
 
         with mock.patch.object(turnaround, "offending", offending):
             err = self.refused("plan")
-        self.assertEqual(2, len(calls), calls)
+        self.assertEqual("plan_only", calls[0][0], calls)
+        self.assertNotEqual("plan_only", calls[-1][0], calls)
         self.assertIn("plan_only_not_neutral", err)
         self.assertIn("%s (vetoed)" % NOTES, err)
         self.assertEqual(self.f.gate_calls(), [])

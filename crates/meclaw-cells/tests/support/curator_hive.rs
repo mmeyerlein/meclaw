@@ -222,8 +222,7 @@ impl Msg {
 
 /// D58 target (contract point 8, OR-d58-2.target.39): the way a call left
 /// on before every model call took one route, read off its target under
-/// [`LEAD_WIRING`] -- `quick` for the fast voice and its spec and side
-/// cells, `brain` for the brain and for a call that names no target (the
+/// [`LEAD_WIRING`] -- `quick` for the fast voice and its side cell, `brain` for the brain and for a call that names no target (the
 /// way of a curate without a stamp), the errand's class for an errand.
 /// [`Hive::routed`] finds a call by either name.
 pub fn way_of(m: &Msg) -> String {
@@ -236,7 +235,7 @@ pub fn way_of(m: &Msg) -> String {
     };
     match m.route() {
         "model_call" => match field("target").as_str() {
-            "quick" | "quick_spec" | "quick_bridge" => "quick".to_string(),
+            "quick" | "quick_bridge" => "quick".to_string(),
             "" => "brain".to_string(),
             t => t.to_string(),
         },
@@ -597,15 +596,14 @@ pub const LEAD_CELLS: [&str; 2] = ["lead", "state"];
 /// sets them -- the targets and errand classes the shipped lead named
 /// before it named none. D58 moveout (GH #1476): `bridge_wording`, the form
 /// of the side call beside each errand class.
-pub const LEAD_WIRING: [(&str, &str); 8] = [
+pub const LEAD_WIRING: [(&str, &str); 7] = [
     (
         "path_routes",
         "talk:brain,simple:quick,complex:consult,research:research",
     ),
     ("departures", "consult:10000,research:120000:240000"),
     ("fallback", "quick:brain"),
-    ("spec_target", "quick_spec"),
-    ("bridge_target", "*:quick,spec:quick_bridge"),
+    ("bridge_target", "*:quick"),
     ("bridge_wording", "consult:soon,research:later"),
     ("errand_tool", "consult_cogny"),
     ("errand_family", "consult"),

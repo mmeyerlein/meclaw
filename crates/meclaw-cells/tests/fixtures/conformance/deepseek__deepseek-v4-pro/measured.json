@@ -72,5 +72,7 @@
       "note": "measured.json + responses/basic,reasoning,tool"
     }
   },
-  "cost_usd": 0.000154
+  "cost_usd": 0.000154,
+  "refusals": [],
+  "refusals_measured_at": "2026-11-23T11:34:53Z"
 }

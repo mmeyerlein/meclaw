@@ -14,6 +14,7 @@ No network, no real GitHub, no real host.
 Run: `scripts/strand.sh test --unittest scripts.tests.test_release_script`.
 """
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -76,15 +77,35 @@ elif name == "make_export.py":
     print("RECEIPT GRUEN -- Export-Commit: " + commit)
 elif name == "tag_release.sh":
     git("-C", args[1], "tag", "-a", "v" + args[2], "-m", "v" + args[2], args[3])
+elif name == "gh" and args[:2] == ["release", "download"]:
+    # the release workflow's binary asset: <name>.tar.gz with <name>/meclaw
+    # inside, and its sibling <name>.tar.gz.sha256 (the release's own sum)
+    import hashlib, io, tarfile
+    folder, name = opt("-D"), opt("-p").rstrip("*")[:-len(".tar.gz")]
+    data = os.environ["RELEASE_STUB_ASSET"].encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name + "/meclaw")
+        info.size, info.mode = len(data), 0o755
+        tf.addfile(info, io.BytesIO(data))
+    with open(os.path.join(folder, name + ".tar.gz"), "wb") as f:
+        f.write(buf.getvalue())
+    digest = hashlib.sha256(buf.getvalue()).hexdigest()
+    if os.path.exists(os.path.join(os.environ["RELEASE_STUB_FAIL"], "gh-asset-badsum")):
+        digest = "0" * 64
+    with open(os.path.join(folder, name + ".tar.gz.sha256"), "w") as f:
+        f.write(digest + "  " + name + ".tar.gz\n")
 elif name == "gh":
     hang = os.path.join(os.environ["RELEASE_STUB_FAIL"], "gh-hang")
     if args[:2] == ["run", "watch"] and os.path.exists(hang):
         import signal
         signal.pause()  # a stalled watch: no output, no exit, until killed
     if args[:2] == ["run", "list"]:
-        print(json.dumps([{"databaseId": 7, "headSha": opt("--commit")}]))
+        run_id = 8 if opt("--workflow") == "release" else 7
+        print(json.dumps([{"databaseId": run_id, "headSha": opt("--commit")}]))
     elif args[:2] == ["run", "view"]:
-        print(json.dumps({"conclusion": "success"}))
+        red = os.path.join(os.environ["RELEASE_STUB_FAIL"], "gh-run-red-" + args[2])
+        print(json.dumps({"conclusion": "failure" if os.path.exists(red) else "success"}))
     elif args[:2] == ["api", "graphql"] and "createDiscussion" not in " ".join(args):
         # the look-up before the create: red, or a discussion already there
         red = os.path.join(os.environ["RELEASE_STUB_FAIL"], "gh-lookup-red")
@@ -132,6 +153,9 @@ REPO_TOOLS = ["/".join(p) for p in (
 # line to the same log, which `World.calls` reads beside the JSON lines.
 PATH_TOOLS = ["gh", "scp", "curl"]
 
+# the binary inside the stub's release asset
+ASSET_BYTES = b"#!/bin/sh\necho meclaw 0.0.2\n"
+
 PILL = ('<a class="pill" href="https://github.com/o/r/releases/tag/v{v}">v{v}</a>\n'
         '<a href="https://github.com/o/r/blob/v{v}/CHANGELOG.md">Changelog</a>\n')
 
@@ -166,9 +190,16 @@ CHANGELOG = ("# Changelog\n\n## [Unreleased]\n\n## [0.0.2] — 2026-11-01\n\n"
              "## [0.0.1] — 2026-10-01\n\n- first\n")
 
 
+# The helper's commits and tags carry their own identity: a runner without a git
+# identity (the public CI's empty HOME) failed World's first commit (exit 128)
+# in every class that does not patch one in (w1 asset fix 1).
+GIT_IDENT = {"GIT_AUTHOR_NAME": "kit", "GIT_AUTHOR_EMAIL": "kit@example.invalid",
+             "GIT_COMMITTER_NAME": "kit", "GIT_COMMITTER_EMAIL": "kit@example.invalid"}
+
+
 def git(repo, *args, stdin=None):
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          check=True, input=stdin).stdout.strip()
+                          check=True, input=stdin, env={**os.environ, **GIT_IDENT}).stdout.strip()
 
 
 def write(base, files):
@@ -189,7 +220,8 @@ def tearDownModule():
 class World:
     """The throw-away repos, stubs, config and environment of one case."""
 
-    def __init__(self, tmp, *, version=VERSION, discussion=True, watch_timeout_s=60, site_files=None):
+    def __init__(self, tmp, *, version=VERSION, discussion=True, watch_timeout_s=60, site_files=None,
+                 site=None):
         self.tmp = tmp
         self.root = tmp / "meclaw-core"
         self.site = tmp / "site"
@@ -209,6 +241,7 @@ class World:
             "RELEASE_STUB_LOG": str(self.log), "RELEASE_STUB_FAIL": str(self.fail),
             "RELEASE_STUB_ROOT": str(self.root), "RELEASE_STUB_WDIR": WDIR,
             "RELEASE_STUB_SITE": str(self.site),
+            "RELEASE_STUB_ASSET": ASSET_BYTES.decode(),
             "MECLAW_WORKTREE_ROOT": str(tmp / "wellen"),
             # no host file: without --host the gate goes as before, no lane is probed
             "MECLAW_LANES_FILE": str(tmp / "no-lanes"),
@@ -243,13 +276,14 @@ class World:
         self.site_origin = tmp / "site.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(self.site_origin)], check=True)
         subprocess.run(["git", "init", "-q", "-b", "master", str(self.site)], check=True)
-        write(self.site, SITE)
+        write(self.site, site or SITE)
         git(self.site, "add", "-A")
         git(self.site, "commit", "-q", "-m", "site")
         git(self.site, "remote", "add", "origin", str(self.site_origin))
         git(self.site, "push", "-q", "origin", "master")
 
         self.config = tmp / "release.toml"
+        self.asset_dir = tmp / "kb-bin"
         text = (f'gh_repo = "o/r"\n\n[ci]\nwatch_timeout_s = {watch_timeout_s}\nfind_tries = 1\n'
                 'find_interval_s = 0\n\n'
                 f'[website]\nrepo = "{self.site}"\nbranch = "master"\nurl = "https://site.invalid"\n'
@@ -258,6 +292,7 @@ class World:
             text += "files = " + json.dumps(site_files) + "\n"
         if discussion:
             text += '\n[discussion]\nrepository_id = "R_x"\ncategory_id = "DIC_y"\n'
+        text += f'\n[asset]\ndir = "{self.asset_dir}"\n'
         self.config.write_text(text)
 
     def run(self, phase, *extra):
@@ -417,7 +452,8 @@ class ReleaseScript(unittest.TestCase):
         self.assertEqual(len(w.creates()), 1, names)
         self.assertEqual(names[10], "ssh", names)
         self.assertIn("publish_docs.sh", names)
-        self.assertEqual(names[-1], "curl", names)
+        self.assertEqual(names[-2:], ["curl", "gh release download"], names)
+        self.assertEqual((w.asset_dir / f"meclaw-{VERSION}-asset").read_bytes(), ASSET_BYTES)
         data = release.State(w.root / "plans" / WDIR / f"release-{VERSION}.state").data()
         export = data["export"]
         self.assertEqual(git(w.origin, "rev-parse", "main"), export)
@@ -565,6 +601,145 @@ class ReleaseScript(unittest.TestCase):
         self.assertEqual((last["step"], last["event"], last["verdict"]), ("website-check", "end", "RED"), out)
         self.assertIn("gone.txt", last["reason"])
         self.assertNotIn("Traceback", out)
+
+
+# The website before the hand step of every release up to 0.89.6 (GH #1592,
+# nr. 44): its `Current version:` paragraph still names the last release.
+OLD_SITE = dict(SITE, **{
+    "llms.txt": ("## Releases\n\nCurrent version: 0.0.1. Old. The release gate passed 5 tests.\n\n"
+                 "- [Changelog at v0.0.1](https://github.com/o/r/blob/v0.0.1/CHANGELOG.md): truth.\n"),
+    "llms-full.txt": ("## Releases\n\nCurrent version: 0.0.1. Old. The release gate passed 5 tests.\n\n"
+                      "Previous: 0.0.0. Older. Changelog: https://github.com/o/r/blob/v0.0.0/CHANGELOG.md\n"),
+})
+
+
+class WebsiteParagraph(unittest.TestCase):
+    """GH #1592 (nr. 44): prepare writes the `Current version:` paragraph out of
+    the CHANGELOG intro and moves the one before into the history; up to 0.89.6
+    website-check went red on seven releases until an agent wrote it by hand."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_prepare_writes_the_paragraph_and_moves_the_old_one_into_the_history(self):
+        w = World(self.tmp, site=OLD_SITE)
+        before = git(w.site, "rev-parse", "HEAD")
+        rc, out = w.run("prepare")
+        self.assertEqual(rc, 0, out)
+        new = "Current version: 0.0.2. A new thing ships. The release gate passed 42 tests."
+        llms = (w.site / "llms.txt").read_text()
+        self.assertIn("## Releases\n\n" + new + "\n\n- [Changelog", llms)
+        self.assertNotIn("0.0.1. Old.", llms)
+        full = (w.site / "llms-full.txt").read_text()
+        self.assertIn("## Releases\n\n" + new + "\n\nPrevious: 0.0.1. Old. The release gate passed 5 tests."
+                      "\n\nPrevious: 0.0.0. Older.", full)
+        # one website commit, nothing left dirty, nothing pushed
+        self.assertNotEqual(git(w.site, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(w.site, "status", "--porcelain"), "")
+        self.assertEqual(git(w.site_origin, "rev-parse", "master"), before)
+        rc, out = w.run("publish")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("passed 42 tests", (w.site / "llms.txt").read_text())
+
+    def test_the_paragraph_drops_code_marks_and_issue_links(self):
+        intro = ("This keeps `role: system` out ([#1579](https://x.invalid/1579)). "
+                 "See [the docs](https://x.invalid/d) and [#7](https://x.invalid/7)")
+        self.assertEqual(release.site_paragraph("0.3.0", intro, 9),
+                         "Current version: 0.3.0. This keeps role: system out. See the docs and #7. "
+                         "The release gate passed 9 tests.")
+
+    def test_a_paragraph_already_there_stays_byte_equal(self):
+        text = SITE["llms-full.txt"]
+        para = release.site_paragraph("0.0.2", "Other words.", 42)
+        self.assertEqual(release.write_current_paragraph(text, "0.0.2", para), text)
+
+
+class Asset(unittest.TestCase):
+    """Step 5 of the release chain (leser-schnitt-kette (1) nr. 5): the asset
+    landed in ~/kb/bin by a hand command, `gh release download` plus sha256."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.w = World(self.tmp)
+        git(self.w.root, "tag", "-a", f"v{VERSION}", "-m", f"v{VERSION}")
+        self.commit = git(self.w.root, "rev-parse", f"v{VERSION}^{{commit}}")
+
+    def test_the_right_sum_lands_the_binary_with_its_origin(self):
+        w = self.w
+        rc, out = w.run("asset")
+        self.assertEqual(rc, 0, out)
+        binary = w.asset_dir / f"meclaw-{VERSION}-asset"
+        self.assertEqual(binary.read_bytes(), ASSET_BYTES)
+        self.assertTrue(os.access(binary, os.X_OK))
+        sha = hashlib.sha256(ASSET_BYTES).hexdigest()
+        origin = json.loads((w.asset_dir / f"meclaw-{VERSION}-asset.origin.json").read_text())
+        self.assertEqual({k: origin[k] for k in ("version", "commit", "sha256")},
+                         {"version": VERSION, "commit": self.commit, "sha256": sha})
+        self.assertIn("meclaw-0.0.2-x86_64-unknown-linux-musl.tar.gz", origin["source"])
+        self.assertEqual(json.loads(out.strip().splitlines()[-1]),
+                         {"version": VERSION, "commit": self.commit, "sha256": sha})
+        self.assertEqual(sorted(p.name for p in w.asset_dir.iterdir()),
+                         [f"meclaw-{VERSION}-asset", f"meclaw-{VERSION}-asset.origin.json"])
+
+    def test_a_wrong_sum_is_red_and_lands_nothing(self):
+        w = self.w
+        (w.fail / "gh-asset-badsum").write_text("")
+        rc, out = w.run("asset")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("sha256", out)
+        self.assertEqual(list(w.asset_dir.iterdir()) if w.asset_dir.exists() else [], [])
+
+
+class AcceptRed(unittest.TestCase):
+    """GH #1592 (nr. 46): a red public CI could not be accepted; 0.89.2 wrote its
+    GREEN line `ci: failure-accepted-OR-54g-300` into the state by hand."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.w = World(self.tmp)
+        self.assertEqual(self.w.run("prepare")[0], 0)
+
+    def test_a_red_ci_is_accepted_only_with_a_ruling(self):
+        w = self.w
+        (w.fail / "gh-run-red-7").write_text("")
+        rc, out = w.run("publish")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([e["verdict"] for e in w.state() if e["step"] == "ci" and e["event"] == "end"],
+                         ["RED"], out)
+        rc, out = w.run("publish", "--accept-red", "ci:a flake, no ruling")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("OR-", out)
+        rc, out = w.run("publish", "--accept-red", "ci:OR-54s-1: the known flake of the public CI")
+        self.assertEqual(rc, 0, out)
+        ends = [e for e in w.state() if e["step"] == "ci" and e["event"] == "end"]
+        self.assertEqual([e["verdict"] for e in ends], ["RED", "GREEN"], out)
+        self.assertEqual(ends[-1]["data"], {"ci": "failure-accepted-OR-54s-1", "ci_run": "7"})
+        accepted = [e for e in w.state() if e["step"] == "ci" and e["event"] == "accepted"]
+        self.assertEqual([e["reason"] for e in accepted], ["OR-54s-1: the known flake of the public CI"])
+        self.assertIn("ci=failure-accepted-OR-54s-1 release=success", out.strip().splitlines()[-1])
+
+    def test_prepare_takes_no_decide(self):
+        # d54s kit F1 (R-54-8): no gate station asks, so prepare has no answer
+        # to pass on -- `--decide` is an unknown argument.
+        rc, out = self.w.run("prepare", "--decide", "x=without:OR-54s-1: y")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("--decide", out)
+
+    def test_the_release_run_takes_no_acceptance(self):
+        w = self.w
+        rc, out = w.run("publish", "--accept-red", "release-run:OR-54s-2: assets")
+        self.assertEqual(rc, 2, out)
+        (w.fail / "gh-run-red-8").write_text("")
+        rc, out = w.run("publish", "--accept-red", "ci:OR-54s-1: the known flake")
+        self.assertEqual(rc, 1, out)
+        last = w.state()[-1]
+        self.assertEqual((last["step"], last["verdict"]), ("release-run", "RED"), out)
 
 
 class Rewrite(unittest.TestCase):

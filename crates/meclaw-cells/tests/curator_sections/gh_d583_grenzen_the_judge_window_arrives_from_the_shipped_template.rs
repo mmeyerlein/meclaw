@@ -7,7 +7,7 @@
 //! target's window (`view_share` x `input_soft` of its row). The pins of N6
 //! put the row on the curator's lane `in_catalog` by hand (`report_row`).
 //! In the shipped composite no edge carried a row of `./decide` anywhere:
-//! only `./brain`, `./quick`, `./quick_spec` and `./quick_bridge` tell their
+//! only `./brain`, `./quick` and `./quick_bridge` (then also `./quick_spec`) tell their
 //! package. `./history` never learned `limits:decide`, and the view fell
 //! back to the window of the wall holder -- 0.1875 x 200 000 = 37 500
 //! tokens for a model whose row says 32 000 at most (review of the strand,

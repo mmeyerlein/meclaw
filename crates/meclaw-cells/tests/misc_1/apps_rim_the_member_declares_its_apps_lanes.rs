@@ -216,8 +216,9 @@ fn the_member_declares_the_observer_lanes_on_its_apps_container() {
 /// Ruling of 2026-09-05: whoever listens orders it.
 ///
 /// The edges into `./apps` are exactly the ones that were already there before
-/// the apps rim existed — the screen's own events and receipts (GH #459) and
-/// the mutation receipt (GH #553). No `pass`, no `turn`, no `answer`, no
+/// the apps rim existed — the screen's own events and receipts (GH #459). The
+/// mutation receipt (GH #553) does not end here since GH #1598: the mutation that
+/// installs an app draws it from the member straight to the app. No `pass`, no `turn`, no `answer`, no
 /// `partial`: those are drawn by the manifest that installs an app, and a
 /// member with no such app must not carry an edge that dead-letters into an
 /// empty container.
@@ -239,30 +240,31 @@ fn the_member_draws_no_observer_edge_of_its_own() {
     assert_eq!(
         into,
         vec![
-            (".".to_string(), Some("mutation_committed".to_string())),
             ("./assistants".to_string(), Some("answer_check".to_string())),
-            ("./assistants".to_string(), Some("sidecar".to_string())),
             ("./channels".to_string(), Some("event".to_string())),
             ("./channels".to_string(), Some("receipt".to_string())),
         ],
-        "the library ships the three edges into `./apps` it shipped before the apps rim, \
-         and — since member@1.7.0 (GH #607) — the sidecar edge. That one IS the level's, \
-         and it is the second exception to *whoever listens orders it*: the rim cannot \
-         know the sections, because a section is named by whoever OFFERED it and an app \
-         is installed long after this template was written, so the level carries every \
-         non-`memory` section into the container on ONE edge and the installing mutation \
-         draws `./apps -> ./apps/<app>` on the section by name. It costs a member without \
-         apps nothing measurable, for the same reason the two restamp edges cost it \
-         nothing: a section is only ever written because it was OFFERED. The OBSERVER \
-         edges `./firewall -> ./apps` (pass→turn), `./assistants -> ./apps` (answer) and \
-         `./channels -> ./apps` (partial) stay the installing mutation's — those lanes \
-         exist whether or not anybody listens — see `templates/member/README.md` \
-         § Installing an app. Since GH #1255 `answer_check` rides beside the sidecar edge \
-         for the same reason: the splitter raises it only for a section the member's own \
-         knob names, so a member that set none carries nothing on it"
+        "the library ships the two edges into `./apps` it shipped before the apps rim \
+         (the screen's event and receipt, by owner) and `answer_check` (GH #1255), which \
+         the splitter raises only for a section the member's own knob names. Since GH #1598 \
+         neither the mutation receipt nor the sidecar ends in the container: an installed \
+         app draws both straight to itself (`. -> ./apps/<app>`, \
+         `./assistants -> ./apps/<app>` on its section), because a member with no app \
+         hearing them dead-lettered every receipt and every section written for the \
+         channels in the empty container. The OBSERVER edges `./firewall -> ./apps` \
+         (pass→turn), `./assistants -> ./apps` (answer) and `./channels -> ./apps` \
+         (partial) stay the installing mutation's -- see `templates/member/README.md` \
+         § Installing an app"
     );
 
-    for banned in ["pass", "turn", "answer", "partial"] {
+    for banned in [
+        "pass",
+        "turn",
+        "answer",
+        "partial",
+        "sidecar",
+        "mutation_committed",
+    ] {
         assert!(
             !hp.graph
                 .edges

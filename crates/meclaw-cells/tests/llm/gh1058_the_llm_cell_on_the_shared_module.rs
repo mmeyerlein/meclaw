@@ -25,7 +25,11 @@ use meclaw_colony::StatefulCell;
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, Headers, Message, MessageBuilder, OutputSink, Path, Uuid};
 use meclaw_testing::deadline;
-use meclaw_testing::mock_http::{MockResponse, start_mock_server_capturing};
+use meclaw_testing::mock_http::MockResponse;
+// harness_fold: #[path = "mock_openai.rs"]
+#[allow(unused_imports)]
+use crate::mock_openai; // harness_fold: mod mock_openai;
+use mock_openai::MockOpenAI;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -215,7 +219,7 @@ async fn gh1058_the_llm_cell_behaves_as_before_on_the_shared_module() {
     let _guard = tracing::subscriber::set_default(capture.clone());
 
     // ── the park-release round ──
-    let (addr, _server, captured) = start_mock_server_capturing(vec![chat_answer()]).await;
+    let MockOpenAI { addr, captured, .. } = MockOpenAI::start(vec![chat_answer()]).await;
     let td = tempfile::TempDir::new().unwrap();
     let mut db = cell_db(&td);
     let mut c = cell(json!({
@@ -381,7 +385,7 @@ async fn gh1058_the_llm_cell_times_out_as_before_on_the_shared_module() {
 /// spends no grant presents the key — the 0.61 instance runs unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gh1058_a_literal_key_wins_while_no_grant_is_set() {
-    let (addr, _server, captured) = start_mock_server_capturing(vec![chat_answer()]).await;
+    let MockOpenAI { addr, captured, .. } = MockOpenAI::start(vec![chat_answer()]).await;
     let td = tempfile::TempDir::new().unwrap();
     let mut db = cell_db(&td);
     let mut c = cell(json!({
@@ -408,7 +412,7 @@ async fn gh1058_a_literal_key_wins_while_no_grant_is_set() {
 async fn gh1058_a_literal_key_is_ignored_once_a_grant_is_set() {
     let capture = Capture::default();
     let _guard = tracing::subscriber::set_default(capture.clone());
-    let (addr, _server, captured) = start_mock_server_capturing(vec![chat_answer()]).await;
+    let MockOpenAI { addr, captured, .. } = MockOpenAI::start(vec![chat_answer()]).await;
     let td = tempfile::TempDir::new().unwrap();
     let mut db = cell_db(&td);
     let mut c = cell(json!({

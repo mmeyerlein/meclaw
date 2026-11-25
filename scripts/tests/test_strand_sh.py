@@ -1086,23 +1086,15 @@ SUMMARY_LINE = re.compile(
     r"^GATE-SUMMARY (?P<mode>\S+) (?P<rev>\S+) (?P<green>\d+)/(?P<total>\d+) "
     r"(?P<secs>\d+)s (?P<verdict>GREEN|RED|ASK)$")
 
-# A station that ASKS in the passes: the persona-receipt arm of the runner
-# turns checker exit 3 (stale) into ASK in integration and release, and the
-# run ends with exit 4 and a question block after the summary line.
-PLAN_ASK = (
-    "persona-receipt\tfingerprint\t0\t"
-    "bash -c 'echo \"PERSONA-RECEIPT stale the sources moved\"; exit 3'\t\n"
-)
-
 # A stand-in for the runner of the tree: what an ASK run prints, without
 # depending on the arm itself. The kit reads the run log, not the runner.
 ASK_STUB = """#!/bin/sh
 echo 'GATE ok [scope-ok] 0s GREEN'
-echo 'GATE persona-receipt [fingerprint] 0s ASK the sources moved'
+echo 'GATE asking-station [scope-q] 0s ASK the sources moved'
 echo 'GATE-SUMMARY integration deadbeef 1/1 0s ASK'
 echo 'gate: ASK -- a question for the owner, not a finding.'
-echo '  persona-receipt: the sources moved'
-echo '         scripts/gate.sh integration --decide persona-receipt=without:"<reason>"'
+echo '  asking-station: the sources moved'
+echo '         scripts/gate.sh integration --decide asking-station=without:"<reason>"'
 exit 4
 """
 
@@ -1283,19 +1275,6 @@ class TestGate(StrandShTestCase):
         self.assertIn(" RED", lines[1])
         # The full run is still on disk -- it just is not in the answer.
         self.assertIn("GATE ok ", (self.archive() / "run.log").read_text())
-
-    def test_gate_prints_the_question_block_of_an_ask_run(self):
-        """The kit's half of the contract, without the runner's arm: the ASK
-        station line, the summary and the question block from the run log."""
-        ask_stub(self.tree)
-        res = run_strand(self.repo, "gate", "ci", cwd=self.tree)
-        self.assertEqual(4, res.returncode, res.stdout + res.stderr)
-        lines = [ln for ln in res.stdout.splitlines() if ln.strip()]
-        self.assertTrue(lines[0].startswith("GATE persona-receipt "), res.stdout)
-        self.assertTrue(SUMMARY_LINE.match(lines[1]), res.stdout)
-        self.assertTrue(lines[2].startswith("gate: ASK"), res.stdout)
-        self.assertIn('--decide persona-receipt=without:"', res.stdout)
-        self.assertNotIn("GATE ok ", res.stdout)
 
 
 class TestReportAndClose(StrandShTestCase):
@@ -4478,7 +4457,15 @@ class TestPreamble(unittest.TestCase):
 
     def setUp(self):
         private_tree.require("plans/PREAMBLE.md")
-        self.text = self.PREAMBLE.read_text()
+        self.text = self.PREAMBLE.read_text(encoding="utf-8")
+
+    def test_the_builder_file_stays_within_its_ceiling(self):
+        """The file every builder reads stays at most 15 000 characters
+        (wave w1, OR-W1-P-23: 40 881 before the split). What only the
+        coordinator and the bundle windows need lives in
+        `plans/PREAMBLE-K.md`; history goes to the archive."""
+        self.assertLessEqual(len(self.text), 15000,
+                             "%s has %d characters" % (self.PREAMBLE.name, len(self.text)))
 
     def test_the_pass_close_frees_only_an_admission_lease(self):
         # Re-check Z-A M-c: on the standard way (`token take`, then gate) the
@@ -4522,7 +4509,8 @@ class TestPreamble(unittest.TestCase):
         ("cannot tell the strand from the branch -- pass --strand"), and
         `gate.sh integration` is the shell behind the one entry, not the entry
         (re-check Z-D 714a5f0ba M2). Every rule file says the same command."""
-        for rel in ("AGENTS.md", "plans/PREAMBLE.md", "docs/development-rules.md"):
+        for rel in ("AGENTS.md", "plans/PREAMBLE.md", "plans/PREAMBLE-K.md",
+                    "docs/development-rules.md"):
             text = " ".join((REPO / rel).read_text(encoding="utf-8").split())
             self.assertNotIn("gate.sh integration", text, rel)
             for m in re.finditer(r"strand\.sh gate integration", text):

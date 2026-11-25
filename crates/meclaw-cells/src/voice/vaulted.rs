@@ -25,15 +25,15 @@
 use crate::credential::Secret;
 use crate::credential_rounds::RoundClock;
 use crate::voice::contract::{
-    AudioFormat, BoxFuture, DuplexError, DuplexProvider, DuplexSession, ProviderTimeouts, SttError,
-    SttEvent, SttProvider, TtsError, TtsProvider,
+    AudioArrivals, AudioFormat, BoxFuture, DuplexError, DuplexProvider, DuplexSession,
+    ProviderTimeouts, SttError, SttEvent, SttProvider, TtsError, TtsProvider,
 };
 use crate::voice::params::{CredentialSlot, VoiceParams};
 use crate::voice::providers::{build_duplex, build_stt, build_tts};
 use meclaw_colony::io_liveness::IoLivenessMark;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// Builds the keyed adapter of a slot from a delivered key and publishes it to
 /// the slot's stand-in. Boxed so the I/O half holds the three kinds of slot in
@@ -253,6 +253,22 @@ impl DuplexProvider for VaultedDuplex {
             keyed.run_renewed_session(format, session, liveness).await
         })
     }
+    fn run_metered_session(
+        &self,
+        format: AudioFormat,
+        session: DuplexSession,
+        liveness: IoLivenessMark,
+        renewed: bool,
+        arrivals: oneshot::Sender<AudioArrivals>,
+    ) -> BoxFuture<Result<(), DuplexError>> {
+        let gate = self.gate.clone();
+        Box::pin(async move {
+            let keyed = gate.open().await.map_err(DuplexError::Unavailable)?;
+            keyed
+                .run_metered_session(format, session, liveness, renewed, arrivals)
+                .await
+        })
+    }
 }
 
 /// The adapters of one life after the vault seam: the stand-ins in place of
@@ -407,5 +423,87 @@ mod tests {
             slot.clock.is_none(),
             "a slot whose key failed must not keep a round clock"
         );
+    }
+
+    /// GH #1632: the stand-in hands a metered session through to the keyed
+    /// adapter. The trait's default drops the sender instead, and then every
+    /// cell on a grant -- each shipped one -- measured nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_granted_provider_that_measures_hands_over_its_arrivals() {
+        use meclaw_testing::deadline::HANG;
+        use meclaw_testing::mock_gpt_live::{LiveAction, LiveScript, MockGptLive};
+        for renewed in [false, true] {
+            let mock = MockGptLive::start(LiveScript {
+                actions: vec![
+                    LiveAction::SendAudio(vec![0; 4_800]),
+                    LiveAction::SendAudio(vec![0; 4_800]),
+                    LiveAction::CloseWith {
+                        reason: "done",
+                        usage_seconds: 1.0,
+                    },
+                ],
+                ..LiveScript::default()
+            })
+            .await
+            .expect("bind fake");
+            let params = VoiceParams::parse(&serde_json::json!({
+                "mount": "v",
+                "duplex": {"provider": "gpt_live", "instructions": "Be brief.",
+                           "greeting": "Greet the caller.", "base_url": mock.base_url(),
+                           "credential_grant_id": "grant:stub@agent/live"},
+            }))
+            .expect("params parse");
+            let timeouts = ProviderTimeouts {
+                external: HANG,
+                idle: HANG,
+            };
+            let block = params.duplex.as_ref().expect("a duplex block");
+            let template = build_duplex(block, timeouts).expect("the template builds");
+            let stt = build_stt(&params.stt, timeouts).expect("the stt builds");
+            let mut vaulted = vault(&params, timeouts, stt, None, Some(template));
+            vaulted.slots[0]
+                .install(&Secret::stub("stub-secret-1632"))
+                .expect("the key builds the adapter");
+            let duplex = vaulted.duplex.expect("the stand-in");
+
+            let (_line, audio_in) = mpsc::channel(8);
+            let (audio_out, mut audio_out_rx) = mpsc::channel::<Vec<u8>>(64);
+            let (events, mut events_rx) = mpsc::channel(64);
+            let (_control_tx, control) = mpsc::channel(8);
+            let (arrivals, arrivals_rx) = oneshot::channel();
+            let takes = tokio::spawn(async move { while audio_out_rx.recv().await.is_some() {} });
+            let hears = tokio::spawn(async move { while events_rx.recv().await.is_some() {} });
+            let session = DuplexSession {
+                audio_in,
+                audio_out,
+                events,
+                control,
+            };
+            let run = duplex.run_metered_session(
+                duplex.format(),
+                session,
+                IoLivenessMark::disabled(),
+                renewed,
+                arrivals,
+            );
+            tokio::time::timeout(HANG, run)
+                .await
+                .expect("the session ends")
+                .expect("an ordinary end");
+            takes.await.expect("the audio is taken");
+            hears.await.expect("the events are taken");
+            let handed = arrivals_rx.await.expect("the keyed adapter measured");
+            assert_eq!(handed.chunks, 2, "renewed: {renewed}");
+            let start = mock.session_start().await.expect("the session was opened");
+            let greeting = serde_json::json!([{
+                "type": "message", "role": "developer",
+                "content": [{"type": "input_text", "text": "Greet the caller."}]
+            }]);
+            assert_eq!(
+                start["session"].get("input"),
+                (!renewed).then_some(&greeting),
+                "a renewal greets nobody (renewed: {renewed})"
+            );
+        }
     }
 }

@@ -34,7 +34,7 @@
 //! R2b / GH #49: every read is guarded by [`shipped`], so a tree without the
 //! templates skips instead of failing on a dead reference.
 
-use meclaw_core::serde_json::{Value, json};
+use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_testing::code_wire::{code_stdin, emit_all, run_shipped_script, shipped_script};
 
 fn repo(rel: &str) -> std::path::PathBuf {
@@ -71,9 +71,25 @@ const NOT_SELF_SUMMARY: &str = "!(has(context.summarize) && context.summarize ==
 /// GH #1440 -- the edge that carries a refusal while the role condenses itself.
 const SELF_SUMMARY_CONDITION: &str = "has(context.summarize) && context.summarize == '1' && (has(hop.finish_reason) || has(hop.refused_subscriber))";
 
+/// GH #1353 -- the conjunct `scripts/hive_doors.py` hangs onto a way back of a
+/// cell behind a params door: the answer to a refused params push carries
+/// `hop.refused_subscriber` too and leaves on its own lane, not to the registry.
+/// A frozen version is never written and stands without it.
+const NOT_A_PARAMS_ANSWER: &str = " && !has(hop.params_answer)";
+
+/// GH #1353 -- an edge that takes only the answer to a params push: no refusal
+/// of a model package carries `hop.params_answer`.
+const TAKES_A_PARAMS_ANSWER: &str = "has(hop.params_answer) && ";
+
+/// GH #1353 -- the same of an inner sealed hive: its answer carries the lane
+/// already, and a refused model package leaves it as `model_refused`.
+const PARAMS_ANSWER_OF_A_HIVE: &str = "has(hop.route) && \
+     (hop.route == 'params_applied' || hop.route == 'params_refused')";
+
 /// The way back's condition: plain, or narrowed by exactly the self-summary
 /// clause (GH #1440). `Some(true)` = narrowed.
 fn way_back_form(c: &str) -> Option<bool> {
+    let c = c.strip_suffix(NOT_A_PARAMS_ANSWER).unwrap_or(c);
     if c == "has(hop.refused_subscriber)" {
         return Some(false);
     }
@@ -94,8 +110,9 @@ fn carries_the_self_summary_refusal(e: &Value) -> bool {
 /// opened the door with GH #858 for a road somebody draws by hand. The test
 /// reads the door off every template; this list is only the floor, so a
 /// composite that loses its door does not pass by vanishing.
-const DOORS_AT_LEAST: [&str; 11] = [
+const DOORS_AT_LEAST: [&str; 12] = [
     "argus",
+    "assistant",
     "builder",
     "coder-pipeline",
     "cogny",
@@ -134,7 +151,10 @@ fn cond(e: &Value) -> &str {
 /// the refusal by its key, or it takes a successful finish reason only.
 fn cannot_take_a_refusal(e: &Value) -> bool {
     let c = cond(e);
-    if c.contains("!has(hop.refused_subscriber)") {
+    if c.contains("!has(hop.refused_subscriber)")
+        || c.starts_with(TAKES_A_PARAMS_ANSWER)
+        || c == PARAMS_ANSWER_OF_A_HIVE
+    {
         return true;
     }
     if !c.contains("has(hop.finish_reason)") || c.contains("hop.finish_reason !=") {
@@ -185,6 +205,61 @@ fn model_doors() -> Vec<(String, Value, Vec<String>)> {
     out
 }
 
+/// GH #1616 -- whether `cell` of template `name` is itself a composite with
+/// a model door (a ref onto such a template, or such a hive).
+fn door_composite(name: &str, cell: &str) -> bool {
+    let rel = cell.trim_start_matches("./");
+    let p = repo(&format!("templates/{name}/{rel}/config.json"));
+    if !p.is_file() {
+        return false;
+    }
+    let cfg = read_json(&p);
+    let cfg = match cfg["cell"]["type"].as_str() {
+        Some("ref") => {
+            let t = cfg["cell"]["template"].as_str().unwrap_or_default();
+            let t = t.split('@').next().unwrap_or_default();
+            let q = repo(&format!("templates/{t}/config.json"));
+            if !q.is_file() {
+                return false;
+            }
+            read_json(&q)
+        }
+        Some("hive") => cfg,
+        _ => return false,
+    };
+    cfg["params"]["contract"]["accepts"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|l| l["route"] == "in_model"))
+}
+
+/// GH #1616 -- the way back out of a level for a composite behind its door:
+/// exactly one edge `<cell> -> .` on the refusal lane, and every other
+/// out-edge of that composite names the lanes it takes, none of them that one.
+fn composite_way_back(name: &str, cell: &str, edges: &[Value]) -> Vec<String> {
+    let mut missing = Vec::new();
+    let from_cell: Vec<&Value> = edges.iter().filter(|e| e["from"] == cell).collect();
+    let back = from_cell
+        .iter()
+        .filter(|e| e["to"] == "." && cond(e) == REFUSAL_CONDITION)
+        .count();
+    if back != 1 {
+        missing.push(format!("{name}: {cell} has {back} ways back"));
+    }
+    for e in from_cell.iter().filter(|e| cond(e) != REFUSAL_CONDITION) {
+        let c = cond(e);
+        if !c.contains("hop.route == '")
+            || c.contains("hop.route !=")
+            || c.contains("model_refused")
+        {
+            missing.push(format!(
+                "{name}: {cell} -> {} takes a refusal: {c}",
+                e["to"]
+            ));
+        }
+    }
+    missing
+}
+
 #[test]
 fn every_composite_with_a_model_door_sends_refusals_back() {
     if !shipped() {
@@ -211,6 +286,16 @@ fn every_composite_with_a_model_door_sends_refusals_back() {
         );
         let edges = edges_of(cfg);
         for cell in cells {
+            // GH #1616: a level's door hands the push on to a composite that has
+            // a model door of its own; that composite already sends the refusal
+            // out as `model_refused`, and the level lets exactly that lane out.
+            let llm_way_back = edges.iter().any(|e| {
+                e["from"] == cell.as_str() && e["to"] == "." && way_back_form(cond(e)).is_some()
+            });
+            if !llm_way_back && door_composite(name, cell) {
+                missing.extend(composite_way_back(name, cell, &edges));
+                continue;
+            }
             let back: Vec<&Value> = edges
                 .iter()
                 .filter(|e| {
@@ -463,14 +548,13 @@ fn the_recipe_draws_one_way_back_per_rim_and_the_gate_takes_it() {
     let generation = "./acme/members/alex/assistants/scribe";
     let assistant = grown_assistant();
     let back = ways_back(&assistant);
-    let want: Vec<Value> = ["cogny", "talky", "talky-chat"]
-        .iter()
-        .map(|rim| {
-            json!({"from": format!("{generation}/{rim}"), "to": ".",
-                          "condition": REFUSAL_CONDITION})
-        })
-        .collect();
-    assert_eq!(back, want, "one way back per composite of the assistant");
+    // GH #1616 (R-80-5): the assistant declares its own door, so its one way
+    // back leaves from the generation, not from each rim.
+    let want = vec![json!({"from": generation, "to": ".", "condition": REFUSAL_CONDITION})];
+    assert_eq!(
+        back, want,
+        "one way back for the assistant, off its own door"
+    );
 
     let member = grown_member();
     let back = ways_back(&member);
@@ -596,5 +680,168 @@ fn a_refusal_edge_in_any_other_form_is_refused() {
                 "{what}: a malformed road is refused without asking the broker: {out:?}"
             );
         }
+    }
+}
+
+// --- GH #1616 (R-80-5): the assistant level's own model door ----------------
+//
+// Only cells of the shell may reach into a member, and only onto a door the
+// target hive declares. Until GH #1616 the road ran from the container straight
+// onto `<generation>/talky`, `talky-chat` and `cogny`, past a level that declared
+// nothing about it. Now the `assistant` template accepts `in_model`, hands each
+// push onto the rim that holds the cell it names, and lets each rim's refusal
+// out again; the recipe draws the pushes and the one way back onto the level.
+
+/// The cells the builder announces for a generation, with the rim that holds
+/// each and the cell that rim's own door hands the push to.
+const GH1616_BRAINS: [(&str, &str, &str); 8] = [
+    ("talky", "brain", "./brain"),
+    ("talky-chat", "brain", "./brain"),
+    ("cogny", "brain", "./brain"),
+    ("talky", "curator/summarizer", "./curator"),
+    ("talky-chat", "curator/summarizer", "./curator"),
+    ("cogny", "curator/summarizer", "./curator"),
+    ("talky", "decide", "./decide"),
+    ("talky-chat", "decide", "./decide"),
+];
+
+/// Whether an edge condition takes a message with this hop, asked of the
+/// colony's own CEL evaluator.
+fn takes(condition: Option<&str>, hop: &Map<String, Value>) -> bool {
+    let Some(src) = condition else {
+        return true;
+    };
+    let cond = meclaw_colony::cel_eval::parse_condition(src)
+        .unwrap_or_else(|e| panic!("condition {src:?}: {e}"));
+    matches!(
+        meclaw_colony::cel_eval::evaluate_condition(&cond, &Map::new(), hop),
+        Ok(true)
+    )
+}
+
+/// The targets of every edge from `.` of `cfg` that takes this push.
+fn reached(cfg: &Value, subscriber: Option<&str>) -> Vec<String> {
+    let mut hop = Map::new();
+    hop.insert("route".into(), json!("in_model"));
+    if let Some(s) = subscriber {
+        hop.insert("subscriber".into(), json!(s));
+    }
+    edges_of(cfg)
+        .iter()
+        .filter(|e| e["from"] == ".")
+        .filter(|e| takes(e["condition"].as_str(), &hop))
+        .map(|e| e["to"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+#[test]
+fn gh1616_the_assistant_declares_its_model_door() {
+    if !shipped() {
+        return;
+    }
+    let cfg = read_json(&repo("templates/assistant/config.json"));
+    let contract = &cfg["params"]["contract"];
+    let lanes = |side: &str| contract[side].as_array().cloned().unwrap_or_default();
+    assert!(
+        lanes("accepts").iter().any(|l| l["route"] == "in_model"),
+        "the assistant level declares no door for model updates"
+    );
+    assert!(
+        lanes("emits").iter().any(|l| l["route"] == "model_refused"),
+        "a refused push has no declared way out of the assistant level"
+    );
+    for rim in ["./talky", "./talky-chat", "./cogny"] {
+        let back: Vec<Value> = edges_of(&cfg)
+            .into_iter()
+            .filter(|e| e["from"] == rim && e["to"] == "." && cond(e) == REFUSAL_CONDITION)
+            .collect();
+        assert_eq!(
+            back.len(),
+            1,
+            "{rim}: one way back out of the level: {back:?}"
+        );
+    }
+}
+
+#[test]
+fn gh1616_a_push_through_the_door_reaches_the_cell_it_names() {
+    if !shipped() {
+        return;
+    }
+    let level = read_json(&repo("templates/assistant/config.json"));
+    let talky = read_json(&repo("templates/talky/config.json"));
+    let cogny = read_json(&repo("templates/cogny/config.json"));
+    // A generation named like a rim (or like the curator) must not move a push
+    // onto the wrong rim.
+    for generation in ["scribe", "talky", "talky-chat", "cogny", "curator"] {
+        let level_path = format!("{MEMBER}/assistants/{generation}");
+        for (rim, cell, inner) in GH1616_BRAINS {
+            let subscriber = format!("{level_path}/{rim}/{cell}");
+            assert_eq!(
+                reached(&level, Some(&subscriber)),
+                vec![format!("./{rim}")],
+                "the level's door hands {subscriber} onto its rim and nowhere else"
+            );
+            let rim_cfg = if rim == "cogny" { &cogny } else { &talky };
+            assert_eq!(
+                reached(rim_cfg, Some(&subscriber)),
+                vec![inner.to_string()],
+                "{rim}'s own door hands {subscriber} to {inner}"
+            );
+        }
+    }
+    // A push that names no cell of this level moves nothing.
+    let stray = format!("{MEMBER}/memory-hive/judge");
+    for subscriber in [Some(stray.as_str()), None] {
+        assert!(
+            reached(&level, subscriber).is_empty(),
+            "{subscriber:?} took the assistant's door"
+        );
+    }
+}
+
+#[test]
+fn gh1616_the_registry_road_ends_on_the_door_and_the_gate_takes_it() {
+    if !shipped() {
+        return;
+    }
+    let manifest = grown_assistant();
+    let road: Vec<Value> = manifest
+        .iter()
+        .filter(|d| d["scope"] == SCOPE)
+        .flat_map(|d| {
+            d["diff"]["add_edges"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect();
+    let generation = "./acme/members/alex/assistants/scribe";
+    let pushes: Vec<&Value> = road
+        .iter()
+        .filter(|e| cond(e).contains("'in_model'"))
+        .collect();
+    assert_eq!(
+        pushes.len(),
+        GH1616_BRAINS.len(),
+        "one push edge per brain: {road:?}"
+    );
+    for (p, (rim, cell, _)) in pushes.iter().zip(GH1616_BRAINS) {
+        assert_eq!(p["to"], generation, "a push ends on the level's door: {p}");
+        assert!(
+            cond(p).ends_with(&format!(
+                "hop.subscriber == '{MEMBER}/assistants/scribe/{rim}/{cell}'"
+            )),
+            "{p}"
+        );
+    }
+    assert_eq!(
+        ways_back(&manifest),
+        vec![json!({"from": generation, "to": ".", "condition": REFUSAL_CONDITION})],
+        "one way back, off the level's door"
+    );
+    for requester in [OPERATOR, AGENT] {
+        let out = submit(&Value::Array(manifest.clone()), requester);
+        assert!(parked_and_asked(&out), "{requester}: {out:?}");
     }
 }

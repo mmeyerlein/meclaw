@@ -159,8 +159,9 @@ fn a_grown_member_brings_the_road_of_its_memory_only_where_a_registry_is() {
     );
     assert_eq!(
         with.len(),
-        plain.len() + 1,
-        "the member's own declarations do not move, and one road is added: {with:?}"
+        plain.len() + 2,
+        "the member's own declarations do not move; one road is added, and since GH #1353 the \
+         params road to the screen, behind the screen: {with:?}"
     );
     let road = road_of(&with).expect("a declaration at the registry's scope");
     assert!(
@@ -172,7 +173,11 @@ fn a_grown_member_brings_the_road_of_its_memory_only_where_a_registry_is() {
         .cloned()
         .unwrap_or_default();
 
-    let pushes: Vec<&Value> = edges.iter().filter(|e| e["from"] == ".").collect();
+    let pushes: Vec<&Value> = edges
+        .iter()
+        // GH #1353: the params road's edges stand beside them.
+        .filter(|e| e["from"] == "." && e["modifier"]["set_hop"]["route"] == "'in_model'")
+        .collect();
     assert_eq!(pushes.len(), 4, "one push edge per memory cell: {pushes:?}");
     for (cell, edge) in CELLS.iter().zip(&pushes) {
         assert_eq!(edge["to"], "./acme/members/alex/memory-hive");

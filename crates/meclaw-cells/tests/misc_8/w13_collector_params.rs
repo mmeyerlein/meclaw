@@ -94,6 +94,9 @@ const KNOBS: &[(&str, &str)] = &[
     // GH #1244 -- the route stamp: how long a turn waits for it (0 = off) and
     // the stamped paths that do not wait for the memory leg.
     ("route_wait_ms", "_int"),
+    // GH #1596 -- the bound of the wait for the memory leg (10 000 ms shipped,
+    // the cell's operation bound): a recall that never comes ends in an answer.
+    ("recall_wait_ms", "_int"),
     ("route_no_recall", "_list"),
     // GH #1435 -- a stamp that names `memory` in `needs` waits for the memory
     // leg even on a `route_no_recall` path (`"0"` shipped).
@@ -105,7 +108,6 @@ const KNOBS: &[(&str, &str)] = &[
     // #1275 -- the early curate before the route stamp (`"0"` shipped)
     // and how a delegation is answered (`"fact"` shipped = the advise text of
     // before; `"context"` = the delegation's own context).
-    ("spec_ahead", "_str"),
     ("delegation_answer_mode", "_str"),
     ("delegation_inherits_stamp", "_str"),
     ("delegation_rule", "_str"),

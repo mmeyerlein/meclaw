@@ -176,18 +176,15 @@ async fn gpt_live_start_frame_carries_seed_input() {
     session.join.abort();
 }
 
-/// Test 2: no seed within the wait -- the session starts without `input`, and
-/// the greeting still follows as commentary. What the caller said meanwhile
-/// is held and reaches the model after the start, not lost.
+/// Test 2: no seed within the wait -- the session starts with the greeting as
+/// its only `input` (GH #1628). What the caller said meanwhile is held and
+/// reaches the model after the start, not lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gpt_live_starts_without_seed_after_wait() {
     let logs = LogCapture::global();
-    let mock = MockGptLive::start(waiting_script(vec![LiveAction::ExpectAppend {
-        kind: "commentary",
-        contains: "Greet",
-    }]))
-    .await
-    .expect("bind fake");
+    let mock = MockGptLive::start(waiting_script(vec![]))
+        .await
+        .expect("bind fake");
     let mut session = start(GptLiveDuplex::new(params(
         &mock.base_url(),
         json!({"seed_wait_ms": 400, "greeting": "Greet the caller."}),
@@ -199,18 +196,23 @@ async fn gpt_live_starts_without_seed_after_wait() {
         .expect("audio is taken while the opening waits");
     started(&mut session.events).await;
     let frame = start_frame(&mock).await;
-    assert!(
-        frame["session"].get("input").is_none(),
-        "no seed, no input: {frame}"
+    assert_eq!(
+        frame["session"]["input"],
+        json!([{"type": "message", "role": "developer",
+                "content": [{"type": "input_text", "text": "Greet the caller."}]}]),
+        "no seed: the greeting opens the session alone"
     );
     tokio::time::timeout(FAILURE_TIMEOUT, async {
-        while mock.appends().await.is_empty() || mock.received_audio().await.is_empty() {
+        while mock.received_audio().await.is_empty() {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("HANG: greeting and held audio reach the model");
-    assert_eq!(mock.appends().await[0]["type"], "session.commentary.append");
+    .expect("HANG: the held audio reaches the model");
+    assert!(
+        mock.appends().await.is_empty(),
+        "the greeting is no append; one would stand in front of the audio"
+    );
     assert_eq!(mock.received_audio().await[0], vec![1u8; 640]);
     // The proof that it WAITED: only the deadline arm of the wait ends in
     // `seed_late`; a session that did not wait would log nothing of the seed.
@@ -325,7 +327,7 @@ async fn gpt_live_seed_default_is_byte_identical() {
         "type": "session.start",
         "event_id": "start",
         "session": {
-            "model": "gpt-live-1",
+            "model": "gpt-live-1.1",
             "instructions": "Be Egon.",
             "audio": {
                 "format": {"type": "audio/pcm", "rate": 16000},

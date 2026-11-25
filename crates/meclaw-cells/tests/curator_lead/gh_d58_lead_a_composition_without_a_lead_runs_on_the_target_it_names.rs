@@ -59,33 +59,6 @@ fn gh_d58_lead_a_composition_without_a_lead_runs_on_the_target_it_names() {
         );
         answer(&mut h, &call, "stop", warm_usage(), json!([said("Sunny.")]));
     }
-    // Review A I1: a spec curate (`hop.spec` "1", the collector's
-    // speculation) is parked without a lead, as before the move, where the
-    // lead's empty knobs parked it (GH #1275). Without the park it ran as a
-    // second full call beside the turn's normal one.
-    let spec_calls = curate_for(
-        &mut h,
-        Some("north"),
-        "t4",
-        0,
-        json!([user("and tomorrow?")]),
-        json!({"spec": "1", "path": "", "needs": [], "families": []}),
-    );
-    assert!(
-        spec_calls.is_empty(),
-        "without a lead a spec curate is parked, no call: {spec_calls:?} {:?}",
-        h.stderr
-    );
-    assert!(
-        to_lead(&h).is_empty(),
-        "a parked spec curate sends no lane to a lead: {:?}",
-        to_lead(&h)
-    );
-    assert!(
-        h.stderr.iter().any(|l| l.contains("parked, no call")),
-        "the park is said on stderr: {:?}",
-        h.stderr
-    );
     assert!(
         h.lead_ops.is_empty(),
         "without a lead nobody touches its store: {:?}",

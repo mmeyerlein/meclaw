@@ -36,7 +36,7 @@
       "condition": "has(hop.route) && hop.route == 'in_close'"
     },
     {
-      "from": "./apps",
+      "from": "./assistants",
       "to": "./apps/probe-app",
       "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == 'probe'"
     },

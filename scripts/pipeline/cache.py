@@ -85,7 +85,7 @@ GATE_RECEIPT_STATIONS = frozenset({"corpus", "scenarios:builder", "recall-harnes
 # Never cached (W3 plan item 5): `export-audit` reads the receipt, `build`
 # produces the artefacts the cached parts are derived from; the gate-receipt
 # stations always run fresh.
-NEVER = {"precheck", "corpus-committed", "export-audit", "persona-receipt", "build",
+NEVER = {"precheck", "corpus-committed", "export-audit", "build",
          "build:browser"} | GATE_RECEIPT_STATIONS
 
 CACHEABLE_VERDICTS = ("GREEN",)   # never a FLAKY: a finding is no cache entry (OR-TV-2)

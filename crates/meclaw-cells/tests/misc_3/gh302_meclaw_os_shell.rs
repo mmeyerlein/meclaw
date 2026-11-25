@@ -173,6 +173,14 @@ const NOT_RE_EMITTED: &str = "connect";
 /// `./submit` to `./operator`, and a caller subscribes to the lane rather than
 /// to whoever raised it.
 const CONSUMED_INSIDE: &[&str] = &[
+    // GH #1353: the answer of a params-only update. A cell's hive raises
+    // `params_applied` or `params_refused`, this level's own edges re-stamp it
+    // `in_params_answer` for the front door, and what leaves the rim is the
+    // front door's `params_receipt`. Producer and consumer are siblings here.
+    // The update itself is a RIM lane (OR-w2.tuer.2): the contact stands here.
+    "in_params_answer",
+    "params_applied",
+    "params_refused",
     // GH #1061 (#801): the credential road. `./llm-registry/translate` (and
     // `./argus/judge`) ask the shell's own broker on `credential_request` and
     // are answered `in_sealed` -- both ends siblings at THIS level, so a sealed

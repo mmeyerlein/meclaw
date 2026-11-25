@@ -31,13 +31,11 @@ fn escalations(h: &Hive) -> usize {
 /// `lead_ops` before the answer): the delete of the turn's system row
 /// (`t-tsys`), the curator's step that decides the turn's live feed (phase
 /// `live`), the lead's read that books the round (`round_end` on `turn_end`:
-/// the turn table and the durations in one read) and the lead's drop of a
-/// shown spec sentence (`shown_end` on `turn_end`).
+/// the turn table and the durations in one read).
 struct Ends {
     system_dropped: usize,
     live_decided: usize,
     round_booked: usize,
-    shown_dropped: usize,
 }
 
 fn ends_since(h: &Hive, ops: usize, steps: usize, lead: usize) -> Ends {
@@ -63,15 +61,6 @@ fn ends_since(h: &Hive, ops: usize, steps: usize, lead: usize) -> Ends {
                 op["operation"] == json!("select")
                     && keys.contains("horizon_turn:")
                     && keys.contains("horizon_rounds")
-            })
-            .count(),
-        shown_dropped: lead_ops
-            .iter()
-            .filter(|(_, op)| {
-                op["operation"] == json!("delete")
-                    && op["where"]["key"]
-                        .as_str()
-                        .is_some_and(|k| k.starts_with("spec_shown:"))
             })
             .count(),
     }
@@ -189,43 +178,5 @@ fn gh_d58_moveout_a_side_call_never_ends_the_turn() {
         ends.live_decided >= 1 && ends.round_booked >= 1,
         "the closing answer decides the live feed and books the round: {:?}",
         h.stderr
-    );
-
-    // `shown_end` (the lead drops the turn's shown spec sentence): with the
-    // speculation on, a side answer never says it; the closing answer does.
-    let mut h = moveout_hive(&[("lead", "spec_ahead", json!("1"))]);
-    seam(
-        &mut h,
-        "t1",
-        "0",
-        tool_stamp("weather"),
-        json!({"messages": [user("will it rain in Hamburg tomorrow?")]}),
-    );
-    let side = side_calls(&h);
-    assert_eq!(side.len(), 1, "{:?} {:?}", h.out, h.stderr);
-    let side = side[0].clone();
-    let main = main_calls(&h);
-    assert_eq!(main.len(), 1, "{:?}", h.out);
-    let main_call = main[0].clone();
-    let (ops, steps, lead) = marks_now(&h);
-    answer_call(
-        &mut h,
-        &side,
-        "stop",
-        json!({}),
-        json!([said("One moment.")]),
-    );
-    assert_eq!(
-        ends_since(&h, ops, steps, lead).shown_dropped,
-        0,
-        "a side answer says no `shown_end`: {:?}",
-        h.lead_ops
-    );
-    h.out.push(main_call);
-    finish_round(&mut h, "t1", "weather");
-    assert!(
-        ends_since(&h, ops, steps, lead).shown_dropped >= 1,
-        "the closing answer does: {:?}",
-        h.lead_ops
     );
 }

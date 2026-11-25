@@ -311,6 +311,20 @@ fn word(n: usize) -> &'static str {
         // doors, forty-one leaving).
         (81, "eighty-one"),
         (154, "one hundred and fifty-four"),
+        // d54s abbruch (GH #1587): the door `in_delegation_cancel` into
+        // `./curator` -- one hundred and forty-three after specaus, the
+        // boundary seventy-one (thirty-two doors, thirty-nine leaving).
+        (143, "one hundred and forty-three"),
+        // w1 fehlerwort (GH #1619): the exit `answer` out of `./errors` --
+        // one hundred and forty-four, the boundary seventy-two (thirty-two
+        // doors, forty leaving).
+        (144, "one hundred and forty-four"),
+        // w2 tuerskript (GH #1353): the params door `in_params` -- ten door edges
+        // (six cells, four inner hives) and sixteen edges of the way back: one
+        // hundred and seventy, the boundary ninety-eight (forty-two doors,
+        // fifty-six leaving), the round unchanged.
+        (98, "ninety-eight"),
+        (170, "one hundred and seventy"),
     ]
     .into_iter()
     .collect();

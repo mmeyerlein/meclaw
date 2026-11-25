@@ -910,12 +910,13 @@ def _stderr(line):
     print("lane: " + line, file=sys.stderr)
 
 
-def _two_paths(lane, verb, args, cargo, slot, expected_g=None):
+def _two_paths(lane, verb, args, cargo, slot, expected_g=None, cold_g=None):
     extra = {"MECLAW_LANE_CARGO": "1" if cargo else "0"}
     if slot is not None:
         extra["MECLAW_LANE_SLOT"] = slot
     if expected_g is not None:
         extra["MECLAW_LANE_EXPECTED_G"] = str(int(expected_g))
+    extra["MECLAW_LANE_COLD_EXPECTED_G"] = "" if cold_g is None else str(int(cold_g))
     res = _sync(lane, verb, *args, env=sync_env(lane, **extra))
     lines = res.stdout.decode().splitlines()
     if res.returncode != 0 or len(lines) != 2:
@@ -936,7 +937,7 @@ def paths(lane, tree_name, cargo, slot=None):
     return _two_paths(lane, "paths", [tree_name], cargo, slot)
 
 
-def guard(lane, tree_name, cargo=True, slot=None, expected_g=None):
+def guard(lane, tree_name, cargo=True, slot=None, expected_g=None, cold_g=None):
     """The guards of a gate run on `lane` before anything travels --
     `lane_sync.sh guard` (W1):
     a slot the lane does not grant or a `local` lane without class `egon`
@@ -946,9 +947,12 @@ def guard(lane, tree_name, cargo=True, slot=None, expected_g=None):
     W2's hygiene in front of the floor (exit 6: no room even after collecting)
     is a refusal as well, code 2. `expected_g` (the admission's) is what the
     hygiene reserves for this run (`MECLAW_LANE_EXPECTED_G`, set explicitly,
-    never inherited from the caller's environment). Returns `paths`."""
+    never inherited from the caller's environment). `cold_g` (the admission's
+    cold need beyond the floor, `MECLAW_LANE_COLD_EXPECTED_G`): only with it and
+    cargo does the hygiene clear the run's own warm target, and only when that
+    need stays covered (w1 leaseklar #1620). Returns `paths`."""
     _check_name(tree_name, "tree")
-    return _two_paths(lane, "guard", [lane.ssh, tree_name], cargo, slot, expected_g)
+    return _two_paths(lane, "guard", [lane.ssh, tree_name], cargo, slot, expected_g, cold_g)
 
 
 def run_test(lane, tree_name, expr, extra, log, run="", on_line=None):
@@ -1430,8 +1434,11 @@ def push_pins(lane, transport, home_root=None):
     the lane user's home (`home_root`): the pinned releases of the asset
     cache and the source mirrors, meclaw-core included, at the path their
     pins name -- additive, nothing there is deleted. Then the lane must
-    resolve every pinned revision and hold every release, else code 2. A
-    local lane without `home_root` shares this home: nothing travels, None."""
+    resolve every pinned revision, hold every release and every named
+    candidate (`~/kb/bin/meclaw-<rev12>` with the set's sha256 and an
+    `origin.json` naming its commit -- checked, not carried: `strand.sh
+    candidate` builds it there), else code 2. A local lane without
+    `home_root` shares this home: nothing travels, None."""
     if home_root is None:
         if lane.transport == "local":
             return None
@@ -1457,12 +1464,19 @@ def push_pins(lane, transport, home_root=None):
         checks += ["git --git-dir=%s cat-file -e %s 2>/dev/null || echo %s"
                    % (q(gdir), q(rev + "^{commit}"), q("%s %s" % (m["rel"], rev[:12])))
                    for rev in m["revs"]]
+    for c in getattr(transport, "candidates", []):
+        path = "%s/%s" % (home_root.rstrip("/"), c["rel"])
+        tell = q("candidate %s (strand.sh candidate %s --lanes %s)" % (c["rev"][:12], c["rev"], lane.name))
+        checks.append('{ [ "$(sha256sum %s 2>/dev/null | cut -d" " -f1)" = %s ] && grep -q %s %s; } || echo %s'
+                      % (q(path), q(c["sha256"]), q('"core_sha": "%s"' % c["rev"]),
+                         q(path + ".origin.json"), tell))
     missing = _remote(lane, "; ".join(checks) or "true", fail=fail).stdout.decode().splitlines()
     missing = [x for x in missing if x.strip()]
     if missing:
         raise LaneError(2, "%s -- the lane lacks: %s" % (fail, ", ".join(missing)))
     return {"home": home_root, "versions": list(transport.versions),
-            "mirrors": [m["rel"] for m in transport.mirrors]}
+            "mirrors": [m["rel"] for m in transport.mirrors],
+            "candidates": [c["rel"] for c in getattr(transport, "candidates", [])]}
 
 
 def _golden_back(lane, tree, before, top):
@@ -1650,18 +1664,27 @@ def ws_procs(lane, ws, timeout=30):
     (`WS_PATH_WORD`, fix11 H4): `.../lane1` never finds `.../lane10`."""
     if not ws or not ws.startswith("/") or ws.rstrip("/") in ("", "/"):
         raise LaneError(2, "no workspace path to probe: %r" % ws)
+    # One pass over /proc for the whole host, not three forks per process (w1
+    # fruehrot fix 1): `find` reads every cwd, one `grep -l` every cmdline and
+    # environ; only their hits pay a fork (the path-word check, the probe's own
+    # mark). The per-process loop took up to 19 s under a full run's load (M7l)
+    # and past the 30-s budget with eight modules side by side (fruehrot gate).
+    # A hit whose /proc entry is gone by the last loop is no live process (the
+    # probe's own find/grep, a run that ended meanwhile).
     script = (
         ": %s; ws=%s; wr=$(readlink -f -- \"$ws\" 2>/dev/null); "
         "case \"$wr\" in /?*) ;; *) wr=$ws ;; esac; "
-        "for d in /proc/[0-9]*; do "
-        "grep -aqsF -- %s \"$d/cmdline\" && continue; "
-        "c=$(readlink \"$d/cwd\" 2>/dev/null); "
-        "case \"$c\" in \"$ws\"|\"$ws\"/*|\"$wr\"|\"$wr\"/*) echo \"${d#/proc/}\"; continue ;; esac; "
-        "grep -aqsF -e \"$ws\" -e \"$wr\" -- \"$d/cmdline\" \"$d/environ\" "
-        "&& cat -- \"$d/cmdline\" \"$d/environ\" 2>/dev/null | tr '\\0' '\\n' "
-        "| awk -v a=\"$ws\" -v b=\"$wr\" %s && echo \"${d#/proc/}\"; "
-        "done; echo %s"
-        % (WS_PROBE_MARK, shlex.quote(ws.rstrip("/")), WS_PROBE_MARK, shlex.quote(WS_PATH_WORD),
+        "cw=$(find /proc/[0-9]*/cwd -maxdepth 0 -printf '%%h %%l\\n' 2>/dev/null); "
+        "hits=$(grep -laFs -e \"$ws\" -e \"$wr\" -- /proc/[0-9]*/cmdline /proc/[0-9]*/environ "
+        "2>/dev/null); "
+        "{ printf '%%s\\n' \"$cw\" | while IFS= read -r l; do c=${l#* }; "
+        "case \"$c\" in \"$ws\"|\"$ws\"/*|\"$wr\"|\"$wr\"/*) d=${l%%%% *}; echo \"${d#/proc/}\" ;; esac; done; "
+        "printf '%%s\\n' \"$hits\" | while IFS= read -r f; do [ -n \"$f\" ] || continue; d=${f%%/*}; "
+        "cat -- \"$d/cmdline\" \"$d/environ\" 2>/dev/null | tr '\\0' '\\n' "
+        "| awk -v a=\"$ws\" -v b=\"$wr\" %s && echo \"${d#/proc/}\"; done; } "
+        "| sort -un | while read -r p; do grep -aqsF -- %s \"/proc/$p/cmdline\" && continue; "
+        "[ -d \"/proc/$p\" ] && echo \"$p\"; done; echo %s"
+        % (WS_PROBE_MARK, shlex.quote(ws.rstrip("/")), shlex.quote(WS_PATH_WORD), WS_PROBE_MARK,
            WS_PROBE_END))
     try:
         res = subprocess.run(_remote_argv(lane, script), stdin=subprocess.DEVNULL,
@@ -1803,6 +1826,45 @@ def fetch_candidate(lane, rev, dest_dir):
     if res.returncode != 0:
         raise LaneError(2, "the copy of %s from %s failed (%s)" % (name, lane.name, _tail(res.stderr)))
     return os.path.join(dest_dir, name)
+
+
+def push_candidate(lane, path):
+    """Lay the local candidate `path` (`~/kb/bin/meclaw-<rev12>`) and its
+    `.origin.json` into the lane user's `~/kb/bin` (a reused candidate,
+    `candidate.reuse`): written beside, renamed into place (a lab may run
+    the old one). A local lane shares this home: nothing travels."""
+    if lane.transport == "local":
+        return
+    name = os.path.basename(path)
+    fail = "the candidate push to %s failed" % lane.name
+    _remote(lane, 'mkdir -p "$HOME/%s"' % CANDIDATE_BIN, fail=fail)
+    res = _rsync(lane, ["-t", path, path + ".origin.json",
+                        "%s:%s/" % (lane.ssh, CANDIDATE_BIN)])
+    if res.returncode != 0:
+        raise LaneError(2, "%s (%s: %s)" % (fail, name, _tail(res.stderr)))
+
+
+# `candidate --prune` on a lane: every `meclaw-<rev12>` older than the days
+# that no word of the keep list (7-12 hex, a prefix) names goes, with its origin.json.
+CANDIDATE_PRUNE = '''d="$HOME/%(bin)s"; [ -d "$d" ] || exit 0
+find "$d" -maxdepth 1 -type f -mtime +%(age)d -regextype posix-extended -regex '.*/meclaw-[0-9a-f]{12}' |
+while read -r f; do n="${f##*/meclaw-}"
+  k=; for w in %(keep)s; do case "$n" in "$w"*) k=1 ;; esac; done
+  [ -n "$k" ] && continue
+  rm -f -- "$f" "$f.origin.json"; echo "PRUNED $n"
+done
+'''
+
+
+def prune_candidates(lane, keep, days):
+    """Remove the lane's candidates no word of `keep` (7-12 hex) prefixes, older
+    than `days`; returns the rev12 removed. LaneError(2) when it fails."""
+    keep = [k for k in keep if re.fullmatch(r"[0-9a-f]{7,12}", k)]
+    script = CANDIDATE_PRUNE % {"bin": CANDIDATE_BIN, "age": max(int(days) - 1, 0),
+                                "keep": " ".join(keep)}
+    res = _remote(lane, script, fail="the candidate prune on %s failed" % lane.name)
+    return [line.split(" ", 1)[1] for line in res.stdout.decode(errors="replace").splitlines()
+            if line.startswith("PRUNED ")]
 
 
 def fingerprint(lane, script=None):

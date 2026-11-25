@@ -11,11 +11,13 @@
 //!
 //! # What this adapter does not do
 //!
-//! It does not buffer, pace or re-cut audio in either direction: one item out
-//! of `audio_in` is one `session.input_audio.append`, one
-//! `session.output_audio.delta` is one item into `audio_out` (R-L4). A queue
-//! here would be latency on a live call, and the bounded channels of
-//! [`DuplexSession`] are the backpressure (ADR-0023 § Consequences).
+//! It does not pace or re-cut audio in either direction: one item out of
+//! `audio_in` is one `session.input_audio.append`, one
+//! `session.output_audio.delta` is one item into `audio_out` (R-L4), and the
+//! bounded channels of [`DuplexSession`] are the backpressure (ADR-0023
+//! § Consequences). The one queue it has is the short one of its [`Uplink`]:
+//! it stands empty while the socket takes what it is given, and while it does
+//! not, the reading goes on (GH #1630).
 //!
 //! It also holds no reconnect policy (OR-L20): one session is one socket and
 //! one conversation, so a socket that ends, ends the session — the connection
@@ -33,17 +35,21 @@
 
 use crate::voice::b64;
 use crate::voice::contract::{
-    AppendKind, AudioFormat, BoxFuture, DuplexControl, DuplexError, DuplexEvent, DuplexProvider,
-    DuplexSession, ProviderTimeouts, SeedMessage, Speaker,
+    AppendKind, AudioArrivals, AudioFormat, BoxFuture, DuplexControl, DuplexError, DuplexEvent,
+    DuplexProvider, DuplexSession, LATE_LISTED_FROM_MS, LATENESS_FROM_MS, ProviderTimeouts,
+    SeedMessage, Speaker,
 };
 use crate::voice::g711::{self, Law};
 use crate::voice::params::{AudioWire, G711_SAMPLE_RATE, GptLiveParams};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use meclaw_colony::io_liveness::IoLivenessMark;
 use serde_json::{Value as JsonValue, json};
+use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{oneshot, watch};
+use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Bytes;
 use tokio_tungstenite::tungstenite::Error as WsError;
@@ -51,7 +57,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 /// The model this adapter speaks to unless a param says otherwise (R-25-0).
-pub const DEFAULT_MODEL: &str = "gpt-live-1";
+pub const DEFAULT_MODEL: &str = "gpt-live-1.1";
 
 /// The host the session socket lives on. US, because the live endpoints are
 /// there and the region question is deferred (R-25-5).
@@ -60,10 +66,6 @@ pub const DEFAULT_BASE_URL: &str = "wss://api.openai.com";
 /// The voice the model speaks with unless a param says otherwise. They all
 /// speak German; none of them is billed as a German voice.
 pub const DEFAULT_VOICE: &str = "marin";
-
-/// The `event_id` the opening greeting is sent under, so its acknowledgement
-/// is recognisable in a log without reading the text back.
-const GREETING_EVENT_ID: &str = "greeting";
 
 /// The payload of the keepalive ping this adapter sends, and the mark that
 /// tells its own pong from anybody else's (R-L7, GH #798).
@@ -82,13 +84,38 @@ pub const KEEPALIVE_PAYLOAD: &[u8] = b"meclaw";
 /// session's closing log line.
 const LONG_GAP_MS: u64 = 250;
 
-/// The socket this adapter runs on, once `connect_async` handed it over.
+/// How many frames wait for the provider's socket before the session stops
+/// taking the caller's audio and the colony's guidance (GH #1630). At one
+/// frame per 20 ms this is 320 ms, well over the slowest send measured (38 ms),
+/// and short enough that a mute is not long behind the audio before it.
+const SEND_QUEUE: usize = 16;
+
+/// The socket this adapter runs on, once [`open_socket`] handed it over.
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-/// The writing half of that socket.
-type Writer = futures_util::stream::SplitSink<Socket, WsMessage>;
 /// The reading half.
 type Reader = futures_util::stream::SplitStream<Socket>;
+
+/// Opens the provider's socket, held to `within` (hard rule 12).
+///
+/// With Nagle off (GH #1632): every frame of the caller's audio is one small
+/// write, and Nagle holds a small write back until the one before it is
+/// acknowledged.
+async fn open_socket(
+    request: impl IntoClientRequest + Unpin,
+    within: Duration,
+) -> Result<Socket, DuplexError> {
+    match tokio::time::timeout(
+        within,
+        tokio_tungstenite::connect_async_with_config(request, None, true),
+    )
+    .await
+    {
+        Err(_) => Err(DuplexError::Timeout),
+        Ok(Err(e)) => Err(classify_connect(e)),
+        Ok(Ok((ws, _response))) => Ok(ws),
+    }
+}
 
 /// The session socket's URL, from a base that may be written either way.
 ///
@@ -172,9 +199,9 @@ impl DuplexProvider for GptLiveDuplex {
     ) -> BoxFuture<Result<(), DuplexError>> {
         let params = self.params.clone();
         let timeouts = self.timeouts;
-        Box::pin(
-            async move { run_session(params, timeouts, format, session, liveness, true).await },
-        )
+        Box::pin(async move {
+            run_session(params, timeouts, format, session, liveness, true, None).await
+        })
     }
 
     /// The same session, without the greeting (GH #896).
@@ -191,9 +218,33 @@ impl DuplexProvider for GptLiveDuplex {
     ) -> BoxFuture<Result<(), DuplexError>> {
         let params = self.params.clone();
         let timeouts = self.timeouts;
-        Box::pin(
-            async move { run_session(params, timeouts, format, session, liveness, false).await },
-        )
+        Box::pin(async move {
+            run_session(params, timeouts, format, session, liveness, false, None).await
+        })
+    }
+
+    fn run_metered_session(
+        &self,
+        format: AudioFormat,
+        session: DuplexSession,
+        liveness: IoLivenessMark,
+        renewed: bool,
+        arrivals: oneshot::Sender<AudioArrivals>,
+    ) -> BoxFuture<Result<(), DuplexError>> {
+        let params = self.params.clone();
+        let timeouts = self.timeouts;
+        Box::pin(async move {
+            run_session(
+                params,
+                timeouts,
+                format,
+                session,
+                liveness,
+                !renewed,
+                Some(arrivals),
+            )
+            .await
+        })
     }
 }
 
@@ -204,8 +255,11 @@ impl DuplexProvider for GptLiveDuplex {
 /// rate on offer (see [`GptLiveDuplex::format`]) the two are the same value —
 /// but the one the client was promised is the one the model has to speak.
 ///
-/// `greet` is `false` for a renewed session of a running call (GH #896): the
-/// greeting is what the caller hears FIRST, and a renewal is not first.
+/// `greet` says whether the start frame carries the greeting (GH #1628). It is
+/// `false` for a renewed session of a running call (GH #896): the greeting is
+/// what the caller hears FIRST, and a renewal is not first.
+///
+/// `arrivals` takes how the audio arrived, once, when the session ends.
 async fn run_session(
     params: GptLiveParams,
     timeouts: ProviderTimeouts,
@@ -213,6 +267,7 @@ async fn run_session(
     session: DuplexSession,
     liveness: IoLivenessMark,
     greet: bool,
+    arrivals: Option<oneshot::Sender<AudioArrivals>>,
 ) -> Result<(), DuplexError> {
     let DuplexSession {
         mut audio_in,
@@ -254,14 +309,7 @@ async fn run_session(
 
     // A-timeout around the handshake (hard rule 12): a silent TCP peer must not
     // park this task with no operation-level guard.
-    let ws =
-        match tokio::time::timeout(timeouts.external, tokio_tungstenite::connect_async(request))
-            .await
-        {
-            Err(_) => return Err(DuplexError::Timeout),
-            Ok(Err(e)) => return Err(classify_connect(e)),
-            Ok(Ok((ws, _response))) => ws,
-        };
+    let ws = open_socket(request, timeouts.external).await?;
     // The far side completed a handshake: a full external round trip.
     liveness.mark_success();
     let (mut write, mut read) = ws.split();
@@ -288,10 +336,22 @@ async fn run_session(
             // the ceiling alone, instructions and seed together went past
             // the provider's bound again (R-58-28).
             let budget_tokens = start_budget(&params);
-            let trimmed = trim_seed(
+            // GH #1628: the greeting is one message of the same input, and
+            // the provider takes 128 of them; the seed leaves it the place.
+            let max_messages = if greets(&params, greet) {
+                params.seed_max_messages.min(SEED_MAX_MESSAGES - 1)
+            } else {
+                params.seed_max_messages
+            };
+            let trim = if greets(&params, greet) {
+                trim_folded
+            } else {
+                trim_seed
+            };
+            let trimmed = trim(
                 messages,
                 budget_tokens,
-                params.seed_max_messages,
+                max_messages,
                 params.chars_per_token,
             );
             if trimmed.trimmed > 0 {
@@ -318,14 +378,30 @@ async fn run_session(
         None => None,
     };
 
-    let mut meter = SessionMeter::default();
-    send_frame(
+    // The epoch is read once, through the clock helper the crate already has;
+    // every later time is that reading plus the monotonic clock. A test
+    // overrides it through the parameter it is handed over in (wall-clock:
+    // opened_epoch_ms).
+    let mut meter = SessionMeter::new(
+        law,
+        format.sample_rate,
+        crate::proxy::meclaw::mount::now_ms(),
+        arrivals,
+    );
+    let began = Instant::now();
+    let sent = send_within(
         &mut write,
-        session_start_frame(&params, format, seed.as_deref()),
+        text_frame(&session_start_frame(
+            &params,
+            format,
+            seed.as_deref(),
+            greet,
+        )),
         timeouts.external,
-        &mut meter,
     )
-    .await?;
+    .await;
+    meter.saw_send(began.elapsed());
+    sent?;
 
     // One deadline for the whole wait, not one per frame: a peer that keeps
     // sending frames that are not `session.started` would otherwise reset the
@@ -351,41 +427,14 @@ async fn run_session(
     );
     tokio::pin!(fault_close);
 
-    // Exactly once, and only now: a greeting is what the caller should HEAR
-    // first, so it travels on `commentary` rather than on `instructions`
-    // (OR-L51 — measured 3/3 spoken against 2/9, median 938 ms). Never on a
-    // renewed session (GH #896): that one opens mid-call, and the caller was
-    // greeted by the session it replaces.
-    if greet && !params.greeting.is_empty() {
-        send_frame(
-            &mut write,
-            append_frame(
-                AppendKind::Commentary,
-                GREETING_EVENT_ID,
-                None,
-                &params.greeting,
-            ),
-            timeouts.external,
-            &mut meter,
-        )
-        .await?;
-    }
-
-    // GH #1537: the opening answer ends after the greeting (see
-    // `OpeningGuard`). A renewed session greets nobody and is not guarded.
-    let mut opening = OpeningGuard::new(greet, &params.greeting);
+    // From here on the writing half belongs to its own task, and nothing below
+    // waits for a send (GH #1630).
+    let mut uplink = Uplink::spawn(write, timeouts.external);
+    meter.sends = Some(uplink.times.clone());
 
     // What arrived while the opening waited for its seed, in its order of
     // arrival (review K2).
-    let mut early_end = None;
     for held in waited.held {
-        if let Held::Control(DuplexControl::Append {
-            kind: AppendKind::Commentary,
-            ..
-        }) = &held
-        {
-            opening.end(&session_id, "colony");
-        }
         let frame = match held {
             Held::Audio(bytes) => audio_append_frame(law, &bytes),
             Held::Control(DuplexControl::Append {
@@ -401,10 +450,7 @@ async fn run_session(
             // A close ends the wait and is never held; a second seed is late.
             Held::Control(DuplexControl::Close | DuplexControl::Seed { .. }) => continue,
         };
-        if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
-            early_end = Some(Ending::SendFailed(e));
-            break;
-        }
+        uplink.offer_json(&frame);
     }
 
     let mut control_open = true;
@@ -475,11 +521,6 @@ async fn run_session(
     // caller's audio still are.
     let mut held: Option<Said> = None;
     let ending = loop {
-        // A close, a departed caller or a failed send while the opening
-        // waited for its seed ends the session before the first select.
-        if let Some(ending) = early_end.take() {
-            break ending;
-        }
         tokio::select! {
             // `biased` so guidance and a close are acted on before the audio
             // already queued behind them — a mute that arrives late is a mute
@@ -487,35 +528,31 @@ async fn run_session(
             // socket that may have gone quiet.
             biased;
 
-            command = control.recv(), if control_open => match command {
+            // A send that failed ends the session; room in the queue takes the
+            // frame that waited for it.
+            step = uplink.step() => if let Err(e) = step {
+                break Ending::SendFailed(e);
+            },
+
+            // The inlets are read while the send queue has room: a full one
+            // holds the frame it refused, and the next stays in its channel
+            // (backpressure, no drop and no overtaking).
+            command = control.recv(), if control_open && uplink.has_room() => match command {
                 Some(DuplexControl::Append { kind, event_id, delegation_id, content }) => {
-                    // GH #1537: the colony asks the model to speak; what it
-                    // says now is no longer the opening answer.
-                    if matches!(kind, AppendKind::Commentary) {
-                        opening.end(&session_id, "colony");
-                    }
                     let frame = append_frame(kind, &event_id, delegation_id.as_deref(), &content);
-                    if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
-                        break Ending::SendFailed(e);
-                    }
+                    uplink.offer_json(&frame);
                 }
                 Some(DuplexControl::Mute) => {
                     let frame = json!({ "type": "session.input_audio.mute" });
-                    if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
-                        break Ending::SendFailed(e);
-                    }
+                    uplink.offer_json(&frame);
                 }
                 Some(DuplexControl::Unmute) => {
                     let frame = json!({ "type": "session.input_audio.unmute" });
-                    if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
-                        break Ending::SendFailed(e);
-                    }
+                    uplink.offer_json(&frame);
                 }
                 Some(DuplexControl::Close) => {
-                    match send_frame(&mut write, close_frame(), timeouts.external, &mut meter).await {
-                        Ok(()) => break Ending::Finalise,
-                        Err(e) => break Ending::SendFailed(e),
-                    }
+                    uplink.offer_json(&close_frame());
+                    break Ending::Finalise;
                 }
                 // A seed is part of the opening, and the session has opened.
                 Some(DuplexControl::Seed { .. }) => {
@@ -527,25 +564,21 @@ async fn run_session(
                 None => control_open = false,
             },
 
-            chunk = audio_in.recv() => match chunk {
+            chunk = audio_in.recv(), if uplink.has_room() => match chunk {
                 Some(bytes) => {
                     // One item, one append. The connection checked the parity;
                     // what arrives here goes on the wire as it is (R-L4) --
                     // companded first on a G.711 session, sample by sample.
                     let frame = audio_append_frame(law, &bytes);
-                    if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
-                        break Ending::SendFailed(e);
-                    }
+                    uplink.offer_json(&frame);
                 }
                 None => {
                     // The client went away: `audio_in` closing IS the end of
                     // the call (contract § 1.1). No guard on this arm and none
                     // needed: the loop leaves here rather than carrying on with
                     // a receiver that would answer `None` for ever.
-                    match send_frame(&mut write, close_frame(), timeouts.external, &mut meter).await {
-                        Ok(()) => break Ending::Finalise,
-                        Err(e) => break Ending::SendFailed(e),
-                    }
+                    uplink.offer_json(&close_frame());
+                    break Ending::Finalise;
                 }
             },
 
@@ -568,7 +601,9 @@ async fn run_session(
                 if draining(events.send(warning), &mut control, &mut audio_in).await.is_err() {
                     break Ending::HandlerGone;
                 }
-                let _ = send_frame(&mut write, close_frame(), timeouts.external, &mut meter).await;
+                uplink.offer_json(&close_frame());
+                let sent = tokio::time::timeout(timeouts.external, uplink.drained());
+                let _ = draining(sent, &mut control, &mut audio_in).await;
                 break Ending::Reported {
                     reason: "content".to_string(),
                     usage_seconds: meter.usage_seconds,
@@ -587,23 +622,10 @@ async fn run_session(
 
             // Ask the socket whether it is still there (R-L7, GH #798). The
             // payload is [`KEEPALIVE_PAYLOAD`], which is what makes the answer
-            // recognisable as the answer to THIS question. An A-timeout around
-            // it like every other send (hard rule 12): a peer that accepts no
-            // bytes must not park this task either.
-            _ = keepalive.tick() => {
-                let began = Instant::now();
-                let sent = tokio::time::timeout(
-                    timeouts.external,
-                    write.send(WsMessage::Ping(Bytes::from_static(KEEPALIVE_PAYLOAD))),
-                ).await;
-                meter.saw_send(began.elapsed());
-                match sent {
-                    Err(_) => break Ending::SendFailed(DuplexError::Timeout),
-                    Ok(Err(e)) => break Ending::SendFailed(
-                        DuplexError::Closed(format!("keepalive: {e}"))
-                    ),
-                    Ok(Ok(())) => {}
-                }
+            // recognisable as the answer to THIS question. It goes through the
+            // queue like every other frame and is under the same A-timeout.
+            _ = keepalive.tick(), if uplink.has_room() => {
+                uplink.offer(WsMessage::Ping(Bytes::from_static(KEEPALIVE_PAYLOAD)));
             }
 
             // The frame the connection had no room for, as soon as it has.
@@ -619,6 +641,7 @@ async fn run_session(
                 Ok(permit) => {
                     if let Some(Said::Audio(bytes)) = held.take() {
                         permit.send(bytes);
+                        meter.released(Instant::now());
                     }
                 }
                 Err(_) => break Ending::ClientGone,
@@ -692,24 +715,7 @@ async fn run_session(
                     .as_mut()
                     .reset(tokio::time::Instant::now() + timeouts.idle);
                 liveness.mark_success();
-                let guarded = opening.pass(marks.spoken(map_event(&text)), &session_id, |bytes| {
-                    audio_measure(law, format.sample_rate, bytes)
-                });
-                // GH #1537: the opening answer went on past the greeting's
-                // audio budget (GH #1545); the model is told once to stop and
-                // wait for the caller.
-                if guarded.stop {
-                    let frame = append_frame(
-                        AppendKind::Instructions,
-                        OPENING_STOP_EVENT_ID,
-                        None,
-                        OPENING_STOP,
-                    );
-                    if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
-                        break Ending::SendFailed(e);
-                    }
-                }
-                match guarded.mapped {
+                match marks.spoken(map_event(&text)) {
                     Mapped::Emit(event) => {
                         meter.note(&event);
                         // A15: the provider rejected the session's Responses
@@ -728,9 +734,7 @@ async fn run_session(
                                  responses_fallback as session.update"
                             );
                             let frame = responses_correction_frame(fallback);
-                            if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
-                                break Ending::SendFailed(e);
-                            }
+                            uplink.offer_json(&frame);
                         }
                         // A full channel holds the frame (see `held`):
                         // backpressure on the model, never a drop, and never
@@ -742,10 +746,13 @@ async fn run_session(
                         }
                     }
                     Mapped::Audio(bytes) => {
-                        meter.saw_output(Instant::now());
+                        meter.saw_output(Instant::now(), &bytes);
                         match audio_out.try_send(expand_out(law, bytes)) {
                             Ok(()) => {}
-                            Err(TrySendError::Full(bytes)) => held = Some(Said::Audio(bytes)),
+                            Err(TrySendError::Full(bytes)) => {
+                                meter.holds(Instant::now());
+                                held = Some(Said::Audio(bytes));
+                            }
                             Err(TrySendError::Closed(_)) => break Ending::ClientGone,
                         }
                     }
@@ -753,7 +760,6 @@ async fn run_session(
                         break Ending::Reported { reason, usage_seconds };
                     }
                     Mapped::ResponsesCreated(id) if note_superseded => {
-                        let mut failed = None;
                         for old in open_responses.created(&id) {
                             tracing::info!(
                                 superseded = %old,
@@ -763,13 +769,7 @@ async fn run_session(
                             );
                             let frame =
                                 superseded_note_frame(&old, &params.responses_superseded_note);
-                            if let Err(e) = send_frame(&mut write, frame, timeouts.external, &mut meter).await {
-                                failed = Some(e);
-                                break;
-                            }
-                        }
-                        if let Some(e) = failed {
-                            break Ending::SendFailed(e);
+                            uplink.offer_json(&frame);
                         }
                     }
                     Mapped::ResponsesDone(id) if note_superseded => open_responses.done(&id),
@@ -778,59 +778,80 @@ async fn run_session(
             }
         }
     };
+    // An outlet nobody reads any more ends the session like a hang-up, and the
+    // provider has to learn of it the same way. With a stalled uplink the
+    // hang-up itself may not be seen at all: the inlets are not read then, and
+    // the model's next chunk finds its outlet gone first (GH #1630).
+    let gone = match &ending {
+        Ending::HandlerGone => Some("handler_gone"),
+        Ending::ClientGone => Some("client_gone"),
+        _ => None,
+    };
+    if gone.is_some() {
+        control.close();
+        audio_in.close();
+        uplink.offer_json(&close_frame());
+    }
+    let closes = gone.is_some() || matches!(ending, Ending::Finalise);
+    if closes {
+        meter.closes();
+    }
+    let mut closing = Closing {
+        uplink: &mut uplink,
+        deadline: Instant::now() + timeouts.external,
+        grace: Duration::from_millis(params.close_grace_ms),
+        sent: !closes,
+    };
     // A close can overtake a frame that waited for room: it is still what the
     // model said, and it goes first. An outlet that is gone takes nothing.
-    match held.take() {
-        Some(Said::Event(event)) => {
-            let _ = draining(events.send(event), &mut control, &mut audio_in).await;
-        }
-        Some(Said::Audio(bytes)) => {
-            let _ = draining(audio_out.send(bytes), &mut control, &mut audio_in).await;
-        }
-        None => {}
+    let mut unsent = None;
+    if let Some(said) = held.take() {
+        let handed = draining(
+            hand_on(said, &audio_out, &events),
+            &mut control,
+            &mut audio_in,
+        );
+        unsent = closing.beside(handed).await.err();
+        meter.released(Instant::now());
     }
-    let grace = Duration::from_millis(params.close_grace_ms);
     let mut failure = None;
     let (reason, usage_seconds, report) = match ending {
-        Ending::Finalise => {
-            let (reason, seconds) = finalise(
-                &mut read,
-                Outlets {
-                    audio_out: &audio_out,
-                    events: &events,
-                    control: &mut control,
-                    audio_in: &mut audio_in,
-                },
-                &liveness,
-                &mut meter,
-                grace,
-                law,
-                Opening {
-                    guard: &mut opening,
-                    session_id: &session_id,
-                    rate: format.sample_rate,
-                },
-            )
-            .await;
-            (reason, seconds, true)
+        Ending::Finalise | Ending::HandlerGone | Ending::ClientGone => {
+            let last_words = match unsent {
+                Some(e) => Err(e),
+                None => {
+                    let outlets = Outlets {
+                        audio_out: &audio_out,
+                        events: &events,
+                        control: &mut control,
+                        audio_in: &mut audio_in,
+                        gone,
+                    };
+                    finalise(&mut read, closing, outlets, &liveness, &mut meter, law).await
+                }
+            };
+            match (last_words, gone) {
+                (Ok((reason, seconds)), None) => (reason, seconds, true),
+                // Nobody is left to tell, and a close that failed here failed
+                // nobody: the log line below is the only record of it.
+                (Ok((_, seconds)), Some(gone)) => (gone.to_string(), seconds, false),
+                (Err(_), Some(gone)) => (gone.to_string(), meter.usage_seconds, false),
+                (Err(e), None) => {
+                    failure = Some(e);
+                    ("send_failed".to_string(), meter.usage_seconds, false)
+                }
+            }
         }
         Ending::Reported {
             reason,
             usage_seconds,
         } => (reason, usage_seconds, true),
         Ending::ConnectionLost => ("connection_lost".to_string(), meter.usage_seconds, true),
-        // Nobody is left to tell. The session still ends here and the log line
-        // below is the only record of it.
-        Ending::HandlerGone => ("handler_gone".to_string(), meter.usage_seconds, false),
-        Ending::ClientGone => ("client_gone".to_string(), meter.usage_seconds, false),
         Ending::SendFailed(e) => {
             failure = Some(e);
             ("send_failed".to_string(), meter.usage_seconds, false)
         }
     };
-    // After `finalise`: what the model says while the close is under way is
-    // still the opening's tail where the caller never spoke (GH #1537).
-    opening.end(&session_id, "session_end");
     if report {
         let closed = DuplexEvent::Closed {
             reason: reason.clone(),
@@ -838,6 +859,7 @@ async fn run_session(
         };
         let _ = draining(events.send(closed), &mut control, &mut audio_in).await;
     }
+    meter.read_sends();
     // The measurement points of the wave, one line per session: L9's B-6 reads
     // the three audio counters off it, and `usage_seconds` is what the session
     // cost.
@@ -849,6 +871,11 @@ async fn run_session(
         out_gap_max_ms = meter.out_gap_max_ms,
         out_gaps_over_250 = meter.out_gaps_over_250,
         in_send_max_ms = meter.in_send_max_ms,
+        late_chunks = meter.late_chunks(),
+        late_max_ms = meter.arrivals.late_max_ms,
+        lateness = ?meter.arrivals.lateness,
+        held_max_ms = meter.arrivals.held_max_ms,
+        send_wait_max_ms = meter.arrivals.send_wait_max_ms,
         "gpt_live session ended"
     );
     match failure {
@@ -899,6 +926,65 @@ async fn draining<F: std::future::Future>(
     }
 }
 
+/// Hands `said` to its outlet; `false` when nobody reads it any more.
+async fn hand_on(
+    said: Said,
+    audio_out: &mpsc::Sender<Vec<u8>>,
+    events: &mpsc::Sender<DuplexEvent>,
+) -> bool {
+    match said {
+        Said::Event(event) => events.send(event).await.is_ok(),
+        Said::Audio(bytes) => audio_out.send(bytes).await.is_ok(),
+    }
+}
+
+/// The `session.close` on its way out, the last frame of the send queue.
+struct Closing<'a> {
+    uplink: &'a mut Uplink,
+    /// Until when the whole queue has to be on the wire; from then on, until
+    /// when the provider may answer.
+    deadline: Instant,
+    /// How long the provider may take to answer, from the sent close.
+    grace: Duration,
+    /// Whether the close is on the wire, or none was asked for.
+    sent: bool,
+}
+
+impl Closing<'_> {
+    /// Waits until the close is on the wire and starts the grace. Cancel safe;
+    /// pending for ever once it is.
+    async fn out(&mut self) -> Result<(), DuplexError> {
+        if self.sent {
+            return std::future::pending().await;
+        }
+        match tokio::time::timeout_at(self.deadline, self.uplink.drained()).await {
+            Err(_) => return Err(DuplexError::Timeout),
+            Ok(sent) => sent?,
+        }
+        self.sent = true;
+        self.deadline = Instant::now() + self.grace;
+        Ok(())
+    }
+
+    /// Runs `wait` to its end while the close goes out beside it: an outlet
+    /// that stands does not hold the close, and only a socket that takes
+    /// nothing is a failure of it.
+    async fn beside<F: std::future::Future>(&mut self, wait: F) -> Result<F::Output, DuplexError> {
+        tokio::pin!(wait);
+        loop {
+            tokio::select! {
+                biased;
+                done = &mut wait => return Ok(done),
+                sent = self.out() => if let Err(e) = sent {
+                    // What the model said is handed on all the same.
+                    wait.await;
+                    return Err(e);
+                },
+            }
+        }
+    }
+}
+
 /// The session's channels as [`finalise`] needs them: the two outlets it
 /// hands the model's last words to, and the two inlets it keeps taking from
 /// while it waits on an outlet (see [`draining`]).
@@ -907,12 +993,14 @@ struct Outlets<'a> {
     events: &'a mpsc::Sender<DuplexEvent>,
     control: &'a mut mpsc::Receiver<DuplexControl>,
     audio_in: &'a mut mpsc::Receiver<Vec<u8>>,
+    /// The end of the connection that is gone already, and its word for it.
+    gone: Option<&'static str>,
 }
 
 /// Why the streaming loop stopped.
 enum Ending {
-    /// A `session.close` went out; the provider's own `session.closed` is still
-    /// to come.
+    /// A `session.close` is the last frame of the send queue; the provider's
+    /// own `session.closed` is still to come.
     Finalise,
     /// The provider closed the session itself and said so.
     Reported {
@@ -923,14 +1011,16 @@ enum Ending {
     },
     /// The socket ended before anybody asked it to.
     ConnectionLost,
-    /// The cell stopped listening to events.
+    /// The cell stopped listening to events; a `session.close` still goes out.
     HandlerGone,
-    /// The connection stopped taking output audio.
+    /// The connection stopped taking output audio; a `session.close` still
+    /// goes out.
     ClientGone,
     /// The socket would not take a frame in time. This IS a disturbance and
     /// leaves as `Err` — but through the tail, so the session still writes its
     /// measurement line: a session that died on a slow send is exactly the one
-    /// whose `in_send_max_ms` L9's B-6 wants to read.
+    /// whose `in_send_max_ms` L9's B-6 wants to read. Every other ending reads
+    /// the send that still hangs as long as it ran ([`SendTimes`]).
     SendFailed(DuplexError),
 }
 
@@ -998,51 +1088,62 @@ async fn await_started(
     }
 }
 
-/// The opening guard of a session as [`finalise`] carries it on (GH #1537).
-struct Opening<'a> {
-    guard: &'a mut OpeningGuard,
-    session_id: &'a str,
-    /// The session's sample rate, for the length of an audio chunk.
-    rate: u32,
-}
-
-/// Waits out the provider's own close after a `session.close` went out.
+/// Waits out the provider's own close, the `session.close` being the last
+/// frame in the send queue.
+///
+/// The queue goes out in its order, all of it within `external`, and the grace
+/// counts from the moment the close is on the wire. A send that fails on the
+/// way is an `Err`, as it is in the running session.
+///
+/// Where an outlet is gone (`Outlets::gone`, or while it runs) the reading goes
+/// on and what comes is dropped, until the provider answered the close: a
+/// socket let go with unread audio in it is reset, and a reset takes the close
+/// that still stands in the send buffer with it.
 ///
 /// The session keeps running while it waits: a model that was mid-sentence
 /// keeps arriving, and the last of what it said belongs to the caller as much
 /// as the rest. What ends the wait is `session.closed`, a dead socket, or
 /// `close_grace_ms` — and in the last case the meter reading is the last one
-/// that was reported, because no better one is coming. The opening guard
-/// still holds while it waits: a caller who hangs up during an invented tail
-/// must not have the rest of it kept (GH #1537); no stop is asked for, the
-/// session is closing anyway.
+/// that was reported, because no better one is coming.
 async fn finalise(
     read: &mut Reader,
+    mut closing: Closing<'_>,
     outlets: Outlets<'_>,
     liveness: &IoLivenessMark,
     meter: &mut SessionMeter,
-    grace: Duration,
     law: Option<Law>,
-    opening: Opening<'_>,
-) -> (String, f64) {
+) -> Result<(String, f64), DuplexError> {
     let Outlets {
         audio_out,
         events,
         control,
         audio_in,
+        mut gone,
     } = outlets;
-    let deadline = tokio::time::Instant::now() + grace;
     loop {
-        let message = match tokio::time::timeout_at(deadline, read.next()).await {
-            Err(_) => return ("finalization_timeout".to_string(), meter.usage_seconds),
+        let deadline = closing.deadline;
+        let incoming = tokio::select! {
+            biased;
+            sent = closing.out() => {
+                sent?;
+                continue;
+            }
+            incoming = tokio::time::timeout_at(deadline, read.next()) => incoming,
+        };
+        let message = match incoming {
+            Err(_) if !closing.sent => return Err(DuplexError::Timeout),
+            Err(_) => {
+                let reason = gone.unwrap_or("finalization_timeout");
+                return Ok((reason.to_string(), meter.usage_seconds));
+            }
             Ok(None) | Ok(Some(Err(_))) => {
-                return ("connection_lost".to_string(), meter.usage_seconds);
+                return Ok(("connection_lost".to_string(), meter.usage_seconds));
             }
             Ok(Some(Ok(message))) => message,
         };
         let text = match message {
             WsMessage::Text(text) => text.to_string(),
-            WsMessage::Close(_) => return ("connection_lost".to_string(), meter.usage_seconds),
+            WsMessage::Close(_) => return Ok(("connection_lost".to_string(), meter.usage_seconds)),
             WsMessage::Ping(_)
             | WsMessage::Pong(_)
             | WsMessage::Binary(_)
@@ -1051,36 +1152,34 @@ async fn finalise(
             }
         };
         liveness.mark_success();
-        let guarded = opening
-            .guard
-            .pass(map_event(&text), opening.session_id, |bytes| {
-                audio_measure(law, opening.rate, bytes)
-            });
-        match guarded.mapped {
+        let (said, outlet) = match map_event(&text) {
             Mapped::Finished {
                 reason,
                 usage_seconds,
-            } => return (reason, usage_seconds),
+            } => return Ok((reason, usage_seconds)),
             Mapped::Emit(event) => {
                 meter.note(&event);
-                if draining(events.send(event), control, audio_in)
-                    .await
-                    .is_err()
-                {
-                    return ("handler_gone".to_string(), meter.usage_seconds);
-                }
+                (Said::Event(event), "handler_gone")
             }
             Mapped::Audio(bytes) => {
-                meter.saw_output(Instant::now());
-                let chunk = expand_out(law, bytes);
-                if draining(audio_out.send(chunk), control, audio_in)
-                    .await
-                    .is_err()
-                {
-                    return ("client_gone".to_string(), meter.usage_seconds);
-                }
+                meter.saw_output(Instant::now(), &bytes);
+                (Said::Audio(expand_out(law, bytes)), "client_gone")
             }
-            Mapped::ResponsesCreated(_) | Mapped::ResponsesDone(_) | Mapped::Ignore => {}
+            Mapped::ResponsesCreated(_) | Mapped::ResponsesDone(_) | Mapped::Ignore => continue,
+        };
+        if gone.is_some() {
+            continue;
+        }
+        if matches!(said, Said::Audio(_)) {
+            meter.holds(Instant::now());
+        }
+        let handed = draining(hand_on(said, audio_out, events), control, audio_in);
+        let handed = closing.beside(handed).await;
+        meter.released(Instant::now());
+        if !handed? {
+            gone = Some(outlet);
+            control.close();
+            audio_in.close();
         }
     }
 }
@@ -1453,414 +1552,6 @@ impl ControlMarks {
     }
 }
 
-/// The `event_id` of the one instruction that ends the opening answer
-/// (GH #1537), so its acknowledgement reads in a log as what it is.
-const OPENING_STOP_EVENT_ID: &str = "opening_stop";
-
-/// What the model is told when its opening answer goes on past the greeting
-/// (GH #1537). `session.instructions.append` is the channel the provider
-/// names for "direction to stop speaking"; gpt-live-1 has no
-/// `response.cancel` and no truncate.
-const OPENING_STOP: &str = "Stop speaking now. Your greeting is done. Say nothing more until \
-                            the caller speaks, then answer what they say.";
-
-/// The characters that close a quotation or a bracket after a sentence mark:
-/// `"Fine."` ends its sentence after the quote, not before it.
-const SENTENCE_CLOSERS: &[char] = &[
-    '"', '\'', '\u{201C}', '\u{201D}', '\u{2019}', '\u{BB}', ')', ']',
-];
-
-/// Whether `c` ends a sentence (GH #1537): structure only, no word list.
-fn is_sentence_mark(c: char) -> bool {
-    matches!(c, '.' | '!' | '?' | '\u{2026}')
-}
-
-/// The sentence ends in `text`: for each, the char index just past it
-/// (marks and closers included). A run of marks (`?!`, `...`) is one end;
-/// it counts when whitespace or the end of `text` follows, and only after
-/// something that is not whitespace was said since the last end.
-fn sentence_ends(text: &str) -> Vec<usize> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut ends = Vec::new();
-    let mut said = false;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if is_sentence_mark(c) && said {
-            let mut j = i;
-            while j < chars.len() && is_sentence_mark(chars[j]) {
-                j += 1;
-            }
-            while j < chars.len() && SENTENCE_CLOSERS.contains(&chars[j]) {
-                j += 1;
-            }
-            if j == chars.len() || chars[j].is_whitespace() {
-                ends.push(j);
-                said = false;
-            }
-            i = j;
-            continue;
-        }
-        if !c.is_whitespace() && !is_sentence_mark(c) {
-            said = true;
-        }
-        i += 1;
-    }
-    ends
-}
-
-/// The share of the spoken greeting the opening answer must have said before
-/// the next sentence end closes it (GH #1537).
-///
-/// The model says the greeting "in its own words", so its sentence is
-/// shorter or longer than the quoted one and cannot be compared word for
-/// word. Half of the quote's characters lets a short opener pass ("Hello!"
-/// before the greeting proper is one sentence of its own) and still falls
-/// inside the greeting sentence, so the sentence end that follows is the
-/// greeting's own end and not one of an invented tail.
-const GREETING_SHARE: f64 = 0.5;
-
-/// The share of the spoken greeting at which the opening answer ends even
-/// without a sentence end (GH #1537).
-///
-/// Measured on test colonies: the model ran its invented story on straight
-/// from the greeting sentence, without a mark between them ("..., but
-/// listen, I am out fishing right now ..."); waiting for the next sentence
-/// end would let that story through. A paraphrase of the greeting stays well
-/// within twice the quote's length, so the cut there keeps the greeting and
-/// stops the run-on tail.
-const GREETING_HARD_SHARE: f64 = 2.0;
-
-/// The audio an opening answer may carry before the greeting's characters
-/// count, in ms (GH #1545): room for a breath and a slow first word.
-const GREETING_LEAD_MS: f64 = 1_000.0;
-
-/// The audio an opening answer may carry per character of its greeting, in
-/// ms (GH #1545).
-///
-/// Measured on test lines (0.88.0): a greeting of 89 characters took about
-/// 6 s of audio, 67 ms per character. 90 ms leaves a third on top for a
-/// slower voice or a longer paraphrase; together with [`GREETING_LEAD_MS`]
-/// that greeting may carry 9 s, and an invented tail behind it is cut there.
-const GREETING_MS_PER_CHAR: f64 = 90.0;
-
-/// The quotation marks a spoken greeting may stand in: opener and the
-/// closers that end it.
-const GREETING_QUOTES: &[(char, &[char])] = &[
-    ('\u{201E}', &['\u{201C}', '\u{201D}']),
-    ('\u{201C}', &['\u{201D}']),
-    ('"', &['"']),
-    ('\u{AB}', &['\u{BB}']),
-];
-
-/// The spoken part of a greeting append (GH #1537): the text inside the
-/// first pair of quotation marks (`„…“`, `“…”`, `"…"`, `«…»`) -- a deployed
-/// greeting is an instruction that quotes the sentence to say -- or the
-/// whole greeting where it quotes nothing. Structure only, no word list.
-fn spoken_greeting(greeting: &str) -> &str {
-    let opener = greeting
-        .char_indices()
-        .find(|(_, c)| GREETING_QUOTES.iter().any(|(o, _)| o == c));
-    if let Some((at, open)) = opener {
-        let closers = GREETING_QUOTES
-            .iter()
-            .find(|(o, _)| *o == open)
-            .map(|(_, c)| *c)
-            .unwrap_or_default();
-        let inner = &greeting[at + open.len_utf8()..];
-        if let Some(end) = inner.find(|c: char| closers.contains(&c)) {
-            let quoted = inner[..end].trim();
-            if !quoted.is_empty() {
-                return quoted;
-            }
-        }
-    }
-    greeting.trim()
-}
-
-/// How many characters of its transcript the opening answer must have said
-/// before the next sentence end closes it: [`GREETING_SHARE`] of the spoken
-/// greeting, at least one.
-fn greeting_threshold(greeting: &str) -> usize {
-    let chars = spoken_greeting(greeting).chars().count();
-    ((chars as f64 * GREETING_SHARE).ceil() as usize).max(1)
-}
-
-/// How many characters of its transcript the opening answer may say at
-/// most when no sentence end came after [`greeting_threshold`]:
-/// [`GREETING_HARD_SHARE`] of the spoken greeting, at least one.
-fn greeting_hard_limit(greeting: &str) -> usize {
-    let chars = spoken_greeting(greeting).chars().count();
-    ((chars as f64 * GREETING_HARD_SHARE).ceil() as usize).max(1)
-}
-
-/// The audio a greeting of `chars` characters may carry, in ms, counted from
-/// its first audible chunk (GH #1545).
-fn greeting_budget_ms(chars: usize) -> f64 {
-    GREETING_LEAD_MS + GREETING_MS_PER_CHAR * chars as f64
-}
-
-/// What [`OpeningGuard::pass`] decided about one mapped frame.
-struct Guarded {
-    /// The frame as it goes on: unchanged, cut at the greeting's end, or
-    /// [`Mapped::Ignore`] for what is dropped.
-    mapped: Mapped,
-    /// Send [`OPENING_STOP`] now: the first audible audio past the
-    /// greeting's budget was dropped.
-    stop: bool,
-}
-
-/// The guard on the opening answer of a greeting session (GH #1537).
-///
-/// Measured on test colonies (0.87.0, 3 of 7 calls on fresh colonies): the
-/// model answered the greeting append with the greeting and went on with up
-/// to about 25 s of an invented first-person story, once naming the caller
-/// with a name nobody had said; it was heard and kept in memory. The source
-/// is the model's output, so the adapter is where it is stopped.
-///
-/// Armed only on a session that greets, from the greeting until the caller
-/// speaks (their first transcript fragment) or the colony asks for speech
-/// itself (a `commentary` append). Two clocks, two halves:
-///
-/// - **Text.** The model may speak until its transcript holds
-///   [`GREETING_SHARE`] of the spoken greeting's characters; the next
-///   sentence end after that point closes the greeting (read off the
-///   model's own transcript by its marks); without one, the greeting is
-///   closed hard at [`GREETING_HARD_SHARE`] of the spoken greeting's
-///   characters. From that end on, every transcript fragment of the model
-///   is dropped, so the tail reaches neither the turn nor memory.
-/// - **Audio** (GH #1545). The transcript runs seconds ahead of the audio
-///   and the model streams silence before its first word, so the audio is
-///   measured on its own clock: from the first audible chunk on, it may
-///   carry [`greeting_budget_ms`] of the spoken greeting's characters, or
-///   of the characters said up to the sentence end that closed the
-///   greeting where that is more. The chunk in which the budget runs out
-///   still passes, so a greeting within it is never cut. Past the budget,
-///   audible audio is dropped, silence passes, and later transcript is
-///   dropped too; the budget closes the opening even when the transcript
-///   stalls before it said the greeting.
-///
-/// The model is told to stop ([`OPENING_STOP`]) once, when the first
-/// audible audio past the budget is dropped -- never because the transcript
-/// ran ahead, so never in the middle of the greeting.
-struct OpeningGuard {
-    /// Whether the guard still watches the session.
-    armed: bool,
-    /// The characters the opening answer must have said before the next
-    /// sentence end closes it.
-    limit: usize,
-    /// The characters after which the opening answer ends even without a
-    /// sentence end.
-    hard: usize,
-    /// The model's transcript of the opening answer passed so far.
-    heard: String,
-    /// Whether the greeting has been said whole: from here on the model's
-    /// transcript is dropped.
-    done: bool,
-    /// The characters of the spoken greeting, the base of the audio budget.
-    spoken_chars: usize,
-    /// How much audio the greeting may carry, in ms, from its first audible
-    /// chunk on.
-    budget_ms: f64,
-    /// The audio passed since the first audible chunk, in ms; `None` before
-    /// it.
-    spoken_ms: Option<f64>,
-    /// Whether the audio budget ran out: audible audio is dropped.
-    over: bool,
-    /// Characters of the model's transcript dropped.
-    dropped_chars: usize,
-    /// Audio dropped, in ms.
-    dropped_ms: f64,
-    /// Whether the model was told to stop.
-    stopped: bool,
-}
-
-impl OpeningGuard {
-    /// A guard for a session that greets with `greeting` where `greets`.
-    fn new(greets: bool, greeting: &str) -> Self {
-        Self {
-            armed: greets && !greeting.is_empty(),
-            limit: greeting_threshold(greeting),
-            hard: greeting_hard_limit(greeting),
-            heard: String::new(),
-            done: false,
-            spoken_chars: spoken_greeting(greeting).chars().count(),
-            budget_ms: greeting_budget_ms(spoken_greeting(greeting).chars().count()),
-            spoken_ms: None,
-            over: false,
-            dropped_chars: 0,
-            dropped_ms: 0.0,
-            stopped: false,
-        }
-    }
-
-    /// Whether the greeting has been said whole.
-    fn closed(&self) -> bool {
-        self.done
-    }
-
-    /// The guard ends: the caller spoke, the colony asked for speech, or
-    /// the session is over. One WARN line when anything was dropped.
-    fn end(&mut self, session_id: &str, why: &str) {
-        if !self.armed {
-            return;
-        }
-        self.armed = false;
-        if self.dropped_chars > 0 || self.dropped_ms > 0.0 {
-            tracing::warn!(
-                session_id = %session_id,
-                dropped_chars = self.dropped_chars,
-                dropped_audio_ms = self.dropped_ms.round() as u64,
-                ended_by = why,
-                "gpt_live: opening_tail_dropped -- the opening answer went on past its \
-                 greeting and the rest was not passed on"
-            );
-        }
-    }
-
-    /// One mapped frame through the guard. `measure` gives an audio chunk's
-    /// length on this session in ms and whether any of it is audible
-    /// ([`audio_measure`]).
-    fn pass(
-        &mut self,
-        mapped: Mapped,
-        session_id: &str,
-        measure: impl Fn(&[u8]) -> (f64, bool),
-    ) -> Guarded {
-        if !self.armed {
-            return Guarded {
-                mapped,
-                stop: false,
-            };
-        }
-        match mapped {
-            Mapped::Emit(DuplexEvent::Transcript {
-                speaker: Speaker::User,
-                ..
-            }) => {
-                self.end(session_id, "caller");
-                Guarded {
-                    mapped,
-                    stop: false,
-                }
-            }
-            Mapped::Emit(DuplexEvent::Transcript {
-                speaker: Speaker::Assistant,
-                delta,
-                start_ms,
-                end_ms,
-            }) => {
-                if self.closed() {
-                    return self.drop_text(&delta);
-                }
-                // Sentence ends are read off everything heard so far, so a
-                // sentence split across fragments still ends where it ends.
-                let before = self.heard.chars().count();
-                let whole = format!("{}{delta}", self.heard);
-                let limit = self.limit;
-                let hard = self.hard;
-                let after = before + delta.chars().count();
-                let sentence = sentence_ends(&whole)
-                    .into_iter()
-                    .find(|&e| e > before && e >= limit)
-                    .filter(|&e| e <= hard);
-                let end = sentence.or((after >= hard).then_some(hard.max(before)));
-                let Some(end) = end else {
-                    self.heard = whole;
-                    return Guarded {
-                        mapped: Mapped::Emit(DuplexEvent::Transcript {
-                            speaker: Speaker::Assistant,
-                            delta,
-                            start_ms,
-                            end_ms,
-                        }),
-                        stop: false,
-                    };
-                };
-                // The greeting ends inside this fragment: what follows the
-                // end is the tail. Where it ends on the model's clock is
-                // estimated by its share of the fragment's characters (the
-                // provider's fragments carry no finer timing).
-                self.done = true;
-                self.heard = whole;
-                // A greeting said longer than the quote, up to its own
-                // sentence end, may carry its length in audio; a hard cut
-                // is no greeting's end and grants nothing (GH #1545).
-                if let Some(said) = sentence {
-                    self.budget_ms = greeting_budget_ms(said.max(self.spoken_chars));
-                }
-                let cut = end - before;
-                let total = delta.chars().count();
-                let kept: String = delta.chars().take(cut).collect();
-                let rest: String = delta.chars().skip(cut).collect();
-                let span = end_ms.saturating_sub(start_ms) as f64;
-                let greeting_end = start_ms as f64 + span * cut as f64 / total.max(1) as f64;
-                if !rest.trim().is_empty() {
-                    self.drop_text(&rest);
-                }
-                Guarded {
-                    mapped: Mapped::Emit(DuplexEvent::Transcript {
-                        speaker: Speaker::Assistant,
-                        delta: kept,
-                        start_ms,
-                        end_ms: greeting_end.round() as u64,
-                    }),
-                    stop: false,
-                }
-            }
-            Mapped::Audio(bytes) => {
-                let (ms, audible) = measure(&bytes);
-                // The audio clock starts with the first audible chunk: the
-                // silence the model streams before its first word is no
-                // part of the greeting (GH #1545).
-                if !self.over && (audible || self.spoken_ms.is_some()) {
-                    let spoken = self.spoken_ms.get_or_insert(0.0);
-                    if *spoken >= self.budget_ms {
-                        // The greeting's audio is used up: what follows is
-                        // the tail, on both clocks, also when the
-                        // transcript never closed the greeting.
-                        self.over = true;
-                        self.done = true;
-                    } else {
-                        *spoken += ms;
-                    }
-                }
-                if self.over && audible {
-                    self.dropped_ms += ms;
-                    return Guarded {
-                        mapped: Mapped::Ignore,
-                        stop: self.first_drop(),
-                    };
-                }
-                Guarded {
-                    mapped: Mapped::Audio(bytes),
-                    stop: false,
-                }
-            }
-            other => Guarded {
-                mapped: other,
-                stop: false,
-            },
-        }
-    }
-
-    /// A piece of the model's transcript past the greeting is dropped. The
-    /// transcript runs ahead of the audio, so its tail asks for no stop: the
-    /// greeting may still be playing (GH #1545).
-    fn drop_text(&mut self, text: &str) -> Guarded {
-        self.dropped_chars += text.chars().count();
-        Guarded {
-            mapped: Mapped::Ignore,
-            stop: false,
-        }
-    }
-
-    /// `true` exactly once: the first time audible audio is dropped.
-    fn first_drop(&mut self) -> bool {
-        !std::mem::replace(&mut self.stopped, true)
-    }
-}
-
 /// The acknowledgement of one append. The identity that matters is the one
 /// this side chose (`client_event_id`); the service's own `event_id` names the
 /// acknowledgement, not the append.
@@ -1969,14 +1660,21 @@ fn classify_connect(error: WsError) -> DuplexError {
 /// `seed` adds `session.input` in the shape the live-conversations guide
 /// gives: one `message` per entry with one text part, `input_text` for
 /// developer and user, `output_text` for assistant. Without a seed the
-/// block's `start_input` opens the session in the same shape. The block's
+/// block's `start_input` opens the session in the same shape. With `greet` a
+/// non-empty `greeting` follows either of them, or stands alone, as ONE
+/// `developer` message and always the last one (GH #1628): the guide puts the
+/// greeting instructions there, so they are known from the start, and the
+/// seed's cut runs before this frame is built and cannot reach it. The turns
+/// of a seed in front of a greeting are folded into one `developer` message
+/// (GH #1641); the block's own `start_input` is not. The block's
 /// `delegation` replaces the client default and its `safety_identifier` is
-/// added; without the three keys and a seed the frame is byte for byte the
-/// one it always was.
+/// added; without the three keys, a seed and a greeting the frame is byte for
+/// byte the one it always was.
 pub fn session_start_frame(
     params: &GptLiveParams,
     format: AudioFormat,
     seed: Option<&[SeedMessage]>,
+    greet: bool,
 ) -> JsonValue {
     let wire = match params.audio_format {
         AudioWire::Pcm16 => json!({ "type": "audio/pcm", "rate": format.sample_rate }),
@@ -2011,24 +1709,27 @@ pub fn session_start_frame(
     }
     // A seed wins over the configured start; the configured start drops empty
     // texts the way the seed's parse does.
-    let start: Vec<SeedMessage>;
-    let opening = match seed.filter(|m| !m.is_empty()) {
-        Some(messages) => Some(messages),
-        None => {
-            start = params
-                .start_input
-                .iter()
-                .filter(|m| !m.text.trim().is_empty())
-                .map(|m| SeedMessage {
-                    role: m.role.clone(),
-                    text: m.text.clone(),
-                })
-                .collect();
-            (!start.is_empty()).then_some(start.as_slice())
-        }
+    let mut opening: Vec<SeedMessage> = match seed.filter(|m| !m.is_empty()) {
+        Some(messages) if greets(params, greet) => fold_turns(messages),
+        Some(messages) => messages.to_vec(),
+        None => params
+            .start_input
+            .iter()
+            .filter(|m| !m.text.trim().is_empty())
+            .map(|m| SeedMessage {
+                role: m.role.clone(),
+                text: m.text.clone(),
+            })
+            .collect(),
     };
-    if let Some(messages) = opening {
-        let input: Vec<JsonValue> = messages
+    if greets(params, greet) {
+        opening.push(SeedMessage {
+            role: "developer".to_string(),
+            text: params.greeting.clone(),
+        });
+    }
+    if !opening.is_empty() {
+        let input: Vec<JsonValue> = opening
             .iter()
             .map(|m| {
                 let part = if m.role == "assistant" {
@@ -2046,6 +1747,61 @@ pub fn session_start_frame(
         session.insert("input".to_string(), JsonValue::Array(input));
     }
     frame
+}
+
+/// The line in front of the folded turns of an earlier call (GH #1641).
+const EARLIER_LINE: &str = "Earlier conversation, ended:";
+
+/// Whether a message of a seed is a turn of the conversation.
+fn is_turn(m: &SeedMessage) -> bool {
+    matches!(m.role.as_str(), "user" | "assistant")
+}
+
+/// The first and the last turn of a seed, `None` where it has none.
+fn turn_stretch(seed: &[SeedMessage]) -> Option<(usize, usize)> {
+    Some((
+        seed.iter().position(is_turn)?,
+        seed.iter().rposition(is_turn)?,
+    ))
+}
+
+/// One message as a line of the folded turns, its line break in front. White
+/// space becomes one space, so no line of its text reads as a turn of its own.
+fn turn_line(m: &SeedMessage) -> String {
+    let mut line = format!("\n{}:", m.role);
+    for word in m.text.split_whitespace() {
+        line.push(' ');
+        line.push_str(word);
+    }
+    line
+}
+
+/// The seed of a session that greets: the stretch from its first to its last
+/// turn becomes ONE `developer` message at the place of the first, one line per
+/// message; what stands in front of it and behind it stays as it came.
+///
+/// GH #1641: as `user` and `assistant` messages the turns of an earlier call
+/// read as the running dialogue of this one: 23 of 23 measured starts on a seed
+/// that ends on an assistant turn were silent, 7 of 7 without a turn greeted.
+fn fold_turns(seed: &[SeedMessage]) -> Vec<SeedMessage> {
+    let Some((first, last)) = turn_stretch(seed) else {
+        return seed.to_vec();
+    };
+    let mut text = EARLIER_LINE.to_string();
+    text.extend(seed[first..=last].iter().map(turn_line));
+    let mut folded = seed[..first].to_vec();
+    folded.push(SeedMessage {
+        role: "developer".to_string(),
+        text,
+    });
+    folded.extend_from_slice(&seed[last + 1..]);
+    folded
+}
+
+/// Whether the start frame of a session carries the block's greeting: it was
+/// asked for (`greet`, never on a renewal, GH #896) and there is one.
+fn greets(params: &GptLiveParams, greet: bool) -> bool {
+    greet && !params.greeting.is_empty()
 }
 
 /// One frame of the caller's audio for the wire: PCM16 as it came, or one
@@ -2070,20 +1826,6 @@ fn audio_ms(law: Option<Law>, rate: u32, bytes: &[u8]) -> f64 {
         bytes.len() / 2
     };
     samples as f64 * 1000.0 / f64::from(rate.max(1))
-}
-
-/// The length of one chunk of the model's audio in ms ([`audio_ms`]) and
-/// whether any 20 ms of it is audible (GH #1545), at the gate's default level
-/// ([`crate::voice::duck::DEFAULT_BARGE_LEVEL_DBFS`]): the adapter knows no
-/// line's own level, and the model's silence is far below any of them.
-fn audio_measure(law: Option<Law>, rate: u32, bytes: &[u8]) -> (f64, bool) {
-    let level = crate::voice::duck::linear(crate::voice::duck::DEFAULT_BARGE_LEVEL_DBFS);
-    let audible = match law {
-        Some(law) => crate::voice::duck::first_audible(&g711::expand(law, bytes), rate, level),
-        None => crate::voice::duck::first_audible(bytes, rate, level),
-    }
-    .is_some();
-    (audio_ms(law, rate, bytes), audible)
 }
 
 /// The model's audio for the client: G.711 expanded to PCM16, PCM16 as it is.
@@ -2129,26 +1871,34 @@ pub struct TrimmedSeed {
 /// [`GptLiveParams::append_limit_chars`] counts it, so the numbers are the
 /// same on every machine.
 pub fn est_tokens(text: &str, chars_per_token: f64) -> u64 {
+    est_chars(text.chars().count(), chars_per_token)
+}
+
+/// [`est_tokens`] of a text of `chars` characters.
+fn est_chars(chars: usize, chars_per_token: f64) -> u64 {
     let milli_chars = ((chars_per_token * 1_000.0).round() as u64).max(1);
-    (text.chars().count() as u64)
-        .saturating_mul(1_000)
-        .div_ceil(milli_chars)
+    (chars as u64).saturating_mul(1_000).div_ceil(milli_chars)
 }
 
 /// The most tokens the start window of a session may carry besides its
-/// instructions and its greeting: the smaller of `seed_max_tokens` and what
-/// those two leave of [`INSTRUCTIONS_MAX_TOKENS`], `0` where they leave
-/// nothing.
+/// instructions and its greeting: the smaller of what the greeting leaves of
+/// `seed_max_tokens` and what the two leave of [`INSTRUCTIONS_MAX_TOKENS`],
+/// `0` where they leave nothing.
+///
+/// GH #1628: the greeting is a message of the start input itself, and
+/// `seed_max_tokens` is the bound of that input; counted against the
+/// instructions alone, a full seed and the greeting together went past it.
 ///
 /// The instructions were never counted, so a long front-end prompt and a
 /// full seed together went past the provider's bound (R-58-28: the whole
 /// start window stays under it).
 pub fn start_budget(params: &GptLiveParams) -> u64 {
     let rate = params.chars_per_token;
+    let greeting = est_tokens(&params.greeting, rate);
     let room = INSTRUCTIONS_MAX_TOKENS
         .saturating_sub(est_tokens(&params.instructions, rate))
-        .saturating_sub(est_tokens(&params.greeting, rate));
-    params.seed_max_tokens.min(room)
+        .saturating_sub(greeting);
+    params.seed_max_tokens.saturating_sub(greeting).min(room)
 }
 
 /// What the `seed_ask` lane says about this cell's model in `hop.limits`
@@ -2181,8 +1931,8 @@ pub fn ask_limits(params: &GptLiveParams) -> JsonValue {
 /// Cut a seed to `max_messages` and `max_tokens`, estimated at
 /// `chars_per_token`, oldest first: the latest turns are the ones a call
 /// continues from. The caller passes the param `seed_max_messages` and the
-/// session's [`start_budget`] -- `seed_max_tokens`, less where the
-/// instructions and the greeting leave less (OR-d54g.kprofil.14). A budget
+/// session's [`start_budget`] -- `seed_max_tokens` less the greeting, less
+/// still where the instructions leave less (OR-d54g.kprofil.14). A budget
 /// of `0` keeps no message.
 pub fn trim_seed(
     messages: &[SeedMessage],
@@ -2202,6 +1952,61 @@ pub fn trim_seed(
         trimmed: start,
         est_tokens: total,
     }
+}
+
+/// Cut a seed the session folds ([`fold_turns`]) to `max_messages` and to
+/// `max_tokens` of what it carries folded: the oldest turns first, and what
+/// stands around the turns only when none of them is left, as [`trim_seed`]
+/// cuts it.
+///
+/// GH #1641: the curator fills a seed up to [`start_budget`] at this rate, so
+/// the head line and the roles never had room: 127 turns of 64 tokens beside a
+/// greeting of 40 went out at 8 398 of the provider's 8 192. Cut oldest first
+/// over the whole seed, that room came from the fact line and from notes the
+/// curator had already booked as said. A `developer` message between two turns
+/// (a delegation) leaves with the turn in front of it; alone, it would stand in
+/// front of the turns as context of this call.
+fn trim_folded(
+    messages: &[SeedMessage],
+    max_tokens: u64,
+    max_messages: usize,
+    chars_per_token: f64,
+) -> TrimmedSeed {
+    let Some((first, last)) = turn_stretch(messages) else {
+        return trim_seed(messages, max_tokens, max_messages, chars_per_token);
+    };
+    let (head, tail) = (&messages[..first], &messages[last + 1..]);
+    let around: u64 = head
+        .iter()
+        .chain(tail)
+        .map(|m| est_tokens(&m.text, chars_per_token))
+        .sum();
+    let lines: Vec<usize> = messages[first..=last]
+        .iter()
+        .map(|m| turn_line(m).chars().count())
+        .collect();
+    let mut chars = EARLIER_LINE.chars().count() + lines.iter().sum::<usize>();
+    for (cut, line) in lines.iter().enumerate() {
+        let start = first + cut;
+        let total = around + est_chars(chars, chars_per_token);
+        if is_turn(&messages[start]) && messages.len() - cut <= max_messages && total <= max_tokens
+        {
+            return TrimmedSeed {
+                kept: [head, &messages[start..]].concat(),
+                trimmed: cut,
+                est_tokens: total,
+            };
+        }
+        chars -= line;
+    }
+    let mut rest = trim_seed(
+        &[head, tail].concat(),
+        max_tokens,
+        max_messages,
+        chars_per_token,
+    );
+    rest.trimmed += lines.len();
+    rest
 }
 
 /// What the opening of a seeded session collected while it waited.
@@ -2298,39 +2103,197 @@ fn close_frame() -> JsonValue {
     json!({ "type": "session.close" })
 }
 
-/// Sends one frame under the A-timeout (hard rule 12) and records how long it
-/// took.
-///
-/// Every send is measured, not just the audio: `in_send_max_ms` answers the
-/// question "was the socket ever slow to take what we gave it", and a slow
-/// append is as much an answer as a slow audio frame.
-async fn send_frame(
-    write: &mut Writer,
-    frame: JsonValue,
+/// One JSON frame as the provider's socket takes it.
+fn text_frame(frame: &JsonValue) -> WsMessage {
+    WsMessage::Text(frame.to_string().into())
+}
+
+/// Sends one frame under the A-timeout (hard rule 12).
+async fn send_within<S>(
+    write: &mut S,
+    frame: WsMessage,
     external: Duration,
-    meter: &mut SessionMeter,
-) -> Result<(), DuplexError> {
-    let began = Instant::now();
-    let sent = tokio::time::timeout(
-        external,
-        write.send(WsMessage::Text(frame.to_string().into())),
-    )
-    .await;
-    meter.saw_send(began.elapsed());
-    match sent {
+) -> Result<(), DuplexError>
+where
+    S: Sink<WsMessage, Error = WsError> + Unpin,
+{
+    match tokio::time::timeout(external, write.send(frame)).await {
         Err(_) => Err(DuplexError::Timeout),
         Ok(Err(e)) => Err(DuplexError::Closed(format!("send: {e}"))),
         Ok(Ok(())) => Ok(()),
     }
 }
 
+/// The maxima the send queue measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SendTimes {
+    /// The longest time from being handed over to the begin of the send. A
+    /// frame whose send never began has no reading: what waited behind a send
+    /// that hung to the end of the session is not in here.
+    waited: Duration,
+    /// The slowest single send, a failed one included. Every frame counts, not
+    /// just the audio: it answers whether the socket was ever slow to take
+    /// what it was given.
+    took: Duration,
+    /// When the send that is running began.
+    sending: Option<Instant>,
+}
+
+/// A frame in the send queue.
+struct Queued {
+    frame: WsMessage,
+    /// When it was handed over.
+    since: Instant,
+}
+
+/// The way to the provider (GH #1630): a task that alone owns the writing half
+/// of the socket, and one bounded queue to it, so that audio, guidance and the
+/// keepalive leave in the order they were handed over and the session never
+/// waits for a send.
+///
+/// Dropping it ends the task, and with it the writing half of the socket.
+struct Uplink {
+    /// The queue; gone once everything was handed over for good.
+    queue: Option<mpsc::Sender<Queued>>,
+    /// What the full queue refused, in order: one frame from the inlets, which
+    /// are not read while anything stands here, and behind it the few frames
+    /// the reading itself gives rise to. At the start of the session also what
+    /// was taken while the opening waited for its seed.
+    held: VecDeque<Queued>,
+    /// The one task, and its verdict.
+    task: JoinSet<Result<(), DuplexError>>,
+    /// What the task measured so far.
+    times: watch::Receiver<SendTimes>,
+}
+
+impl Uplink {
+    /// Hands `write` to a task of its own; `external` bounds each send.
+    fn spawn<S>(write: S, external: Duration) -> Self
+    where
+        S: Sink<WsMessage, Error = WsError> + Unpin + Send + 'static,
+    {
+        let (queue, frames) = mpsc::channel(SEND_QUEUE);
+        let (measured, times) = watch::channel(SendTimes::default());
+        let mut task = JoinSet::new();
+        task.spawn(write_frames(write, frames, external, measured));
+        Self {
+            queue: Some(queue),
+            held: VecDeque::new(),
+            task,
+            times,
+        }
+    }
+
+    /// Hands one frame over. Never waits and never drops: what the queue has
+    /// no room for is held, behind what is held already.
+    fn offer(&mut self, frame: WsMessage) {
+        let item = Queued {
+            frame,
+            since: Instant::now(),
+        };
+        let refused = match &self.queue {
+            Some(queue) if self.held.is_empty() => match queue.try_send(item) {
+                Ok(()) => return,
+                // A closed queue is a task that failed, and [`Self::step`]
+                // has its verdict.
+                Err(TrySendError::Full(item) | TrySendError::Closed(item)) => item,
+            },
+            _ => item,
+        };
+        self.held.push_back(refused);
+    }
+
+    /// [`Self::offer`] for a JSON frame.
+    fn offer_json(&mut self, frame: &JsonValue) {
+        self.offer(text_frame(frame));
+    }
+
+    /// Whether nothing is held, so the inlets may be read.
+    fn has_room(&self) -> bool {
+        self.held.is_empty()
+    }
+
+    /// Waits for the next thing that happens to the queue: room for a held
+    /// frame (`false`), the orderly end of the task (`true`), or the send that
+    /// failed. Cancel safe, and pending for ever while nothing of it happens.
+    async fn step(&mut self) -> Result<bool, DuplexError> {
+        let Self {
+            queue, held, task, ..
+        } = self;
+        let room = async {
+            match queue {
+                Some(queue) if !held.is_empty() => queue.reserve().await,
+                _ => std::future::pending().await,
+            }
+        };
+        let ended = tokio::select! {
+            biased;
+            ended = task.join_next() => ended,
+            room = room => match room {
+                Ok(permit) => {
+                    if let Some(item) = held.pop_front() {
+                        permit.send(item);
+                    }
+                    return Ok(false);
+                }
+                // The task let go of the queue: its verdict is on the way.
+                Err(_) => task.join_next().await,
+            },
+        };
+        match ended {
+            Some(Ok(verdict)) => verdict.map(|()| true),
+            // A panic of the task is a panic of the session (AUDIT-PRE14-001).
+            Some(Err(e)) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Some(Err(_)) | None => Err(DuplexError::Closed("send: the writer ended".to_string())),
+        }
+    }
+
+    /// Takes no more frames and waits until everything handed over is on the
+    /// wire. Cancel safe.
+    async fn drained(&mut self) -> Result<(), DuplexError> {
+        loop {
+            if self.held.is_empty() {
+                self.queue = None;
+            }
+            if self.step().await? {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Writes the queue to the socket, frame by frame, until the queue ends or a
+/// send fails.
+async fn write_frames<S>(
+    mut write: S,
+    mut frames: mpsc::Receiver<Queued>,
+    external: Duration,
+    measured: watch::Sender<SendTimes>,
+) -> Result<(), DuplexError>
+where
+    S: Sink<WsMessage, Error = WsError> + Unpin,
+{
+    while let Some(Queued { frame, since }) = frames.recv().await {
+        let began = Instant::now();
+        measured.send_modify(|t| {
+            t.waited = t.waited.max(began.duration_since(since));
+            t.sending = Some(began);
+        });
+        let sent = send_within(&mut write, frame, external).await;
+        measured.send_modify(|t| {
+            t.took = t.took.max(began.elapsed());
+            t.sending = None;
+        });
+        sent?;
+    }
+    Ok(())
+}
+
 /// What one session is worth measuring by (S0, `messungen/README.md` § 1 j).
 ///
-/// The counters are cheap — three integers and an `Instant` — and they are the
-/// only place a gap in the caller's audio is visible at all: nothing
-/// downstream of `audio_out` can tell a late chunk from a chunk the model
-/// simply had not produced yet.
-#[derive(Default)]
+/// Integers, times and one capped list; no audio. It is the only place a gap in
+/// the caller's audio is visible at all: nothing downstream of `audio_out` can
+/// tell a late chunk from a chunk the model simply had not produced yet.
 struct SessionMeter {
     /// Decoded output chunks handed on.
     out_chunks: u64,
@@ -2344,11 +2307,132 @@ struct SessionMeter {
     last_out: Option<Instant>,
     /// The last meter reading the provider reported.
     usage_seconds: f64,
+    /// The wire encoding and rate, for the length of a chunk.
+    law: Option<Law>,
+    rate: u32,
+    /// The session's zero on the monotonic clock and as Unix ms.
+    opened: Instant,
+    opened_epoch_ms: u64,
+    /// The section that is running: the arrival of its first chunk and the
+    /// audio delivered since, in µs.
+    section: Option<(Instant, u64)>,
+    /// Whether the session asked the provider to close.
+    closing: bool,
+    /// When the chunk that waits for the connection began to wait.
+    held_since: Option<Instant>,
+    /// How the audio arrived (#1631).
+    arrivals: AudioArrivals,
+    /// What the send queue measures, once the session has one.
+    sends: Option<watch::Receiver<SendTimes>>,
+    /// Takes [`Self::arrivals`] when the session ends.
+    report: Option<oneshot::Sender<AudioArrivals>>,
+}
+
+/// The session hands over how its audio arrived where its meter ends, so that
+/// every way out of the session does: an error half way as much as a close.
+impl Drop for SessionMeter {
+    fn drop(&mut self) {
+        self.read_sends();
+        if let Some(report) = self.report.take() {
+            let _ = report.send(std::mem::take(&mut self.arrivals));
+        }
+    }
 }
 
 impl SessionMeter {
-    /// An output chunk arrived at `at`.
-    fn saw_output(&mut self, at: Instant) {
+    /// A meter for a session of `law` at `rate` that opens now, which is
+    /// `opened_epoch_ms` in Unix ms: the caller names the epoch, so a test does
+    /// too.
+    fn new(
+        law: Option<Law>,
+        rate: u32,
+        opened_epoch_ms: u64,
+        report: Option<oneshot::Sender<AudioArrivals>>,
+    ) -> Self {
+        Self {
+            out_chunks: 0,
+            out_gap_max_ms: 0,
+            out_gaps_over_250: 0,
+            in_send_max_ms: 0,
+            last_out: None,
+            usage_seconds: 0.0,
+            law,
+            rate,
+            opened: Instant::now(),
+            opened_epoch_ms,
+            section: None,
+            closing: false,
+            held_since: None,
+            arrivals: AudioArrivals::default(),
+            sends: None,
+            report,
+        }
+    }
+
+    /// Reads how late the chunk `bytes` is that arrived at `at`. Counted in
+    /// whole µs, so 20 ms is 20 ms and not a rounding below it. Behind the
+    /// `session.close` it is counted and never late: the provider sends a
+    /// remainder about a quarter of a second behind its time (250 and 255 ms in
+    /// the two recorded greetings), and by then nobody plays it.
+    fn saw_arrival(&mut self, at: Instant, bytes: &[u8]) {
+        let offset_ms = at.duration_since(self.opened).as_millis() as u64;
+        let at_epoch_ms = self.opened_epoch_ms + offset_ms;
+        if self.closing {
+            self.arrivals.note(at_epoch_ms, 0);
+            return;
+        }
+        let audio_us = (audio_ms(self.law, self.rate, bytes) * 1000.0).round() as u64;
+        let late_ms = self.section.map_or(0, |(start, delivered_us)| {
+            let since_us = at.duration_since(start).as_micros() as u64;
+            since_us.saturating_sub(delivered_us) / 1000
+        });
+        self.section = Some(match self.section {
+            Some((start, delivered_us)) if late_ms < LATE_LISTED_FROM_MS => {
+                (start, delivered_us + audio_us)
+            }
+            _ => (at, audio_us),
+        });
+        self.arrivals.note(at_epoch_ms, late_ms);
+    }
+
+    /// How many chunks were late enough to be listed, the ones beyond the
+    /// list's cap included.
+    fn late_chunks(&self) -> u64 {
+        LATENESS_FROM_MS
+            .iter()
+            .zip(self.arrivals.lateness)
+            .filter(|(from, _)| **from >= LATE_LISTED_FROM_MS)
+            .map(|(_, n)| n)
+            .sum()
+    }
+
+    /// The session asked the provider to close.
+    fn closes(&mut self) {
+        self.closing = true;
+    }
+
+    /// A chunk began to wait for room at the connection at `at`.
+    fn holds(&mut self, at: Instant) {
+        self.held_since = Some(at);
+    }
+
+    /// The chunk that waited was handed on, or given up, at `at`.
+    fn released(&mut self, at: Instant) {
+        if let Some(since) = self.held_since.take() {
+            let held = at.duration_since(since).as_millis() as u64;
+            self.arrivals.held_max_ms = self.arrivals.held_max_ms.max(held);
+        }
+    }
+
+    /// A frame waited `waited` for its turn on the socket.
+    fn note_send_wait(&mut self, waited: Duration) {
+        let waited = waited.as_millis() as u64;
+        self.arrivals.send_wait_max_ms = self.arrivals.send_wait_max_ms.max(waited);
+    }
+
+    /// The output chunk `bytes` arrived at `at`.
+    fn saw_output(&mut self, at: Instant, bytes: &[u8]) {
+        self.saw_arrival(at, bytes);
         if let Some(previous) = self.last_out {
             let gap = at.duration_since(previous).as_millis() as u64;
             self.out_gap_max_ms = self.out_gap_max_ms.max(gap);
@@ -2365,6 +2449,23 @@ impl SessionMeter {
         self.in_send_max_ms = self.in_send_max_ms.max(took.as_millis() as u64);
     }
 
+    /// Takes over what the send queue measured so far.
+    fn read_sends(&mut self) {
+        if let Some(sends) = &self.sends {
+            let SendTimes {
+                waited,
+                took,
+                sending,
+            } = *sends.borrow();
+            self.note_send_wait(waited);
+            self.saw_send(took);
+            // The send the session ends on, as long as it ran.
+            if let Some(began) = sending {
+                self.saw_send(began.elapsed());
+            }
+        }
+    }
+
     /// Keeps the last meter reading, so a session that ends without a final
     /// one still reports what it cost.
     fn note(&mut self, event: &DuplexEvent) {
@@ -2377,6 +2478,7 @@ impl SessionMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voice::contract::{LATE_LISTED_MAX, LateChunk};
 
     /// d54g callseam: a whole mark, a mark split over two chunks and the
     /// measured piece without its opening all leave the transcript, and
@@ -2445,6 +2547,27 @@ mod tests {
             "ws://127.0.0.1:8080/v1/live/sessions",
             "and a local stand-in is reached without TLS"
         );
+    }
+
+    /// GH #1632: a 20 ms frame of audio is a small write, and Nagle holds a
+    /// small write back while the one before is unacknowledged -- up to a round
+    /// trip on every frame of the caller's voice. The socket is opened without.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_provider_socket_disables_nagle() {
+        use meclaw_testing::mock_gpt_live::{LiveScript, MockGptLive};
+        let mock = MockGptLive::start(LiveScript::default())
+            .await
+            .expect("bind fake");
+        let socket = open_socket(
+            session_url(&mock.base_url()),
+            meclaw_testing::deadline::HANG,
+        )
+        .await
+        .expect("the handshake succeeded");
+        let tokio_tungstenite::MaybeTlsStream::Plain(tcp) = socket.get_ref() else {
+            panic!("the fake speaks plain TCP");
+        };
+        assert!(tcp.nodelay().expect("the option is readable"));
     }
 
     /// The three channels are three different things, and their wire names are
@@ -2662,17 +2785,269 @@ mod tests {
     /// A gap is counted between two chunks, never before the first one.
     #[test]
     fn the_meter_counts_gaps_between_chunks() {
-        let mut meter = SessionMeter::default();
-        let start = Instant::now();
-        meter.saw_output(start);
-        meter.saw_output(start + Duration::from_millis(20));
-        meter.saw_output(start + Duration::from_millis(320));
+        let mut meter = SessionMeter::new(None, 24_000, 0, None);
+        let start = meter.opened;
+        meter.saw_output(start, &[]);
+        meter.saw_output(start + Duration::from_millis(20), &[]);
+        meter.saw_output(start + Duration::from_millis(320), &[]);
         assert_eq!(meter.out_chunks, 3);
         assert_eq!(meter.out_gap_max_ms, 300);
         assert_eq!(
             meter.out_gaps_over_250, 1,
             "one of the two gaps was long enough to hear"
         );
+    }
+
+    /// A meter that opened at 1 000 000 Unix ms, fed chunks of 100 ms PCM16 at
+    /// 24 kHz that arrive `at_ms` after its opening.
+    fn metered(at_ms: &[u64]) -> SessionMeter {
+        let mut meter = SessionMeter::new(None, 24_000, 1_000_000, None);
+        for at in at_ms {
+            let at = meter.opened + Duration::from_millis(*at);
+            meter.saw_output(at, &[0; 4_800]);
+        }
+        meter
+    }
+
+    /// #1631: a late chunk is listed once, with its arrival and how late it
+    /// was against the audio delivered so far; what follows it in time is not
+    /// late again.
+    #[test]
+    fn a_late_chunk_is_listed_with_its_lateness() {
+        let meter = metered(&[50, 150, 310, 410, 515, 1_010]);
+        let late = |at_epoch_ms, late_ms| LateChunk {
+            at_epoch_ms,
+            late_ms,
+        };
+        assert_eq!(
+            meter.arrivals.late,
+            vec![late(1_000_310, 60), late(1_001_010, 400)]
+        );
+        // 5 at 515 stays in the section the chunk at 310 opened; the one at
+        // 1 010 is due at 610.
+        assert_eq!(meter.arrivals.lateness, [1, 0, 1, 0, 1]);
+        assert_eq!(meter.arrivals.late_max_ms, 400);
+        assert_eq!(meter.late_chunks(), 2);
+        assert_eq!(meter.arrivals.chunks, 6);
+    }
+
+    /// #1631: audio that came ahead of time is a lead, and a pause it covers
+    /// is no lateness, however long the gap between two chunks.
+    #[test]
+    fn a_burst_ahead_of_time_is_not_late() {
+        let meter = metered(&[0, 1, 2, 3, 400, 500]);
+        assert_eq!(meter.out_gap_max_ms, 397);
+        assert_eq!(meter.arrivals.late, vec![]);
+        assert_eq!(meter.arrivals.lateness, [0; 5]);
+        assert_eq!(meter.arrivals.late_max_ms, 0);
+    }
+
+    /// #1631: what the provider still sends behind the `session.close` is
+    /// counted and not measured: it fills no hole anybody hears. Measured in the
+    /// recorded greetings: 250 and 255 ms late, each the session's maximum.
+    #[test]
+    fn a_chunk_behind_the_close_is_counted_and_not_late() {
+        let mut meter = metered(&[0, 100]);
+        meter.closes();
+        for at in [200, 550] {
+            let at = meter.opened + Duration::from_millis(at);
+            meter.saw_output(at, &[0; 4_800]);
+        }
+        assert_eq!(meter.arrivals.late, vec![]);
+        assert_eq!(meter.arrivals.lateness, [0; 5]);
+        assert_eq!(meter.arrivals.late_max_ms, 0);
+        assert_eq!(meter.arrivals.chunks, 4, "every chunk is counted");
+        assert_eq!(meter.out_chunks, 4);
+    }
+
+    /// #1631: the list ends at its cap, the classes and the maximum do not.
+    #[test]
+    fn the_list_is_capped_and_the_histogram_is_not() {
+        let over = LATE_LISTED_MAX as u64 + 10;
+        // Every chunk 130 ms after the one before: 30 ms late, each time.
+        let at: Vec<u64> = (0..=over).map(|n| n * 130).collect();
+        let meter = metered(&at);
+        assert_eq!(meter.arrivals.late.len(), LATE_LISTED_MAX);
+        assert_eq!(meter.arrivals.lateness, [0, over, 0, 0, 0]);
+        assert_eq!(meter.late_chunks(), over);
+    }
+
+    /// #1631: a G.711 chunk is one byte per sample.
+    #[test]
+    fn the_length_of_a_g711_chunk_is_its_bytes() {
+        let mut meter = SessionMeter::new(Some(Law::Mu), 8_000, 0, None);
+        let start = meter.opened;
+        meter.saw_output(start, &[0; 800]);
+        meter.saw_output(start + Duration::from_millis(140), &[0; 800]);
+        assert_eq!(meter.arrivals.late_max_ms, 40);
+    }
+
+    /// #1631: the longest hold and the longest send wait are maxima.
+    #[test]
+    fn the_longest_hold_and_the_longest_send_wait_are_kept() {
+        let mut meter = SessionMeter::new(None, 24_000, 0, None);
+        let start = meter.opened;
+        for held in [70, 30] {
+            meter.holds(start);
+            meter.released(start + Duration::from_millis(held));
+        }
+        meter.released(start + Duration::from_millis(900));
+        meter.note_send_wait(Duration::from_millis(12));
+        meter.saw_send(Duration::from_millis(38));
+        meter.note_send_wait(Duration::from_millis(5));
+        assert_eq!(meter.arrivals.held_max_ms, 70, "no hold, no reading");
+        assert_eq!(meter.arrivals.send_wait_max_ms, 12);
+        assert_eq!(meter.in_send_max_ms, 38, "a send is not a wait");
+    }
+
+    /// #1630: the frame a full queue refuses is held and the inlets stay
+    /// closed until it has its place; text and ping leave in one order, and
+    /// none is lost.
+    #[tokio::test(start_paused = true)]
+    async fn a_full_send_queue_holds_one_frame_and_loses_none() {
+        let (wire, mut seen) = mpsc::unbounded_channel();
+        let socket = futures_util::sink::unfold(wire, |wire, frame| async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = wire.send(frame);
+            Ok::<_, WsError>(wire)
+        });
+        let mut uplink = Uplink::spawn(Box::pin(socket), Duration::from_secs(1));
+        let frame = |n: usize| match n % 3 {
+            0 => WsMessage::Ping(Bytes::from(vec![n as u8])),
+            _ => WsMessage::Text(n.to_string().into()),
+        };
+        // Nothing was awaited yet, so the task has taken nothing.
+        for n in 0..SEND_QUEUE {
+            uplink.offer(frame(n));
+            assert!(uplink.has_room(), "frame {n} has its place in the queue");
+        }
+        uplink.offer(frame(SEND_QUEUE));
+        assert!(!uplink.has_room(), "the queue is full");
+        assert_eq!(uplink.held.len(), 1, "one frame is held");
+        assert!(matches!(uplink.step().await, Ok(false)));
+        assert!(uplink.has_room(), "the held frame has its place");
+        uplink.offer(frame(SEND_QUEUE + 1));
+        assert!(!uplink.has_room());
+
+        uplink.drained().await.expect("every send succeeds");
+        for n in 0..SEND_QUEUE + 2 {
+            assert_eq!(seen.try_recv().ok(), Some(frame(n)), "frame {n}");
+        }
+        assert!(seen.try_recv().is_err(), "no frame left twice");
+    }
+
+    /// #1630: a `session.close` the full queue refused goes out while the
+    /// session waits on an outlet that stands, and an outlet that stands longer
+    /// than the sends may take is no failure of them.
+    #[tokio::test(start_paused = true)]
+    async fn a_standing_outlet_does_not_hold_the_close() {
+        let (wire, mut seen) = mpsc::unbounded_channel();
+        let socket = futures_util::sink::unfold(wire, |wire, frame| async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let _ = wire.send(frame);
+            Ok::<_, WsError>(wire)
+        });
+        let external = Duration::from_secs(1);
+        let mut uplink = Uplink::spawn(Box::pin(socket), external);
+        for n in 0..SEND_QUEUE {
+            uplink.offer(WsMessage::Text(n.to_string().into()));
+        }
+        uplink.offer_json(&close_frame());
+        assert!(!uplink.has_room(), "the close is the frame that is held");
+        let mut closing = Closing {
+            uplink: &mut uplink,
+            deadline: Instant::now() + external,
+            grace: Duration::from_secs(15),
+            sent: false,
+        };
+        // The outlet stands until the close is on the wire, and then on.
+        let outlet = async {
+            while seen.recv().await != Some(text_frame(&close_frame())) {}
+            tokio::time::sleep(external * 5).await;
+            "handed on"
+        };
+        let handed = closing.beside(outlet).await;
+        assert!(matches!(handed, Ok("handed on")), "{handed:?}");
+        assert!(closing.sent);
+    }
+
+    /// #1630: the wait is the time from the hand-over to the begin of the
+    /// send, the send is measured on its own, and the meter reads both.
+    #[tokio::test(start_paused = true)]
+    async fn the_send_queue_measures_its_waits_and_its_sends() {
+        let socket = futures_util::sink::unfold((), |(), _frame| async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            Ok::<_, WsError>(())
+        });
+        let mut uplink = Uplink::spawn(Box::pin(socket), Duration::from_secs(1));
+        let (report, handed_over) = oneshot::channel();
+        let mut meter = SessionMeter::new(None, 24_000, 0, Some(report));
+        meter.sends = Some(uplink.times.clone());
+        for _ in 0..3 {
+            uplink.offer_json(&close_frame());
+        }
+        uplink.drained().await.expect("every send succeeds");
+        assert_eq!(
+            *uplink.times.borrow(),
+            SendTimes {
+                waited: Duration::from_millis(80),
+                took: Duration::from_millis(40),
+                sending: None,
+            }
+        );
+        meter.read_sends();
+        assert_eq!(meter.in_send_max_ms, 40);
+        drop(meter);
+        let arrivals = handed_over.await.expect("the meter reports");
+        assert_eq!(arrivals.send_wait_max_ms, 80);
+    }
+
+    /// #1630: every send keeps its own A-timeout (hard rule 12), and the one
+    /// that hangs is the verdict of the queue.
+    #[tokio::test(start_paused = true)]
+    async fn a_send_that_hangs_fails_at_its_own_deadline() {
+        let socket = futures_util::sink::unfold((), |(), _frame| {
+            std::future::pending::<Result<(), WsError>>()
+        });
+        let mut uplink = Uplink::spawn(Box::pin(socket), Duration::from_secs(1));
+        let began = Instant::now();
+        uplink.offer_json(&close_frame());
+        assert!(matches!(uplink.step().await, Err(DuplexError::Timeout)));
+        assert_eq!(began.elapsed(), Duration::from_secs(1));
+        assert_eq!(uplink.times.borrow().took, Duration::from_secs(1));
+    }
+
+    /// #1630: a send that still hangs when the session ends is a reading too,
+    /// as long as it ran.
+    #[tokio::test(start_paused = true)]
+    async fn a_send_the_session_ends_on_is_measured() {
+        let socket = futures_util::sink::unfold((), |(), _frame| {
+            std::future::pending::<Result<(), WsError>>()
+        });
+        let mut uplink = Uplink::spawn(Box::pin(socket), Duration::from_secs(1));
+        let mut meter = SessionMeter::new(None, 24_000, 0, None);
+        meter.sends = Some(uplink.times.clone());
+        uplink.offer_json(&close_frame());
+        let ended = tokio::time::timeout(Duration::from_millis(300), uplink.step()).await;
+        assert!(ended.is_err(), "the send still hangs");
+        drop(uplink);
+        meter.read_sends();
+        assert_eq!(meter.in_send_max_ms, 300);
+    }
+
+    /// #1630: a panic of the writing task is a panic of the session
+    /// (AUDIT-PRE14-001), never an ordinary end.
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "the writer broke")]
+    async fn a_panic_of_the_writer_reaches_the_session() {
+        let socket = futures_util::sink::unfold((), |(), _frame| async {
+            panic!("the writer broke");
+            #[allow(unreachable_code)]
+            Ok::<_, WsError>(())
+        });
+        let mut uplink = Uplink::spawn(Box::pin(socket), Duration::from_secs(1));
+        uplink.offer_json(&close_frame());
+        let _ = uplink.step().await;
     }
 
     fn live_params(extra: JsonValue) -> GptLiveParams {
@@ -2693,7 +3068,7 @@ mod tests {
     /// always was -- client delegation, no `safety_identifier`, no `input`.
     #[test]
     fn gpt_live_start_frame_without_the_new_keys_is_unchanged() {
-        let frame = session_start_frame(&live_params(json!({})), pcm24(), None);
+        let frame = session_start_frame(&live_params(json!({})), pcm24(), None, true);
         let session = &frame["session"];
         assert_eq!(session["delegation"], json!({"type": "client"}));
         assert!(session.get("safety_identifier").is_none());
@@ -2711,35 +3086,61 @@ mod tests {
             &live_params(json!({"delegation": delegation.clone(), "safety_identifier": "h-1"})),
             pcm24(),
             None,
+            true,
         );
         assert_eq!(frame["session"]["delegation"], delegation);
         assert_eq!(frame["session"]["safety_identifier"], "h-1");
     }
 
     /// POC gpt-live-1 (A39/A59): `start_input` opens the session in the seed's
-    /// shape, empty texts stay out, and a seed wins over it.
+    /// shape, empty texts stay out, and a seed wins over it. GH #1628: a
+    /// greeting is the last message behind either, and no renewal carries it.
     #[test]
     fn gpt_live_start_input_opens_the_session_unless_a_seed_came() {
         let params = live_params(json!({"start_input": [
-            {"role": "developer", "text": "Greet the caller."},
+            {"role": "developer", "text": "Today is Tuesday."},
             {"role": "user", "text": "  "},
             {"role": "assistant", "text": "Hello."}
         ]}));
-        let frame = session_start_frame(&params, pcm24(), None);
+        let frame = session_start_frame(&params, pcm24(), None, true);
         assert_eq!(
             frame["session"]["input"],
             json!([
                 {"type": "message", "role": "developer",
-                 "content": [{"type": "input_text", "text": "Greet the caller."}]},
+                 "content": [{"type": "input_text", "text": "Today is Tuesday."}]},
                 {"type": "message", "role": "assistant",
                  "content": [{"type": "output_text", "text": "Hello."}]}
             ])
         );
-        let seeded = session_start_frame(&params, pcm24(), Some(&[seed("user", "hi")]));
+        let hi = json!({"type": "message", "role": "user",
+                        "content": [{"type": "input_text", "text": "hi"}]});
+        let seeded = session_start_frame(&params, pcm24(), Some(&[seed("user", "hi")]), true);
+        assert_eq!(seeded["session"]["input"], json!([hi.clone()]));
+
+        let greeting = json!({"type": "message", "role": "developer",
+                              "content": [{"type": "input_text", "text": "Greet the caller."}]});
+        let mut params = params;
+        params.greeting = "Greet the caller.".to_string();
+        let input = |seed: Option<&[SeedMessage]>, greet: bool| {
+            session_start_frame(&params, pcm24(), seed, greet)["session"]["input"].clone()
+        };
+        let started = input(None, true);
+        assert_eq!(started.as_array().map(Vec::len), Some(3), "{started}");
+        assert_eq!(started[2], greeting, "behind the configured start");
         assert_eq!(
-            seeded["session"]["input"],
-            json!([{"type": "message", "role": "user",
-                    "content": [{"type": "input_text", "text": "hi"}]}])
+            input(Some(&[seed("user", "hi")]), true),
+            json!([
+                {"type": "message", "role": "developer",
+                 "content": [{"type": "input_text",
+                              "text": "Earlier conversation, ended:\nuser: hi"}]},
+                greeting
+            ]),
+            "behind the seed, whose turns are folded (GH #1641)"
+        );
+        assert_eq!(
+            input(Some(&[seed("user", "hi")]), false),
+            json!([hi]),
+            "a renewal greets nobody"
         );
     }
 
@@ -2889,251 +3290,6 @@ mod tests {
                 named(json!({"type": "error", "client_event_id": bad, "error": error})),
                 None,
                 "{bad}"
-            );
-        }
-    }
-
-    /// GH #1537: a sentence ends at a run of marks, closers included, when
-    /// whitespace or the end follows; a decimal point or a lone mark does not.
-    #[test]
-    fn gh1537_sentence_ends_are_read_off_the_marks() {
-        assert_eq!(sentence_ends("Hello there. How are you?"), vec![12, 25]);
-        assert_eq!(sentence_ends("It is 3.5 degrees"), Vec::<usize>::new());
-        assert_eq!(sentence_ends("Wait?! Yes..."), vec![6, 13]);
-        assert_eq!(sentence_ends("\u{201E}Hello.\u{201C} Then"), vec![8]);
-        assert_eq!(sentence_ends(" . "), Vec::<usize>::new());
-    }
-
-    /// GH #1537: the spoken greeting is the first quotation, else the whole
-    /// append; the opening answer must say half of it.
-    #[test]
-    fn gh1537_the_spoken_greeting_is_the_quotation() {
-        let q = "Say this one sentence in your own words: \u{201E}Hello, this is your companion.\u{201C} Then listen.";
-        assert_eq!(spoken_greeting(q), "Hello, this is your companion.");
-        assert_eq!(
-            spoken_greeting("Say \u{201C}Hi there.\u{201D} now"),
-            "Hi there."
-        );
-        assert_eq!(spoken_greeting("Say \"Hi.\" now"), "Hi.");
-        assert_eq!(spoken_greeting("Say \u{AB}Salut.\u{BB} now"), "Salut.");
-        assert_eq!(spoken_greeting(" Greet the caller. "), "Greet the caller.");
-        assert_eq!(spoken_greeting("Say \"\" now"), "Say \"\" now");
-        assert_eq!(greeting_threshold(q), 15);
-        assert_eq!(greeting_threshold("Hi."), 2);
-        assert_eq!(greeting_threshold("  "), 1);
-        assert_eq!(greeting_hard_limit(q), 60);
-        assert_eq!(greeting_hard_limit("  "), 1);
-    }
-
-    /// A test chunk's length (one ms per byte) and whether it is audible
-    /// (any byte not zero), for [`OpeningGuard::pass`].
-    fn measure(b: &[u8]) -> (f64, bool) {
-        (b.len() as f64, b.iter().any(|&x| x != 0))
-    }
-
-    /// GH #1537: a tail run on without a sentence end is cut at twice the
-    /// spoken greeting; the stop is asked for once.
-    #[test]
-    fn gh1537_a_run_on_tail_is_cut_at_twice_the_greeting() {
-        let said = |delta: &str, start_ms: u64, end_ms: u64| {
-            Mapped::Emit(DuplexEvent::Transcript {
-                speaker: Speaker::Assistant,
-                delta: delta.to_string(),
-                start_ms,
-                end_ms,
-            })
-        };
-        let ms = measure;
-        // Spoken greeting "Hi there" (8): half is 4, twice is 16.
-        let mut guard = OpeningGuard::new(true, "Say \"Hi there\" now");
-        let g = guard.pass(said("Hi there, but", 0, 1_300), "s", ms);
-        assert!(!g.stop && matches!(g.mapped, Mapped::Emit(_)));
-        let g = guard.pass(said(" listen, I fish", 1_300, 2_800), "s", ms);
-        assert!(!g.stop, "dropped text alone asks for no stop (GH #1545)");
-        match g.mapped {
-            Mapped::Emit(DuplexEvent::Transcript { delta, end_ms, .. }) => {
-                assert_eq!(delta, " li", "cut at sixteen characters");
-                assert_eq!(end_ms, 1_600);
-            }
-            _ => panic!("the part up to the hard cut passes"),
-        }
-        assert!(matches!(
-            guard.pass(said(" today.", 2_800, 3_500), "s", ms).mapped,
-            Mapped::Ignore
-        ));
-        assert_eq!(
-            guard.budget_ms,
-            greeting_budget_ms(8),
-            "a hard cut grants no budget beyond the spoken greeting"
-        );
-    }
-
-    /// GH #1537, GH #1545: the greeting ends inside a fragment -- the
-    /// fragment is cut after the greeting and later text is dropped without
-    /// a stop; the audio passes up to its budget on the audio clock, audible
-    /// audio past it is dropped and asks for the stop once, silence passes;
-    /// the caller's first words end the guard.
-    #[test]
-    fn gh1537_the_opening_guard_cuts_after_the_greeting() {
-        let said = |delta: &str, start_ms: u64, end_ms: u64| {
-            Mapped::Emit(DuplexEvent::Transcript {
-                speaker: Speaker::Assistant,
-                delta: delta.to_string(),
-                start_ms,
-                end_ms,
-            })
-        };
-        let ms = measure;
-        // "Say one sentence." (17): the budget is 1 000 + 17 * 90 = 2 530.
-        let mut guard = OpeningGuard::new(true, "Say one sentence.");
-        let g = guard.pass(said("Hello", 0, 500), "s", ms);
-        assert!(!g.stop);
-        let g = guard.pass(said(" there. I went", 500, 1_500), "s", ms);
-        assert!(!g.stop, "the transcript runs ahead: its tail asks no stop");
-        match g.mapped {
-            Mapped::Emit(DuplexEvent::Transcript { delta, end_ms, .. }) => {
-                assert_eq!(delta, " there.");
-                assert_eq!(end_ms, 1_000, "seven of fourteen characters");
-            }
-            _ => panic!("the greeting's part passes"),
-        }
-        // Five audible chunks of 600 start inside 2 530 and pass (the last
-        // runs over); the sixth is dropped and asks for the stop, once.
-        for _ in 0..5 {
-            assert!(matches!(
-                guard.pass(Mapped::Audio(vec![9; 600]), "s", ms).mapped,
-                Mapped::Audio(_)
-            ));
-        }
-        let g = guard.pass(Mapped::Audio(vec![9; 600]), "s", ms);
-        assert!(matches!(g.mapped, Mapped::Ignore) && g.stop, "the stop");
-        let g = guard.pass(Mapped::Audio(vec![9; 600]), "s", ms);
-        assert!(matches!(g.mapped, Mapped::Ignore) && !g.stop, "asked once");
-        assert!(
-            matches!(
-                guard.pass(Mapped::Audio(vec![0; 600]), "s", ms).mapped,
-                Mapped::Audio(_)
-            ),
-            "silence past the budget passes"
-        );
-        assert!(matches!(
-            guard.pass(said(" fishing.", 1_500, 2_000), "s", ms).mapped,
-            Mapped::Ignore
-        ));
-        assert_eq!(guard.dropped_chars, " I went".len() + " fishing.".len());
-        assert_eq!(guard.dropped_ms, 1_200.0);
-        let caller = Mapped::Emit(DuplexEvent::Transcript {
-            speaker: Speaker::User,
-            delta: "Hi".to_string(),
-            start_ms: 2_500,
-            end_ms: 2_800,
-        });
-        assert!(matches!(
-            guard.pass(caller, "s", ms).mapped,
-            Mapped::Emit(_)
-        ));
-        assert!(matches!(
-            guard
-                .pass(said("Fine. Really.", 3_000, 4_000), "s", ms)
-                .mapped,
-            Mapped::Emit(_)
-        ));
-        assert!(matches!(
-            guard.pass(Mapped::Audio(vec![9; 600]), "s", ms).mapped,
-            Mapped::Audio(_)
-        ));
-    }
-
-    /// GH #1545: silence before the first audible chunk does not count
-    /// against the budget, and the budget closes the opening without any
-    /// transcript: later text is dropped.
-    #[test]
-    fn gh1545_the_audio_clock_starts_at_the_first_audible_chunk() {
-        let ms = measure;
-        // "Hi there" (8): the budget is 1 000 + 8 * 90 = 1 720.
-        let mut guard = OpeningGuard::new(true, "Say \"Hi there\" now");
-        for _ in 0..10 {
-            let g = guard.pass(Mapped::Audio(vec![0; 600]), "s", ms);
-            assert!(matches!(g.mapped, Mapped::Audio(_)) && !g.stop);
-        }
-        assert_eq!(guard.spoken_ms, None, "leading silence is not counted");
-        for _ in 0..3 {
-            assert!(matches!(
-                guard.pass(Mapped::Audio(vec![9; 600]), "s", ms).mapped,
-                Mapped::Audio(_)
-            ));
-        }
-        let g = guard.pass(Mapped::Audio(vec![9; 600]), "s", ms);
-        assert!(matches!(g.mapped, Mapped::Ignore) && g.stop);
-        let g = guard.pass(
-            Mapped::Emit(DuplexEvent::Transcript {
-                speaker: Speaker::Assistant,
-                delta: "Hi".to_string(),
-                start_ms: 0,
-                end_ms: 300,
-            }),
-            "s",
-            ms,
-        );
-        assert!(
-            matches!(g.mapped, Mapped::Ignore),
-            "the budget closed the text too"
-        );
-    }
-
-    /// GH #1545: a greeting said longer than its quote, up to its own
-    /// sentence end, may carry its own length in audio.
-    #[test]
-    fn gh1545_a_longer_greeting_sentence_widens_the_budget() {
-        let mut guard = OpeningGuard::new(true, "Say \"Hi there\" now");
-        let g = guard.pass(
-            Mapped::Emit(DuplexEvent::Transcript {
-                speaker: Speaker::Assistant,
-                delta: "Hi there, pal. So".to_string(),
-                start_ms: 0,
-                end_ms: 900,
-            }),
-            "s",
-            measure,
-        );
-        assert!(!g.stop);
-        // "Hi there, pal." (14) ends inside twice the quote (16).
-        assert_eq!(guard.budget_ms, greeting_budget_ms(14));
-    }
-
-    /// GH #1545: on a G.711 session a chunk is measured after expansion:
-    /// the law's silence byte is silent, speech is audible.
-    #[test]
-    fn gh1545_audio_measure_reads_g711_and_pcm() {
-        let rate = 8_000;
-        let silence = g711::compress(Law::A, &vec![0u8; 320]);
-        let (ms, audible) = audio_measure(Some(Law::A), rate, &silence);
-        assert_eq!(ms, 20.0);
-        assert!(!audible);
-        let loud: Vec<u8> = (0..160).flat_map(|_| 8_000i16.to_le_bytes()).collect();
-        assert!(audio_measure(Some(Law::A), rate, &g711::compress(Law::A, &loud)).1);
-        assert!(audio_measure(None, rate, &loud).1);
-        assert!(!audio_measure(None, rate, &[0u8; 320]).1);
-    }
-
-    /// GH #1537: a session that does not greet is never guarded.
-    #[test]
-    fn gh1537_no_greeting_no_guard() {
-        for (greets, greeting) in [(false, "Say hello."), (true, "")] {
-            let mut guard = OpeningGuard::new(greets, greeting);
-            let g = guard.pass(
-                Mapped::Emit(DuplexEvent::Transcript {
-                    speaker: Speaker::Assistant,
-                    delta: "One. Two. Three.".to_string(),
-                    start_ms: 0,
-                    end_ms: 900,
-                }),
-                "s",
-                measure,
-            );
-            assert!(!g.stop);
-            assert!(
-                matches!(g.mapped, Mapped::Emit(DuplexEvent::Transcript { ref delta, .. }) if delta == "One. Two. Three.")
             );
         }
     }

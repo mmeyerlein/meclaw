@@ -401,7 +401,6 @@ class CacheKeys(unittest.TestCase):
             plain_station("export-audit", ["python3", "plans/export-fixtures/make_export.py",
                                            "--gate-receipt", "{receipt}"]),
             plain_station("precheck", ["python3", "scripts/precheck.py"]),
-            plain_station("persona-receipt", ["python3", "fingerprint.py"]),
             plain_station("corpus-committed", ["python3", "x.py"]),
         ], mode="integration")
         ka, kb = self.keys(a, plan), self.keys(b, plan)

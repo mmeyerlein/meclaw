@@ -18,16 +18,16 @@ compositions of templates here, not features the binary ships.
 One rule decides what sits where: **a level owns what its siblings must share**. Memory sits
 at the member, so replacing an assistant does not take the history with it. Screening sits
 outside the assistant, so a new generation meets the same attacker record and the same rate
-window. The capability broker sits at the shell, because two brokers are two answers to one
-question. The members of one organisation share a name and a routing boundary and nothing
-else, so that level owns nothing else: the boundary routes lanes, it does not isolate.
+window. The capability broker sits at the shell and at the member
+([colony architecture](colony-architecture.md)). The members of one organisation share a name
+and a routing boundary and nothing else, so that level owns nothing else: the boundary routes lanes, it does not isolate.
 
 A colony hosts one organisation. The `orgs` container can hold more, but the colony's API,
 message log and credentials know no organisation: a second one would share everything with the
 first and is not a supported deployment. Run one colony per organisation.
 
 ```
-/os                          meclaw-os    access  argus  builder  operator (holds submit)
+/os                          meclaw-os    access  argus  builder  llm-registry  operator (holds submit)
  └── orgs                    (container)
      └── acme                org          a name and a routing boundary, no cell of its own
          └── members         (container)
@@ -45,7 +45,7 @@ that exists before the mutation that puts something there.
 
 | Part | Level | What it does |
 |---|---|---|
-| `access` | shell, member | The capability broker. An agent asks in natural language, a handle travels on the wire, and a credential leaves the vault only sealed. |
+| `access` | shell, member | The capability broker, one for the operating cells and one for the person. An agent asks in natural language, a handle travels on the wire, and a credential leaves the vault only sealed. |
 | `argus` | shell | The control loop. It reads a charter, measures the colony out of its own ledger, decides, and keeps or reverts the change. Every goal ships disabled. |
 | `builder` | shell | The intake that turns a structural wish into a manifest, an ordered list of mutation declarations. It applies nothing. |
 | `operator` | shell | The one front door a person addresses the OS through, and the hive the submitter lives in. |
@@ -100,6 +100,7 @@ grown the same way, one `POST /colony/mutations` each, in
 
 ## Where to read on
 
+- [Colony architecture](colony-architecture.md), the base form every colony is built on and what a derived kind must keep.
 - [An operating system for agents](why/an-os-for-agents.md), the four levels and what each owns.
 - [One assistant, two brains](why/two-brains.md), why `talky` and `cogny` are two templates.
 - [Memory that outlives the window](why/memory.md), how the record is written and read.

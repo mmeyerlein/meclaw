@@ -21,6 +21,7 @@
 //! upgrade, whether `session.started` is sent at all and how the session ends
 //! are all script parameters.
 
+use crate::deadline::{HANG, scaled};
 use crate::mock_openai_realtime::b64_decode;
 use futures_util::SinkExt;
 use futures_util::stream::{SplitSink, StreamExt};
@@ -33,10 +34,16 @@ use tokio::sync::Mutex;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-/// How long a blocking action (`RequireAudioBytes`, `ExpectAppend`,
-/// `ExpectMute`, `ExpectUnmute`) waits before it gives up. Generous on
-/// purpose: it is a failure marker, not a timing discriminator.
+/// How long a blocking action (`ExpectAppend`, `ExpectMute`,
+/// `ExpectUnmute`) waits before it gives up. Generous on purpose: it is a
+/// failure marker, not a timing discriminator.
 const EXPECT_CAP: Duration = Duration::from_secs(30);
+
+/// How many hang marks `RequireAudioBytes` waits before it gives up. It starts
+/// to wait when the script reaches it, which may be several waits of the test
+/// before the audio flows: the test's own mark names the hang, never a socket
+/// this fake closed.
+const REQUIRE_AUDIO_MARKS: u32 = 10;
 
 /// How long the fake waits for `session.start` after the upgrade. The real
 /// service has no such timeout; the fake needs one so a broken client fails
@@ -120,6 +127,12 @@ pub enum LiveAction {
     /// sends is recorded from here on either, which is what a dead peer looks
     /// like from the outside.
     GoDeaf,
+    /// Take no more of the client's frames off the socket until the test calls
+    /// [`MockGptLive::resume_reading`]: the socket stays open and the script
+    /// goes on, so the client's sends back up into the buffers while the fake
+    /// keeps sending. At most the frame the reader was already waiting for is
+    /// still taken.
+    HoldReading,
 }
 
 /// A per-connection scenario.
@@ -164,6 +177,8 @@ struct State {
     appended_ms: u64,
     pings: Vec<Vec<u8>>,
     deaf: bool,
+    reading_held: bool,
+    order: Vec<String>,
 }
 
 /// A running fake GPT-Live primary socket. Dropping it stops the server.
@@ -252,6 +267,18 @@ impl MockGptLive {
     /// that cannot be asked about it cannot test one (GH #798).
     pub async fn pings(&self) -> Vec<Vec<u8>> {
         self.state.lock().await.pings.clone()
+    }
+
+    /// The `type` of every frame the client sent, audio appends included and a
+    /// transport ping as `ping`, in the one order they came off the socket.
+    pub async fn received_order(&self) -> Vec<String> {
+        self.state.lock().await.order.clone()
+    }
+
+    /// Takes the client's frames off the socket again after a
+    /// [`LiveAction::HoldReading`].
+    pub async fn resume_reading(&self) {
+        self.state.lock().await.reading_held = false;
     }
 
     /// Whether a `session.close` arrived — the graceful-close proof.
@@ -358,10 +385,17 @@ async fn serve_ws(stream: TcpStream, state: Arc<Mutex<State>>, script: LiveScrip
     let read_state = state.clone();
     let read_write = write.clone();
     let reader = tokio::spawn(async move {
-        while let Some(Ok(msg)) = read.next().await {
+        loop {
+            while read_state.lock().await.reading_held {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            let Some(Ok(msg)) = read.next().await else {
+                break;
+            };
             if let WsMessage::Ping(payload) = &msg {
                 let mut st = read_state.lock().await;
                 st.pings.push(payload.to_vec());
+                st.order.push("ping".to_string());
             }
             // Deliberately checked AFTER the frame was taken off the socket and
             // BEFORE the next read: tungstenite queues the pong when the ping
@@ -381,6 +415,7 @@ async fn serve_ws(stream: TcpStream, state: Arc<Mutex<State>>, script: LiveScrip
                 .to_string();
             {
                 let mut st = read_state.lock().await;
+                st.order.push(kind.clone());
                 match kind.as_str() {
                     "session.input_audio.append" => {
                         let decoded = v
@@ -451,7 +486,8 @@ async fn play(write: &Writer, state: &Arc<Mutex<State>>, action: LiveAction) -> 
             return true;
         }
         LiveAction::RequireAudioBytes(n) => {
-            return wait_for(state, EXPECT_CAP, |st| st.audio_bytes >= n).await;
+            let cap = scaled(HANG) * REQUIRE_AUDIO_MARKS;
+            return wait_for(state, cap, |st| st.audio_bytes >= n).await;
         }
         LiveAction::ExpectAppend { kind, contains } => {
             let want = format!("session.{kind}.append");
@@ -532,6 +568,10 @@ async fn play(write: &Writer, state: &Arc<Mutex<State>>, action: LiveAction) -> 
         }
         LiveAction::GoDeaf => {
             state.lock().await.deaf = true;
+            return true;
+        }
+        LiveAction::HoldReading => {
+            state.lock().await.reading_held = true;
             return true;
         }
         LiveAction::DropSocket => return false,
@@ -674,6 +714,348 @@ pub fn b64_encode(bytes: &[u8]) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Recording and replay of a real session (wave w1, strand liveaufnahme,
+// GH #1610). The hand scripts above prove the mechanics; what the real model
+// says, and when, only a recording of a real session carries. R-79-7 no. 6
+// asked for exactly this step between the hand script and a paid call.
+// ---------------------------------------------------------------------------
+
+/// The first word of every recording's header line.
+const RECORDING_KIND: &str = "gpt-live";
+
+/// The sample rate a recording falls back to when its opening names none: the
+/// rate of the PCM16 wire the adapter defaults to.
+const DEFAULT_AUDIO_RATE: u64 = 24_000;
+
+/// What a recording was made against. A recording is only worth replaying
+/// while the test would still open its session the same way, so each one
+/// carries the model, the protocol (the session path of the endpoint) and a
+/// hash of the opening frames the client sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordingHeader {
+    /// The `session.model` of the opening's `session.start`.
+    pub model: String,
+    /// The protocol stand: the session path the client spoke to
+    /// (`/v1/live/sessions`).
+    pub protocol: String,
+    /// `fnv1a64:<16 hex>` over the compact JSON of the opening frames.
+    pub config_hash: String,
+    /// The PCM16 sample rate of the session, which turns a recorded audio
+    /// duration back into bytes of silence.
+    pub audio_rate: u64,
+}
+
+impl RecordingHeader {
+    /// The header of a session opened with `opening` (the client frames sent
+    /// before the test listens: `session.start` and whatever follows it) on
+    /// `protocol`.
+    ///
+    /// The hash runs over `serde_json`'s compact form, whose object keys come
+    /// out sorted (the workspace does not switch on `preserve_order`), so two
+    /// openings that differ only in key order hash alike and any other change
+    /// moves the hash. FNV-1a is enough: the hash marks a change, it guards
+    /// nothing against an adversary, and no hash crate is on the allow-list of
+    /// this crate.
+    pub fn for_opening(opening: &[JsonValue], protocol: &str) -> Self {
+        let start = opening
+            .iter()
+            .find(|f| f.get("type").and_then(JsonValue::as_str) == Some("session.start"));
+        let model = start
+            .and_then(|f| f.pointer("/session/model"))
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let audio_rate = start
+            .and_then(|f| f.pointer("/session/audio/format/rate"))
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(DEFAULT_AUDIO_RATE);
+        let canonical = JsonValue::Array(opening.to_vec()).to_string();
+        Self {
+            model,
+            protocol: protocol.to_string(),
+            config_hash: format!("fnv1a64:{:016x}", fnv1a64(canonical.as_bytes())),
+            audio_rate,
+        }
+    }
+
+    /// The header line of a recording.
+    pub fn to_json(&self) -> JsonValue {
+        json!({
+            "recording": RECORDING_KIND,
+            "model": self.model,
+            "protocol": self.protocol,
+            "config_hash": self.config_hash,
+            "audio_rate": self.audio_rate,
+        })
+    }
+
+    fn from_json(v: &JsonValue) -> Result<Self, RecordingError> {
+        if v.get("recording").and_then(JsonValue::as_str) != Some(RECORDING_KIND) {
+            return Err(RecordingError::Malformed(format!(
+                "the first line is no {RECORDING_KIND} header: {v}"
+            )));
+        }
+        let field = |name: &str| {
+            v.get(name)
+                .and_then(JsonValue::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| RecordingError::Malformed(format!("the header lacks {name}")))
+        };
+        Ok(Self {
+            model: field("model")?,
+            protocol: field("protocol")?,
+            config_hash: field("config_hash")?,
+            audio_rate: v
+                .get("audio_rate")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(DEFAULT_AUDIO_RATE),
+        })
+    }
+
+    /// What moved between this (recorded) header and `today`'s, or `None`
+    /// when the recording still stands.
+    pub fn stale_against(&self, today: &Self) -> Option<String> {
+        let mut moved = Vec::new();
+        if self.model != today.model {
+            moved.push(format!("model {} is now {}", self.model, today.model));
+        }
+        if self.protocol != today.protocol {
+            moved.push(format!(
+                "protocol {} is now {}",
+                self.protocol, today.protocol
+            ));
+        }
+        if self.config_hash != today.config_hash {
+            moved.push(format!(
+                "config {} is now {}",
+                self.config_hash, today.config_hash
+            ));
+        }
+        (!moved.is_empty()).then(|| moved.join("; "))
+    }
+}
+
+/// One server event of a recording.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordedEvent {
+    /// The event's `type`.
+    pub kind: String,
+    /// Milliseconds since the event before it (the first one: since the
+    /// client sent `session.start`).
+    pub gap_ms: u64,
+    /// The event as it arrived, without its audio bytes.
+    pub payload: JsonValue,
+    /// The duration of the audio the event carried, when it carried any.
+    pub audio_ms: Option<f64>,
+}
+
+impl RecordedEvent {
+    fn to_json(&self) -> JsonValue {
+        let mut line = json!({
+            "kind": self.kind,
+            "gap_ms": self.gap_ms,
+            "payload": self.payload,
+        });
+        if let (Some(ms), Some(obj)) = (self.audio_ms, line.as_object_mut()) {
+            obj.insert("audio_ms".to_string(), json!(ms));
+        }
+        line
+    }
+
+    fn from_json(v: &JsonValue) -> Result<Self, RecordingError> {
+        let kind = v
+            .get("kind")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| RecordingError::Malformed(format!("an event line lacks kind: {v}")))?;
+        Ok(Self {
+            kind: kind.to_string(),
+            gap_ms: v.get("gap_ms").and_then(JsonValue::as_u64).unwrap_or(0),
+            payload: v.get("payload").cloned().unwrap_or(JsonValue::Null),
+            audio_ms: v.get("audio_ms").and_then(JsonValue::as_f64),
+        })
+    }
+}
+
+/// Why a recording does not become a script.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecordingError {
+    /// The recording was made against another model, protocol or opening
+    /// than the test sends today; the text names what moved.
+    Stale(String),
+    /// The text is no recording.
+    Malformed(String),
+}
+
+impl std::fmt::Display for RecordingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stale(what) => write!(f, "stale recording: {what} -- record it again"),
+            Self::Malformed(what) => write!(f, "malformed recording: {what}"),
+        }
+    }
+}
+
+impl std::error::Error for RecordingError {}
+
+/// Bytes of PCM16 mono per millisecond at `rate` Hz.
+fn bytes_per_ms(rate: u64) -> f64 {
+    rate as f64 * 2.0 / 1000.0
+}
+
+/// `event` as a recorded event `gap_ms` after its predecessor: an audio
+/// `delta` leaves as its duration, everything else stays verbatim.
+pub fn recorded_event(event: &JsonValue, gap_ms: u64, audio_rate: u64) -> RecordedEvent {
+    let kind = event
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut payload = event.clone();
+    let mut audio_ms = None;
+    if kind.contains("audio")
+        && kind.ends_with(".delta")
+        && let Some(obj) = payload.as_object_mut()
+        && let Some(delta) = obj.remove("delta")
+    {
+        let bytes = delta.as_str().and_then(b64_decode).map_or(0, |b| b.len());
+        audio_ms = Some(bytes as f64 / bytes_per_ms(audio_rate));
+    }
+    RecordedEvent {
+        kind,
+        gap_ms,
+        payload,
+        audio_ms,
+    }
+}
+
+/// Writes the server events of one real session as a recording (JSONL: the
+/// header line, then one line per event).
+pub struct LiveRecorder {
+    header: RecordingHeader,
+    last: tokio::time::Instant,
+    events: Vec<RecordedEvent>,
+}
+
+impl LiveRecorder {
+    /// A recorder for a live session whose `session.start` leaves now: the
+    /// live recording run reads its clock here, so the run judges events,
+    /// never a moment.
+    pub fn opened_now(header: RecordingHeader) -> Self {
+        Self::new(header, tokio::time::Instant::now())
+    }
+
+    /// A recorder for a session whose `session.start` left at `opened`.
+    pub fn new(header: RecordingHeader, opened: tokio::time::Instant) -> Self {
+        Self {
+            header,
+            last: opened,
+            events: Vec::new(),
+        }
+    }
+
+    /// Notes one server event that arrived at `at`.
+    pub fn note(&mut self, event: &JsonValue, at: tokio::time::Instant) {
+        let gap_ms =
+            u64::try_from(at.saturating_duration_since(self.last).as_millis()).unwrap_or(u64::MAX);
+        self.last = at;
+        self.events
+            .push(recorded_event(event, gap_ms, self.header.audio_rate));
+    }
+
+    /// The events noted so far.
+    pub fn events(&self) -> &[RecordedEvent] {
+        &self.events
+    }
+
+    /// The recording as JSONL text.
+    pub fn to_jsonl(&self) -> String {
+        let mut out = self.header.to_json().to_string();
+        out.push('\n');
+        for event in &self.events {
+            out.push_str(&event.to_json().to_string());
+            out.push('\n');
+        }
+        out
+    }
+}
+
+/// The header and the events of a recording.
+pub fn parse_recording(
+    text: &str,
+) -> Result<(RecordingHeader, Vec<RecordedEvent>), RecordingError> {
+    let parse = |line: &str| {
+        meclaw_core::serde_json::from_str::<JsonValue>(line)
+            .map_err(|e| RecordingError::Malformed(format!("a line is no JSON: {e}")))
+    };
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let head = lines
+        .next()
+        .ok_or_else(|| RecordingError::Malformed("the recording is empty".to_string()))?;
+    let header = RecordingHeader::from_json(&parse(head)?)?;
+    let events = lines
+        .map(|line| RecordedEvent::from_json(&parse(line)?))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((header, events))
+}
+
+impl LiveScript {
+    /// The script that replays `recording`: every event after its recorded
+    /// gap, recorded audio as silence of the same duration. `session.started`
+    /// is not replayed -- the fake answers `session.start` itself -- but its
+    /// session id is kept.
+    ///
+    /// `today` is the header the test would record now; a recording whose
+    /// header differs is refused as [`RecordingError::Stale`], so an old
+    /// session neither passes nor fails a test quietly.
+    pub fn from_recording(
+        recording: &str,
+        today: &RecordingHeader,
+    ) -> Result<Self, RecordingError> {
+        let (header, events) = parse_recording(recording)?;
+        if let Some(moved) = header.stale_against(today) {
+            return Err(RecordingError::Stale(moved));
+        }
+        let per_ms = bytes_per_ms(header.audio_rate);
+        let mut script = LiveScript::default();
+        for event in events {
+            if event.kind == "session.started" {
+                if let Some(id) = event
+                    .payload
+                    .pointer("/session/id")
+                    .and_then(JsonValue::as_str)
+                {
+                    script.session_id = id.to_string();
+                }
+                continue;
+            }
+            if event.gap_ms > 0 {
+                script
+                    .actions
+                    .push(LiveAction::Delay(Duration::from_millis(event.gap_ms)));
+            }
+            let mut payload = event.payload;
+            if let (Some(ms), Some(obj)) = (event.audio_ms, payload.as_object_mut()) {
+                // Whole PCM16 samples: an odd byte count would not decode.
+                let samples = (ms * per_ms / 2.0).round() as usize;
+                obj.insert(
+                    "delta".to_string(),
+                    json!(b64_encode(&vec![0u8; samples * 2])),
+                );
+            }
+            script.actions.push(LiveAction::Send(payload));
+        }
+        Ok(script)
+    }
+}
+
+/// FNV-1a, 64 bit.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,5 +1075,57 @@ mod tests {
     fn b64_round_trips_every_byte() {
         let all: Vec<u8> = (0..=255u8).collect();
         assert_eq!(b64_decode(&b64_encode(&all)).expect("decodes"), all);
+    }
+
+    #[test]
+    fn a_recorded_event_keeps_its_audio_as_a_duration() {
+        let event = json!({
+            "type": "session.output_audio.delta",
+            "event_id": "e1",
+            "delta": b64_encode(&[7u8; 960]),
+        });
+        let recorded = recorded_event(&event, 12, 24_000);
+        assert_eq!(recorded.audio_ms, Some(20.0));
+        assert_eq!(
+            recorded.payload,
+            json!({ "type": "session.output_audio.delta", "event_id": "e1" })
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recording_round_trips_into_a_script_of_silence() {
+        let opening = vec![json!({ "type": "session.start", "session": { "model": "m" } })];
+        let header = RecordingHeader::for_opening(&opening, "/p");
+        let t0 = tokio::time::Instant::now();
+        let mut recorder = LiveRecorder::new(header.clone(), t0);
+        recorder.note(
+            &json!({ "type": "session.started", "session": { "id": "sess_x" } }),
+            t0,
+        );
+        recorder.note(
+            &json!({ "type": "session.output_audio.delta", "delta": b64_encode(&[9u8; 96]) }),
+            t0 + Duration::from_millis(5),
+        );
+        let script = LiveScript::from_recording(&recorder.to_jsonl(), &header).expect("replays");
+        assert_eq!(script.session_id, "sess_x");
+        assert_eq!(script.actions.len(), 2, "{:?}", script.actions);
+        assert!(
+            matches!(script.actions[0], LiveAction::Delay(d) if d == Duration::from_millis(5)),
+            "the recorded gap is replayed as data: {:?}",
+            script.actions
+        );
+        let LiveAction::Send(frame) = &script.actions[1] else {
+            panic!("the audio is sent: {:?}", script.actions)
+        };
+        assert_eq!(
+            b64_decode(frame["delta"].as_str().expect("delta")).expect("decodes"),
+            vec![0u8; 96]
+        );
+        let other = RecordingHeader::for_opening(&opening, "/q");
+        let refusal = LiveScript::from_recording(&recorder.to_jsonl(), &other).expect_err("stale");
+        assert!(
+            refusal.to_string().starts_with("stale recording: protocol"),
+            "{refusal}"
+        );
     }
 }

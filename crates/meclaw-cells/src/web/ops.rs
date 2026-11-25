@@ -123,39 +123,134 @@ pub type Applied = (OpOutcome, Touched, i64);
 /// I/O error) and a `COMMIT` that fails: every leg of the lost part that said
 /// it wrote is turned into a refusal. Without a transaction (a refused
 /// `BEGIN`), every leg commits on its own, as before.
+///
+/// GH #1264: an interrupt (`external_timeout_ms`, sent by the `DbConn`) ends
+/// the bundle at the leg it hits. The transaction is rolled back, and every
+/// leg that wrote, was running or had not run answers `query_timeout`; a read
+/// that was done stays what it was.
 pub fn apply_all(conn: &Connection, legs: &[Value]) -> Vec<Applied> {
     let mut out: Vec<Applied> = Vec::with_capacity(legs.len());
     let mut open = conn.execute_batch("BEGIN").is_ok();
     let mut first = 0;
-    for args in legs {
-        let started = tokio::time::Instant::now();
-        let (outcome, touched) = apply(conn, args);
-        out.push((outcome, touched, started.elapsed().as_millis() as i64));
-        if open && conn.is_autocommit() {
-            unwritten(
-                &mut out[first..],
-                "the database rolled the bundle's transaction back",
-            );
-            open = conn.execute_batch("BEGIN").is_ok();
-            first = out.len();
+    let mut cut = false;
+    let committed = holding_interrupt(conn, || {
+        for args in legs {
+            let started = tokio::time::Instant::now();
+            let (outcome, touched) = apply(conn, args);
+            out.push((outcome, touched, started.elapsed().as_millis() as i64));
+            if conn.is_interrupted() {
+                cut = true;
+                return Ok(());
+            }
+            if open && conn.is_autocommit() {
+                unwritten(
+                    &mut out[first..],
+                    "invalid_input",
+                    "the database rolled the bundle's transaction back",
+                );
+                open = conn.execute_batch("BEGIN").is_ok();
+                first = out.len();
+            }
         }
+        if open {
+            conn.execute_batch("COMMIT")
+        } else {
+            Ok(())
+        }
+    });
+    let timed_out = cut || committed.as_ref().is_err_and(interrupted);
+    if !timed_out && committed.is_ok() {
+        return out;
     }
-    if open && let Err(e) = conn.execute_batch("COMMIT") {
+    if !conn.is_autocommit() {
         let _ = conn.execute_batch("ROLLBACK");
+    }
+    if let (false, Err(e)) = (timed_out, &committed) {
         unwritten(
             &mut out[first..],
+            "invalid_input",
             &format!("the bundle's transaction did not commit: {e}"),
         );
+        return out;
+    }
+    if open {
+        unwritten(&mut out[first..], "query_timeout", TIMED_OUT);
+    }
+    // What the interrupt hit has no answer of its own: a read may be cut short
+    // and a refusal may be the interrupt's. Only a write that committed on its
+    // own (no transaction) has landed.
+    let landed = !open && out.last().is_some_and(|(o, ..)| o.rows_affected > 0);
+    let at = out.len().saturating_sub(1);
+    if cut
+        && !landed
+        && let (Some(args), Some((outcome, touched, _))) = (legs.get(at), out.last_mut())
+    {
+        *outcome = OpOutcome::refused(op_name(args), "query_timeout", TIMED_OUT);
+        *touched = Touched::default();
+    }
+    for args in &legs[out.len()..] {
+        out.push((
+            OpOutcome::refused(op_name(args), "query_timeout", TIMED_OUT),
+            Touched::default(),
+            0,
+        ));
+    }
+    out
+}
+
+/// The text of a `query_timeout` refusal.
+const TIMED_OUT: &str = "the database call ran past external_timeout_ms and was interrupted — \
+                         nothing of this leg is stored";
+
+/// The op a leg names, for a refusal that is not the op's own.
+fn op_name(args: &Value) -> &str {
+    args.get("op").and_then(Value::as_str).unwrap_or("unknown")
+}
+
+/// Whether SQLite ended a statement because the connection was interrupted.
+fn interrupted(e: &rusqlite::Error) -> bool {
+    e.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted)
+}
+
+/// Run `f` so that an interrupt stays in force until it returns.
+///
+/// GH #1264: SQLite forgets an interrupt as soon as no statement is running. A
+/// bundle and a re-render are many short statements, so the interrupt of the
+/// operation timeout ended ONE of them, or none when it fell between two, and
+/// the rest ran on without a clock. While the statement here is held
+/// mid-way, every statement after the interrupt is refused, the `COMMIT`
+/// included: whether the work landed is SQLite's verdict, not the clock's.
+///
+/// Call it inside a transaction, or let `f` begin one first (a `BEGIN` compiles
+/// without the schema). Under autocommit a statement that does not
+/// compile while this one is held leaves its read snapshot open, and the next
+/// write after a foreign commit is refused with "database is locked".
+fn holding_interrupt<R>(conn: &Connection, f: impl FnOnce() -> R) -> R {
+    let mut stmt = conn.prepare_cached("SELECT 1 UNION ALL SELECT 2").ok();
+    let mut rows = stmt.as_mut().and_then(|s| s.query([]).ok());
+    if let Some(rows) = rows.as_mut() {
+        let _ = rows.next();
+    }
+    f()
+}
+
+/// [`holding_interrupt`] for a read of many statements, in a transaction of its
+/// own (see there), which also gives it one snapshot.
+pub(crate) fn reading<R>(conn: &Connection, f: impl FnOnce() -> R) -> R {
+    let open = conn.execute_batch("BEGIN").is_ok();
+    let out = holding_interrupt(conn, f);
+    if open {
+        let _ = conn.execute_batch("ROLLBACK");
     }
     out
 }
 
 /// Turn every leg of `legs` that says it wrote into a refusal: its write is
 /// gone with the transaction. A read (a payload) stays what it was.
-fn unwritten(legs: &mut [Applied], why: &str) {
+fn unwritten(legs: &mut [Applied], code: &str, why: &str) {
     for (outcome, touched, _) in legs {
         if !outcome.is_error() && outcome.payload.is_null() {
-            *outcome = OpOutcome::refused(&outcome.operation, "invalid_input", why);
+            *outcome = OpOutcome::refused(&outcome.operation, code, why);
             *touched = Touched::default();
         }
     }
@@ -400,10 +495,10 @@ fn check_glass_on_glass(
     ))
 }
 
-/// The root-child ancestor of `id` on every page that shows it.
+/// The slot of `id` on every page that shows it: the child of the page's root
+/// on the path down to `id`, or the root itself when `id` is that root.
 fn touched_by(conn: &Connection, id: &str) -> Touched {
-    // Walk to the top of this object's tree, remembering the last step before
-    // the root — that is the slot.
+    // Walk to the top of this object's tree: every link may be a page's root.
     let mut chain: Vec<String> = vec![id.to_string()];
     let mut current = id.to_string();
     for _ in 0..MAX_DEPTH {
@@ -421,31 +516,57 @@ fn touched_by(conn: &Connection, id: &str) -> Touched {
         }
     }
 
-    let root = chain.last().cloned().unwrap_or_default();
-    // The slot is the child of the root on the path down to `id`; when `id` IS
-    // the root there is no slot and the whole page is affected.
-    let slot = if chain.len() >= 2 {
-        chain[chain.len() - 2].clone()
-    } else {
+    // The top of a tree has no slot: the whole page is affected. GH #1264: if it
+    // is a page's root at all. An object no page shows rendered every route
+    // whole; a lookup that fails is no proof that nothing shows it.
+    if chain.len() < 2 {
+        let shown = conn
+            .prepare_cached("SELECT 1 FROM pages WHERE root = ?1")
+            .and_then(|mut stmt| stmt.exists([id]))
+            .unwrap_or(true);
         return Touched {
             slots: Vec::new(),
-            structural: true,
+            structural: shown,
         };
-    };
+    }
 
-    let mut stmt = match conn.prepare_cached("SELECT route FROM pages WHERE root = ?1") {
-        Ok(s) => s,
-        Err(_) => return Touched::default(),
-    };
-    let routes: Vec<String> = stmt
-        .query_map([&root], |r| r.get::<_, String>(0))
-        .map(|rows| rows.filter_map(Result::ok).collect())
-        .unwrap_or_default();
-
+    // GH #1264: `page.set` takes any object as a root, one with a parent too,
+    // so the page that shows `id` is not only the one of the topmost ancestor.
+    // Asking for that one alone left every nested page on its old picture. The
+    // slot is the link below the page's root; a page rooted at `id` itself
+    // names `id`, which the re-render answers with the whole route.
+    let slots = all_routes(conn)
+        .into_iter()
+        .filter_map(|(route, root)| {
+            let at = chain.iter().position(|link| *link == root)?;
+            Some((route, chain[at.saturating_sub(1)].clone()))
+        })
+        .collect();
     Touched {
-        slots: routes.into_iter().map(|r| (r, slot.clone())).collect(),
+        slots,
         structural: false,
     }
+}
+
+/// The first `obj-N` past the row count that no object has, and that no object
+/// or page still names: a new object takes over nothing left behind.
+///
+/// GH #1264: the count alone is a taken id after a delete, or when a caller
+/// chose an `obj-N` itself, and it stays taken: every further create without
+/// an id was refused.
+fn free_id(conn: &Connection) -> rusqlite::Result<String> {
+    conn.prepare_cached(
+        "WITH RECURSIVE n(i) AS (
+             SELECT count(*) + 1 FROM objects
+             UNION ALL
+             SELECT i + 1 FROM n
+              WHERE EXISTS (SELECT 1 FROM objects WHERE id = 'obj-' || i)
+                 OR EXISTS (SELECT 1 FROM objects WHERE parent = 'obj-' || i)
+                 OR EXISTS (SELECT 1 FROM pages WHERE root = 'obj-' || i)
+         )
+         SELECT 'obj-' || max(i) FROM n",
+    )
+    .and_then(|mut stmt| stmt.query_row([], |r| r.get(0)))
 }
 
 fn object_create(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
@@ -462,17 +583,20 @@ fn object_create(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
         return (e, Touched::default());
     }
 
-    // An id the caller chose, or one derived from the row count. A caller that
-    // wants to patch its object later has to name it, which is why `id` is
-    // offered rather than always generated.
+    // An id the caller chose, or one nothing holds. A caller that wants to
+    // patch its object later has to name it, which is why `id` is offered
+    // rather than always generated.
     let id = match args.get("id").and_then(Value::as_str) {
         Some(i) => i.to_string(),
-        None => {
-            let n: i64 = conn
-                .query_row("SELECT count(*) FROM objects", [], |r| r.get(0))
-                .unwrap_or(0);
-            format!("obj-{}", n + 1)
-        }
+        None => match free_id(conn) {
+            Ok(i) => i,
+            Err(e) => {
+                return (
+                    OpOutcome::refused("object.create", "invalid_input", e.to_string()),
+                    Touched::default(),
+                );
+            }
+        },
     };
     let parent = args.get("parent").and_then(Value::as_str);
     let ord = args.get("ord").and_then(Value::as_i64).unwrap_or(0);
@@ -480,6 +604,13 @@ fn object_create(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
     // The second adoption rule, checked where the edge is made.
     if let Some(parent) = parent
         && let Err(e) = check_glass_on_glass(conn, parent, component)
+    {
+        return (e, Touched::default());
+    }
+    // GH #1264: a parent may be named before it exists, so a create can close
+    // a cycle as well as a move can.
+    if let Some(parent) = parent
+        && let Err(e) = check_parent(conn, "object.create", &id, parent)
     {
         return (e, Touched::default());
     }
@@ -499,6 +630,18 @@ fn object_create(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
             OpOutcome::refused("object.create", "invalid_input", e.to_string()),
             Touched::default(),
         ),
+    }
+}
+
+/// Stored props as the bag a patch is merged into.
+///
+/// GH #1264: JSON that is no object (a seed stores its text as it is) is an
+/// empty bag, like text that is no JSON. A patch found no key to set there,
+/// fell away and was answered `wrote 1`.
+fn stored_props(raw: &str) -> Value {
+    match meclaw_core::serde_json::from_str(raw) {
+        Ok(Value::Object(bag)) => Value::Object(bag),
+        _ => json!({}),
     }
 }
 
@@ -541,8 +684,7 @@ fn object_update(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
 
     // Merge per key, so a patch names only what it changes. Replacing the whole
     // bag would make every partial update a read-modify-write for the caller.
-    let mut merged: Value =
-        meclaw_core::serde_json::from_str(&existing).unwrap_or_else(|_| json!({}));
+    let mut merged = stored_props(&existing);
     if let (Some(target), Some(patch_obj)) = (merged.as_object_mut(), patch.as_object()) {
         for (k, v) in patch_obj {
             target.insert(k.clone(), v.clone());
@@ -562,6 +704,42 @@ fn object_update(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
             Touched::default(),
         ),
     }
+}
+
+/// Whether `id` may hang under `parent`: not under itself or an object below it.
+///
+/// GH #1264: such a move or create was answered `wrote 1`. Its objects formed a
+/// cycle no page root reaches: gone from every page, and not deletable either,
+/// because each of them has a child. The walk up carries the renderer's bound: past it
+/// the object could not be drawn, and a cycle above it never ends the walk.
+fn check_parent(
+    conn: &Connection,
+    operation: &str,
+    id: &str,
+    parent: &str,
+) -> Result<(), OpOutcome> {
+    let refuse = |text: String| Err(OpOutcome::refused(operation, "invalid_input", text));
+    let mut current = parent.to_string();
+    for _ in 0..MAX_DEPTH {
+        if current == id {
+            return refuse(format!(
+                "{parent:?} is {id:?} itself or stands below it; {operation} would cut both off \
+                 from every page"
+            ));
+        }
+        let up = conn
+            .prepare_cached("SELECT parent FROM objects WHERE id = ?1")
+            .and_then(|mut stmt| stmt.query_row([&current], |r| r.get::<_, Option<String>>(0)));
+        match up {
+            Ok(Some(p)) => current = p,
+            Ok(None) | Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return refuse(e.to_string()),
+        }
+    }
+    refuse(format!(
+        "{parent:?} stands {MAX_DEPTH} or more levels deep, or in a cycle; nothing below it \
+         can be drawn"
+    ))
 }
 
 /// Move an object: a new parent, a new `ord`, or both.
@@ -588,6 +766,12 @@ fn object_move(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
             OpOutcome::refused("object.move", "unknown_object", format!("no object {id:?}")),
             Touched::default(),
         );
+    }
+
+    if let Some(parent) = args.get("parent").and_then(Value::as_str)
+        && let Err(e) = check_parent(conn, "object.move", id, parent)
+    {
+        return (e, Touched::default());
     }
 
     // Where it was, so both the old and the new page get their patch.
@@ -842,9 +1026,10 @@ fn refuse_define(operation: &str, code: &str, text: impl Into<String>) -> (OpOut
 
 /// Every route this cell serves, paired with its own root.
 ///
-/// Used when a change is too broad to attribute to one slot.
+/// Used when a change is too broad to attribute to one slot, and by
+/// [`touched_by`] to find the pages rooted on a path.
 fn all_routes(conn: &Connection) -> Vec<(String, String)> {
-    let Ok(mut stmt) = conn.prepare("SELECT route, root FROM pages ORDER BY route") else {
+    let Ok(mut stmt) = conn.prepare_cached("SELECT route, root FROM pages ORDER BY route") else {
         return Vec::new();
     };
     stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
@@ -959,7 +1144,10 @@ fn page_set(conn: &Connection, args: &Value) -> (OpOutcome, Touched) {
     }
 }
 
-/// Read object state back: one object by `id`, or a whole page by `route`.
+/// Read object state back: one object by `id`, or, by `route`, ALL objects of
+/// the cell, of every page, with the root of that route. Cutting the answer to
+/// the route's subtree breaks a reader: `read_tree` in `display/compose`
+/// mirrors the pages of every output from one query on `/` (GH #1264).
 fn query(conn: &Connection, args: &Value) -> OpOutcome {
     if let Some(id) = args.get("id").and_then(Value::as_str) {
         let row = conn.query_row(
@@ -1045,7 +1233,51 @@ fn query(conn: &Connection, args: &Value) -> OpOutcome {
 /// `web@2.2.0`, but a component stored before keeps its row, and what one
 /// viewer types would reach every other viewer as markup. The verdict is the
 /// same `not_editable` a prop outside the list gets.
+///
+/// GH #1264: a write the operation timeout interrupts is answered
+/// `query_timeout` and rolled back. The write and the lookup of its slot are
+/// one transaction for that: an interrupt between the two would store a write
+/// nobody publishes.
 pub fn set_editable(
+    conn: &Connection,
+    id: &str,
+    prop: &str,
+    value: &Value,
+) -> (crate::web::cell::EventReply, Touched) {
+    use crate::web::cell::EventReply;
+
+    let mut cut = false;
+    let done = holding_interrupt(conn, || {
+        // The lock from the start: a transaction that reads first cannot wait
+        // for another writer at its write, SQLite refuses the step at once.
+        // And inside the hold: an interrupt while this waits would be forgotten
+        // with the `BEGIN`, and the write would land past its clock.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let done = write_editable(conn, id, prop, value);
+        cut = conn.is_interrupted();
+        // A write SQLite refused may have ended the transaction itself.
+        if !cut && !conn.is_autocommit() {
+            conn.execute_batch("COMMIT")?;
+        }
+        Ok(done)
+    });
+    if !conn.is_autocommit() {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    let refused = |why: &str| (EventReply::Error(why.to_string()), Touched::default());
+    match done {
+        Ok(_) if cut => refused("query_timeout"),
+        Ok(done) => done,
+        Err(e) if interrupted(&e) => refused("query_timeout"),
+        Err(e) => {
+            tracing::error!(%id, %prop, error = %e, "web: editable write failed");
+            refused("the write failed")
+        }
+    }
+}
+
+/// The checks and the write of [`set_editable`].
+fn write_editable(
     conn: &Connection,
     id: &str,
     prop: &str,
@@ -1085,8 +1317,7 @@ pub fn set_editable(
         );
     }
 
-    let mut props: Value =
-        meclaw_core::serde_json::from_str(&props_raw).unwrap_or_else(|_| json!({}));
+    let mut props = stored_props(&props_raw);
     if let Some(obj) = props.as_object_mut() {
         obj.insert(prop.to_string(), value.clone());
     }
@@ -1252,6 +1483,163 @@ mod tests {
         assert_eq!(*touched, Touched::default());
     }
 
+    /// GH #1264: an interrupt that falls between two statements holds to the end
+    /// of the work. SQLite forgets one as soon as no statement runs, so without
+    /// the held statement the write and the `COMMIT` after it go through.
+    #[test]
+    fn gh1264_an_interrupt_between_two_statements_holds_to_the_end() {
+        let c = bundle_conn();
+        let clock = c.get_interrupt_handle();
+        c.execute_batch("BEGIN").unwrap();
+        let (write, commit) = holding_interrupt(&c, || {
+            clock.interrupt();
+            (
+                c.execute("UPDATE objects SET ord = 7", []),
+                c.execute_batch("COMMIT"),
+            )
+        });
+        assert!(write.as_ref().is_err_and(interrupted), "{write:?}");
+        assert!(commit.as_ref().is_err_and(interrupted), "{commit:?}");
+        if !c.is_autocommit() {
+            c.execute_batch("ROLLBACK").unwrap();
+        }
+        // Over with the work: the connection takes the next statement.
+        let ord: i64 = c
+            .query_row("SELECT ord FROM objects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ord, 0);
+    }
+
+    /// GH #1264: the same through a bundle. The interrupt comes out of the last
+    /// step of a leg's write, which SQLite completes; the rest is refused.
+    #[test]
+    fn gh1264_an_interrupt_between_two_legs_ends_the_bundle() {
+        let c = bundle_conn();
+        let clock = c.get_interrupt_handle();
+        c.create_scalar_function(
+            "clock_fires",
+            0,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+            move |_| {
+                clock.interrupt();
+                Ok(1)
+            },
+        )
+        .unwrap();
+        c.execute_batch(
+            "CREATE TRIGGER clock AFTER INSERT ON objects WHEN NEW.id = 'one'
+               BEGIN SELECT clock_fires(); END;",
+        )
+        .unwrap();
+        let out = apply_all(&c, &[create("zero"), create("one"), create("two")]);
+        assert_eq!(out.len(), 3);
+        for leg in &out {
+            assert_eq!(leg.0.error_code.as_deref(), Some("query_timeout"));
+            assert_eq!(leg.1, Touched::default());
+        }
+        assert_eq!(ids(&c), ["pre"]);
+        assert!(c.is_autocommit());
+    }
+
+    static BUSY_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// GH #1264: `object:set` reads before it writes. As a deferred transaction
+    /// the step from the read to the write fails at once beside another writer;
+    /// SQLite asks the busy handler only where a transaction starts.
+    #[test]
+    fn gh1264_an_editable_write_waits_for_another_writer() {
+        use std::sync::atomic::Ordering;
+
+        fn give_up(_: i32) -> bool {
+            BUSY_ASKED.store(true, Ordering::SeqCst);
+            false
+        }
+
+        let td = tempfile::TempDir::new().unwrap();
+        let file = td.path().join("cell.db");
+        let mut c = Connection::open(&file).unwrap();
+        c.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+        crate::web::db::setup_web_schema(&c).unwrap();
+        c.execute_batch(
+            r#"INSERT INTO components (name, template, prop_schema, editable)
+                 VALUES ('p', '<p>{{t}}</p>', '{"t":"text"}', '["t"]');
+               INSERT INTO objects (id, parent, component, ord, props)
+                 VALUES ('o', NULL, 'p', 0, '{"t":"x"}');"#,
+        )
+        .unwrap();
+        let other = Connection::open(&file).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        c.busy_handler(Some(give_up)).unwrap();
+        let (reply, touched) = set_editable(&c, "o", "t", &json!("y"));
+        assert!(
+            matches!(reply, crate::web::cell::EventReply::Error(_)),
+            "the other writer holds the lock"
+        );
+        assert_eq!(touched, Touched::default());
+        assert!(BUSY_ASKED.load(Ordering::SeqCst), "the write did not wait");
+
+        other.execute_batch("ROLLBACK").unwrap();
+        let (reply, _) = set_editable(&c, "o", "t", &json!("y"));
+        assert!(matches!(reply, crate::web::cell::EventReply::Ok));
+        assert!(c.is_autocommit());
+    }
+
+    static WAITING: std::sync::Mutex<Option<(rusqlite::InterruptHandle, Connection)>> =
+        std::sync::Mutex::new(None);
+
+    /// GH #1264: an interrupt that falls while `object:set` waits for another
+    /// writer ends it, also when the lock comes free after that. The wait is
+    /// the `BEGIN` itself: not held, it ends well and SQLite forgets the
+    /// interrupt before the write.
+    #[test]
+    fn gh1264_an_interrupt_while_an_editable_write_waits_is_kept() {
+        use crate::web::cell::EventReply;
+
+        /// The first call is the clock, then the other writer lets go.
+        fn clock_then_free(_: i32) -> bool {
+            let Some((clock, other)) = WAITING.lock().unwrap().take() else {
+                return false;
+            };
+            clock.interrupt();
+            other.execute_batch("ROLLBACK").unwrap();
+            true
+        }
+
+        let td = tempfile::TempDir::new().unwrap();
+        let file = td.path().join("cell.db");
+        let mut c = Connection::open(&file).unwrap();
+        c.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+        crate::web::db::setup_web_schema(&c).unwrap();
+        c.execute_batch(
+            r#"INSERT INTO components (name, template, prop_schema, editable)
+                 VALUES ('p', '<p>{{t}}</p>', '{"t":"text"}', '["t"]');
+               INSERT INTO objects (id, parent, component, ord, props)
+                 VALUES ('o', NULL, 'p', 0, '{"t":"x"}');"#,
+        )
+        .unwrap();
+        let other = Connection::open(&file).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        *WAITING.lock().unwrap() = Some((c.get_interrupt_handle(), other));
+        c.busy_handler(Some(clock_then_free)).unwrap();
+
+        let (reply, touched) = set_editable(&c, "o", "t", &json!("y"));
+        assert!(
+            WAITING.lock().unwrap().is_none(),
+            "the write did not wait for the other writer"
+        );
+        assert_eq!(reply, EventReply::Error("query_timeout".to_string()));
+        assert_eq!(touched, Touched::default());
+        assert!(c.is_autocommit());
+        let props: String = c
+            .query_row("SELECT props FROM objects WHERE id = 'o'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(props, r#"{"t":"x"}"#);
+
+        // Over with the interrupted call: the next write lands.
+        let (reply, _) = set_editable(&c, "o", "t", &json!("y"));
+        assert_eq!(reply, EventReply::Ok);
+    }
+
     /// GH #1030 review: a `COMMIT` that fails loses every write of the bundle,
     /// so every leg that said it wrote is answered as a refusal, the reads keep
     /// their payload, and the transaction is rolled back rather than left open.
@@ -1320,5 +1708,338 @@ mod tests {
         assert_eq!(out[3].0.rows_affected, 1);
         assert!(c.is_autocommit(), "the bundle left a transaction open");
         assert_eq!(ids(&c), vec!["c".to_string(), "pre".to_string()]);
+    }
+
+    /// Objects `(id, parent)` of one component that draws its prop and its
+    /// children, and pages `(route, root)` over them.
+    fn tree_conn(objects: &[(&str, Option<&str>)], pages: &[(&str, &str)]) -> Connection {
+        let c = conn();
+        c.execute_batch(
+            r#"INSERT INTO components (name, template, prop_schema, editable)
+                 VALUES ('box', '<div data-t="{{t}}">{{children}}</div>', '{"t":"text"}', '[]');"#,
+        )
+        .unwrap();
+        for (id, parent) in objects {
+            c.execute(
+                r#"INSERT INTO objects (id, parent, component, ord, props)
+                   VALUES (?1, ?2, 'box', 0, '{"t":"old"}')"#,
+                rusqlite::params![id, parent],
+            )
+            .unwrap();
+        }
+        for (route, root) in pages {
+            c.execute(
+                "INSERT INTO pages (route, root, title) VALUES (?1, ?2, '')",
+                [route, root],
+            )
+            .unwrap();
+        }
+        c
+    }
+
+    fn parent_of(c: &Connection, id: &str) -> Option<String> {
+        c.query_row("SELECT parent FROM objects WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    /// GH #1264: a page whose root hangs under another object hears every write
+    /// that shows on it. The walk named only the routes of the topmost ancestor,
+    /// so a nested page stayed on its old picture, and one under an object
+    /// without a page was never published at all.
+    #[test]
+    fn gh1264_an_update_below_a_nested_page_root_reaches_that_page() {
+        use crate::web::render::{materialize_all, rerender};
+        let c = tree_conn(
+            &[
+                ("r", None),
+                ("c", Some("r")),
+                ("k", Some("c")),
+                ("k2", Some("c")),
+                ("u", None),
+                ("d", Some("u")),
+                ("leaf", Some("d")),
+            ],
+            &[("/", "r"), ("/detail", "c"), ("/island", "d")],
+        );
+        let mut held = materialize_all(&c).unwrap();
+        let update = |id: &str| json!({"op": "object.update", "id": id, "props": {"t": format!("new-{id}")}});
+        for (op, routes) in [
+            (update("k"), &["/", "/detail"][..]),
+            // The nested root itself: a slot of "/", the statics of "/detail".
+            (update("c"), &["/", "/detail"][..]),
+            // The top of a tree broadcasts to every route.
+            (update("r"), &["/", "/detail", "/island"][..]),
+            (update("leaf"), &["/island"][..]),
+            (update("d"), &["/island"][..]),
+            (
+                json!({"op": "object.create", "id": "n", "component": "box", "parent": "c",
+                       "props": {"t": "born"}}),
+                &["/", "/detail"][..],
+            ),
+            (
+                json!({"op": "object.move", "id": "n", "parent": "k"}),
+                &["/", "/detail"][..],
+            ),
+            (
+                json!({"op": "object.move", "id": "n", "parent": "d"}),
+                &["/", "/detail", "/island"][..],
+            ),
+            (
+                json!({"op": "object.delete", "id": "k2"}),
+                &["/", "/detail"][..],
+            ),
+        ] {
+            let (outcome, touched) = apply(&c, &op);
+            assert!(!outcome.is_error(), "{op}: {outcome:?}");
+            let done = rerender(&c, &held, &touched).unwrap();
+            let mut framed: Vec<&str> = done.frames.iter().map(|(r, _)| r.as_str()).collect();
+            framed.sort_unstable();
+            assert_eq!(framed, routes, "{op}: one frame per page that shows it");
+            let fresh = materialize_all(&c).unwrap();
+            for (route, page) in fresh.iter() {
+                assert_eq!(
+                    done.pages[route.as_str()].rendered_body(),
+                    page.rendered_body(),
+                    "{op}: {route} is published as a whole render draws it"
+                );
+            }
+            held = done.pages;
+        }
+    }
+
+    /// GH #1264: a move under itself or under its own descendant is refused and
+    /// moves nothing. It was answered `wrote 1`: the objects formed a cycle no
+    /// root reaches, gone from every page, and no delete could take them (each
+    /// has a child).
+    #[test]
+    fn gh1264_a_move_under_its_own_descendant_is_refused() {
+        let c = tree_conn(
+            &[("root", None), ("a", Some("root")), ("b", Some("a"))],
+            &[("/", "root")],
+        );
+        for (id, parent) in [("a", "b"), ("a", "a"), ("root", "b")] {
+            let before = parent_of(&c, id);
+            let (outcome, touched) = apply(
+                &c,
+                &json!({"op": "object.move", "id": id, "parent": parent}),
+            );
+            assert_eq!(
+                outcome.error_code.as_deref(),
+                Some("invalid_input"),
+                "{id} under {parent}: {outcome:?}"
+            );
+            assert_eq!(touched, Touched::default());
+            assert_eq!(parent_of(&c, id), before, "{id} stays where it was");
+        }
+        // What is no cycle still moves: up, to the top, and a new ord alone.
+        for op in [
+            json!({"op": "object.move", "id": "b", "parent": "root"}),
+            json!({"op": "object.move", "id": "b", "parent": null}),
+            json!({"op": "object.move", "id": "a", "ord": 7}),
+            json!({"op": "object.move", "id": "a", "parent": "b"}),
+        ] {
+            let (outcome, _) = apply(&c, &op);
+            assert!(!outcome.is_error(), "{op}: {outcome:?}");
+        }
+    }
+
+    /// GH #1264: the walk is bounded like the renderer's, and a parent at the
+    /// bound is refused: below it the object could not be drawn, and a cycle
+    /// the walk has not closed yet looks the same.
+    #[test]
+    fn gh1264_a_move_past_the_depth_bound_is_refused() {
+        let names: Vec<String> = (0..=MAX_DEPTH).map(|i| format!("d{i}")).collect();
+        let mut objects: Vec<(&str, Option<&str>)> = vec![("x", None)];
+        for (i, name) in names.iter().enumerate() {
+            objects.push((name, (i > 0).then(|| names[i - 1].as_str())));
+        }
+        let c = tree_conn(&objects, &[("/", "d0")]);
+        let to = |parent: &str| json!({"op": "object.move", "id": "x", "parent": parent});
+        let (outcome, _) = apply(&c, &to(&names[MAX_DEPTH]));
+        assert_eq!(
+            outcome.error_code.as_deref(),
+            Some("invalid_input"),
+            "{outcome:?}"
+        );
+        assert_eq!(parent_of(&c, "x"), None);
+        let (outcome, _) = apply(&c, &to(&names[MAX_DEPTH - 1]));
+        assert!(!outcome.is_error(), "{outcome:?}");
+        assert!(
+            crate::web::render::materialize_all(&c)
+                .unwrap()
+                .contains_key("/")
+        );
+    }
+
+    /// GH #1264: an id the cell makes up is free. It was `obj-{count + 1}`,
+    /// which a delete or a caller's own `obj-N` makes a taken one, and then
+    /// every create without an id was refused until the count moved. An id an
+    /// object or a page still names is not free either: the new object would
+    /// take over what was left behind.
+    #[test]
+    fn gh1264_a_generated_id_never_collides_after_a_delete() {
+        let bare = json!({"op": "object.create", "component": "box"});
+        let c = tree_conn(&[], &[]);
+        for op in [
+            bare.clone(),
+            bare.clone(),
+            json!({"op": "object.delete", "id": "obj-1"}),
+            bare.clone(),
+            json!({"op": "object.create", "component": "box", "id": "obj-4"}),
+            bare.clone(),
+        ] {
+            let (outcome, _) = apply(&c, &op);
+            assert!(!outcome.is_error(), "{op}: {outcome:?}");
+        }
+        assert_eq!(ids(&c), ["obj-2", "obj-3", "obj-4", "obj-5"]);
+
+        // Two objects, so the count alone would say `obj-3`.
+        let c = tree_conn(&[("y", Some("obj-3")), ("z", None)], &[("/", "obj-4")]);
+        let (outcome, _) = apply(
+            &c,
+            &json!({"op": "object.create", "component": "box", "parent": "y"}),
+        );
+        assert!(!outcome.is_error(), "{outcome:?}");
+        assert_eq!(ids(&c), ["obj-5", "y", "z"]);
+    }
+
+    /// GH #1264: a create closes no cycle either: not as its own parent, and
+    /// not under an object whose chain already names the new id. It carries the
+    /// move's depth bound as well.
+    #[test]
+    fn gh1264_a_create_that_closes_a_cycle_is_refused() {
+        let c = tree_conn(
+            &[("root", None), ("y", Some("a")), ("k", Some("y"))],
+            &[("/", "root")],
+        );
+        let create = |id: &str, parent: &str| json!({"op": "object.create", "component": "box", "id": id, "parent": parent});
+        for (id, parent) in [("a", "a"), ("a", "y"), ("a", "k")] {
+            let (outcome, touched) = apply(&c, &create(id, parent));
+            assert_eq!(
+                outcome.error_code.as_deref(),
+                Some("invalid_input"),
+                "{id} under {parent}: {outcome:?}"
+            );
+            assert_eq!(touched, Touched::default());
+            assert_eq!(ids(&c), ["k", "root", "y"], "nothing is written");
+        }
+        // What closes none is still created, the missing parent of `y` included.
+        for (id, parent) in [("a", "root"), ("b", "k"), ("early", "later")] {
+            let (outcome, _) = apply(&c, &create(id, parent));
+            assert!(!outcome.is_error(), "{id} under {parent}: {outcome:?}");
+        }
+
+        let names: Vec<String> = (0..=MAX_DEPTH).map(|i| format!("d{i:02}")).collect();
+        let mut objects: Vec<(&str, Option<&str>)> = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            objects.push((name, (i > 0).then(|| names[i - 1].as_str())));
+        }
+        let c = tree_conn(&objects, &[("/", "d00")]);
+        let (outcome, _) = apply(&c, &create("x", &names[MAX_DEPTH]));
+        assert_eq!(
+            outcome.error_code.as_deref(),
+            Some("invalid_input"),
+            "{outcome:?}"
+        );
+        let (outcome, _) = apply(&c, &create("x", &names[MAX_DEPTH - 1]));
+        assert!(!outcome.is_error(), "{outcome:?}");
+        assert!(
+            crate::web::render::materialize_all(&c)
+                .unwrap()
+                .contains_key("/"),
+            "what a create lets through is drawn"
+        );
+    }
+
+    /// GH #1264: stored props that are JSON but no object (a seed stores its
+    /// text as it is) take a patch like an empty bag. The patch fell away and
+    /// was answered `wrote 1`.
+    #[test]
+    fn gh1264_an_update_on_non_object_props_is_not_dropped() {
+        let c = tree_conn(&[("root", None), ("a", Some("root"))], &[("/", "root")]);
+        c.execute_batch(
+            r#"UPDATE components SET editable = '["t"]';
+               UPDATE objects SET props = '[]' WHERE id = 'a';
+               UPDATE objects SET props = '7' WHERE id = 'root';"#,
+        )
+        .unwrap();
+        let props = |id: &str| -> Value {
+            let raw: String = c
+                .query_row("SELECT props FROM objects WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            meclaw_core::serde_json::from_str(&raw).unwrap()
+        };
+        let (outcome, _) = apply(
+            &c,
+            &json!({"op": "object.update", "id": "a", "props": {"t": "new"}}),
+        );
+        assert!(!outcome.is_error(), "{outcome:?}");
+        assert_eq!(props("a"), json!({"t": "new"}));
+        let (reply, _) = set_editable(&c, "root", "t", &json!("new"));
+        assert!(matches!(reply, crate::web::cell::EventReply::Ok));
+        assert_eq!(props("root"), json!({"t": "new"}));
+    }
+
+    /// GH #1264: an update to an object no page shows renders nothing. Having no
+    /// parent was taken for being a page's root, so it rendered every route
+    /// whole. The root of a page still does.
+    #[test]
+    fn gh1264_an_update_to_an_unpaged_object_renders_nothing() {
+        let c = tree_conn(
+            &[("root", None), ("loose", None), ("leaf", Some("loose"))],
+            &[("/", "root")],
+        );
+        for id in ["loose", "leaf"] {
+            let (outcome, touched) = apply(
+                &c,
+                &json!({"op": "object.update", "id": id, "props": {"t": "new"}}),
+            );
+            assert!(!outcome.is_error(), "{outcome:?}");
+            assert_eq!(touched, Touched::default(), "{id}");
+        }
+        let (_, touched) = apply(
+            &c,
+            &json!({"op": "object.update", "id": "root", "props": {"t": "new"}}),
+        );
+        assert!(
+            touched.structural && touched.slots.is_empty(),
+            "{touched:?}"
+        );
+    }
+
+    /// GH #1264: a `query` by route answers the objects of EVERY page of the
+    /// cell, with the root of the route it named. That reads like a fault and
+    /// is used: `read_tree` in `display/compose` asks `/` once and mirrors the
+    /// pages of all outputs from the one answer. Cut to the route's subtree,
+    /// the display would create the other outputs' objects again, be refused,
+    /// and never delete the tree of an output that is gone.
+    #[test]
+    fn gh1264_a_route_query_answers_the_objects_of_every_page() {
+        let c = tree_conn(
+            &[
+                ("root", None),
+                ("a", Some("root")),
+                ("wall.root", None),
+                ("wall.a", Some("wall.root")),
+            ],
+            &[("/", "root"), ("/wall", "wall.root")],
+        );
+        for (route, root) in [("/", "root"), ("/wall", "wall.root")] {
+            let (outcome, _) = apply(&c, &json!({"op": "query", "route": route}));
+            assert!(!outcome.is_error(), "{outcome:?}");
+            assert_eq!(outcome.payload["root"], root);
+            let mut ids: Vec<&str> = outcome.payload["objects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| o["id"].as_str().unwrap())
+                .collect();
+            ids.sort();
+            assert_eq!(ids, vec!["a", "root", "wall.a", "wall.root"], "{route}");
+        }
     }
 }

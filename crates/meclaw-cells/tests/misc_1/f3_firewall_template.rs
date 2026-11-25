@@ -32,6 +32,12 @@ use std::time::Duration;
 #[allow(unused_imports)]
 use crate::support; // harness_fold: mod support;
 
+use meclaw_cells::store::StoreParams;
+use meclaw_cells::store::ddl::{apply_declared_schema_ddl, apply_index_ddl};
+use meclaw_cells::store::ops::dispatch;
+use meclaw_cells::store::query::catalog::Catalog;
+use meclaw_cells::store::query::parse::{parse_filters, parse_limit, parse_order_by};
+use meclaw_cells::store::query::sql::{render_tail, render_where};
 use meclaw_core::serde_json::{Map, Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use support::{boot, recv_bounded};
@@ -491,6 +497,94 @@ fn a_turn_inside_the_budget_books_its_arrival_and_passes() {
         "a pass names no rule"
     );
     assert_eq!(hop_str(&out[1], "rule_id"), "");
+}
+
+/// The shipped `./rules` store, opened the way the store factory opens it.
+fn rules_store() -> rusqlite::Connection {
+    let params = config_of("rules/config.json")["params"].clone();
+    let parsed = StoreParams::parse(&params).expect("the store params parse");
+    let conn = rusqlite::Connection::open_in_memory().expect("db");
+    apply_declared_schema_ddl(&conn, &parsed).expect("schema");
+    apply_index_ddl(&conn, &parsed.indexes).expect("indexes");
+    conn
+}
+
+/// The rate read the shipped screen emits for a turn stamped `at`.
+fn rate_read_at(at: &str) -> Value {
+    let mut doc = store_reply("rules", probe_body("hi"), json!([]), "42");
+    doc["header"]["context"]["fw_now"] = json!(at);
+    let out = emit(doc);
+    assert_reached_rate_phase(&out);
+    op_of(&out[0])
+}
+
+/// GH #1277: the rate window is read on every turn over a ledger nobody prunes,
+/// so it has to be an index search. Without the declared index the plan is
+/// `SCAN arrivals`, and the `LIMIT` does not cut it: the rows that match are
+/// the newest, which lie last. The statement is rendered by the store's own
+/// renderer from the op the shipped screen emits -- the plan of the real query.
+#[test]
+fn gh1277_the_rate_window_read_uses_an_index() {
+    let conn = rules_store();
+    let op = rate_read_at(T0);
+    let cat = Catalog::load(&conn, op["table"].as_str().expect("table")).expect("catalog");
+    let filters = parse_filters(op.get("where")).expect("filters");
+    let (clause, mut vals) = render_where(&filters, &cat).expect("where");
+    let order_by = parse_order_by(op.get("order_by")).expect("order_by");
+    let limit = parse_limit(op.get("limit")).expect("limit");
+    let tail = render_tail(&order_by, limit, &cat, &mut vals).expect("tail");
+    assert_eq!(op["columns"], json!(["recorded_at"]));
+    let stmt = format!("EXPLAIN QUERY PLAN SELECT \"recorded_at\" FROM \"arrivals\"{clause}{tail}");
+    let bind: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let plan = conn
+        .prepare(&stmt)
+        .expect("prepare")
+        .query_map(bind.as_slice(), |r| r.get::<_, String>(3))
+        .expect("plan")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("plan rows")
+        .join(" | ");
+    assert!(
+        plan.starts_with("SEARCH arrivals")
+            && plan.contains("arrivals_window (channel=? AND recorded_at>?)"),
+        "both dimensions of the window are read through the index: {plan}"
+    );
+}
+
+/// GH #1277: `strptime` accepts fields without their leading zero, and the
+/// window is a LEXICOGRAPHIC comparison of fixed-width stamps. A stamp taken
+/// over raw ("2026-8-…" sorts above every "2026-0…" and "2026-1…") counts in
+/// every later window of the year, so the bucket fills and never drains.
+#[test]
+fn gh1277_an_unpadded_stamp_is_normalised_before_it_is_compared() {
+    const RAW: &str = "2026-8-14T9:5:3.5Z";
+    const NORMAL: &str = "2026-08-14T09:05:03.500000Z";
+
+    let conn = rules_store();
+    let mut doc = store_reply("rate", probe_body("hi"), json!([]), "42");
+    doc["header"]["context"]["fw_now"] = json!(RAW);
+    let out = emit(doc);
+    assert_eq!(hop_str(&out[0], "phase"), "mark", "{out:?}");
+    let booked = dispatch(&conn, &op_of(&out[0])).expect("insert");
+    assert_eq!(booked.error_code, None, "{:?}", booked.error_text);
+
+    // The arrival is 55 minutes older than T0: outside a window of one minute.
+    let read = dispatch(&conn, &rate_read_at(T0)).expect("select");
+    assert_eq!(read.error_code, None, "{:?}", read.error_text);
+    assert_eq!(
+        read.payload,
+        json!([]),
+        "an arrival of an hour ago is not in the window of this minute"
+    );
+    // ... and inside the window of its own minute, so it is not lost either.
+    let read = dispatch(&conn, &rate_read_at("2026-08-14T09:05:30.000000Z")).expect("select");
+    assert_eq!(read.payload, json!([{"recorded_at": NORMAL}]));
+
+    // The turn carries the normal form from its first hop on.
+    let mut doc = inbound("hi", "42");
+    doc["header"]["hop"]["recorded_at"] = json!(RAW);
+    let out = emit(doc);
+    assert_eq!(hop_str(&out[0], "fw_now"), NORMAL);
 }
 
 // --------------------------------------------------------- the pass is a gate

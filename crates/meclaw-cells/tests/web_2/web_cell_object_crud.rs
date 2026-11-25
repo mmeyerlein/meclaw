@@ -20,6 +20,7 @@ use meclaw_cells::web::WebCellFactory;
 use meclaw_colony::{CellFactory, ContractView, SpawnedCellKind};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, Path};
+use meclaw_testing::deadline::{HANG, product_wait_ms, scaled, time_factor};
 use meclaw_testing::{surface_listener, wait_for_mount};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -83,13 +84,17 @@ struct Live {
 }
 
 async fn start(cell_dir: &std::path::Path) -> Live {
+    start_with(cell_dir, json!({ "mount": MOUNT })).await
+}
+
+async fn start_with(cell_dir: &std::path::Path, params: Value) -> Live {
     let surfaces = Arc::new(meclaw_colony::SurfaceRegistry::new());
     let (out_tx, out_rx) = mpsc::channel::<CellEmission>(64);
     let (inbox_tx, _inbox_rx) = mpsc::channel(8);
     let spawned = Arc::new(WebCellFactory::new(Arc::clone(&surfaces)))
         .spawn_cell(
             Path::new("/web"),
-            json!({ "mount": MOUNT }),
+            params,
             out_tx,
             cell_dir.to_path_buf(),
             ContractView::default(),
@@ -149,11 +154,16 @@ async fn call(live: &mut Live, calls: &[(&str, Value)]) -> Value {
         .build();
     live.mailbox.send(msg).await.expect("mailbox");
 
-    let emission = tokio::time::timeout(Duration::from_secs(30), live.out_rx.recv())
-        .await
-        .expect("the cell must answer a tool call")
-        .expect("an emission");
-    emission.content
+    loop {
+        let emission = tokio::time::timeout(scaled(HANG), live.out_rx.recv())
+            .await
+            .expect("the cell must answer a tool call")
+            .expect("an emission");
+        // The end mark of the message before: no content, no answer.
+        if !emission.content.is_null() {
+            return emission.content;
+        }
+    }
 }
 
 type Ws =
@@ -516,6 +526,237 @@ async fn a_root_update_republishes_the_page_and_pushes_every_viewer() {
         body.contains("<main>"),
         "the page still renders after a root republish: {body:.200}"
     );
+
+    live.join.abort();
+}
+
+/// The view every stuck statement below reads: more rows than any machine counts
+/// inside the cell's timeout, and still an end, so a cell that does not
+/// interrupt it fails the test instead of holding the run.
+const ENDLESS: &str = "CREATE VIEW endless AS
+     WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 100000000)
+     SELECT i FROM n;";
+
+/// The timeout of a call that has to land a statement before the stuck one is
+/// cut: seconds for the statement, far below what [`ENDLESS`] takes.
+fn lands_then_cut_ms() -> u64 {
+    (3_000.0 * time_factor()) as u64
+}
+
+/// The timeout of a call that only has to be cut.
+const CUT_MS: u64 = 300;
+
+/// Change the running cell's operation timeout; it holds from the next call on.
+async fn set_timeout(live: &Live, ms: u64) {
+    let msg = MessageBuilder::new(Path::new("/web"))
+        .body(Body::Inline(
+            json!({ "params": { "external_timeout_ms": ms } }),
+        ))
+        .reply_to(Path::new("/caller"))
+        .build();
+    live.mailbox.send(msg).await.expect("mailbox");
+}
+
+/// Change the cell's database beside the running cell.
+fn rig(cell_dir: &std::path::Path, sql: &str) {
+    let c = rusqlite::Connection::open(cell_dir.join("cell.db")).expect("open cell.db");
+    c.busy_timeout(scaled(HANG)).expect("busy");
+    c.execute_batch(sql).expect("rig");
+}
+
+async fn served(live: &Live) -> String {
+    reqwest::get(format!("http://127.0.0.1:{}/{MOUNT}/", live.port))
+        .await
+        .expect("get")
+        .text()
+        .await
+        .expect("text")
+}
+
+/// Give the page root a prop that shows, so a root update can be seen.
+async fn root_with_a_prop(live: &mut Live) {
+    let done = call(
+        live,
+        &[(
+            "d",
+            json!({"op": "component.define", "name": "stack",
+                   "template": "<main data-t=\"{{t}}\">{{children}}</main>",
+                   "prop_schema": {"t": "text"}}),
+        )],
+    )
+    .await;
+    assert_eq!(done["header"]["rows_affected"], json!(1), "{done}");
+}
+
+/// GH #1264: a database call past `external_timeout_ms` is answered, not waited
+/// for. The bundle ran on an unbounded call: nothing but the substrate's
+/// backstop ended it. Now its transaction is gone with the interrupt: every
+/// leg that wrote or had not run answers `query_timeout`, nothing is stored,
+/// a read that was done keeps its payload, and the cell takes the next call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1264_a_bundle_past_the_query_timeout_is_answered_not_hung() {
+    let td = TempDir::new().expect("td");
+    let cell_dir = td.path().join("web");
+    std::fs::create_dir_all(&cell_dir).expect("dir");
+    seed(&cell_dir);
+    let mut live = start_with(
+        &cell_dir,
+        json!({ "mount": MOUNT, "external_timeout_ms": product_wait_ms() }),
+    )
+    .await;
+    rig(
+        &cell_dir,
+        &format!(
+            "{ENDLESS} CREATE TRIGGER stuck AFTER UPDATE ON objects
+               WHEN NEW.props LIKE '%stuck%'
+               BEGIN SELECT count(*) FROM endless; END;"
+        ),
+    );
+
+    let update = |body: &str| json!({"op": "object.update", "id": "a", "props": {"body": body}});
+    set_timeout(&live, lands_then_cut_ms()).await;
+    let reply = call(
+        &mut live,
+        &[
+            ("r", json!({"op": "query", "id": "a"})),
+            ("w", update("one")),
+            ("s", update("stuck")),
+            ("l", update("late")),
+        ],
+    )
+    .await;
+    let results = reply["results"].as_array().expect("results");
+    assert_eq!(results.len(), 4, "{reply}");
+    assert!(results[0].get("error_code").is_none(), "{reply}");
+    for (leg, op) in results.iter().zip(["r", "w", "s", "l"]).skip(1) {
+        assert_eq!(leg["tool_call_id"], json!(op), "{reply}");
+        assert_eq!(leg["error_code"], json!("query_timeout"), "{reply}");
+        assert_eq!(leg["rows_affected"], json!(0), "{reply}");
+        assert_eq!(leg["operation"], json!("object.update"), "{reply}");
+    }
+    assert_eq!(reply["header"]["bundle_errors"], json!(3), "{reply}");
+
+    set_timeout(&live, CUT_MS).await;
+    let single = call(&mut live, &[("s", update("stuck"))]).await;
+    assert_eq!(
+        single["header"]["error_code"],
+        json!("query_timeout"),
+        "{single}"
+    );
+
+    set_timeout(&live, product_wait_ms()).await;
+    let read = call(&mut live, &[("r", json!({"op": "query", "id": "a"}))]).await;
+    let text = read["messages"][0]["text"].as_str().expect("text");
+    assert!(text.contains("first"), "nothing was stored: {read}");
+    let next = call(&mut live, &[("n", update("next"))]).await;
+    assert_eq!(next["header"]["rows_affected"], json!(1), "{next}");
+    assert!(served(&live).await.contains("<p>next</p>"));
+
+    live.join.abort();
+}
+
+/// GH #1264: a re-render that fails as a whole leaves its write unpublished, and
+/// the next write publishes it too. It used to patch its own slot into the old
+/// pages, so the lost root change stayed invisible until some later broadcast.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1264_a_failed_republish_is_caught_up_by_the_next_write() {
+    let td = TempDir::new().expect("td");
+    let cell_dir = td.path().join("web");
+    std::fs::create_dir_all(&cell_dir).expect("dir");
+    seed(&cell_dir);
+    let mut live = start(&cell_dir).await;
+    root_with_a_prop(&mut live).await;
+
+    rig(&cell_dir, "ALTER TABLE pages RENAME TO pages_away;");
+    let root = call(
+        &mut live,
+        &[(
+            "u",
+            json!({"op": "object.update", "id": "root", "props": {"t": "dusk"}}),
+        )],
+    )
+    .await;
+    assert_eq!(root["header"]["rows_affected"], json!(1), "{root}");
+    rig(&cell_dir, "ALTER TABLE pages_away RENAME TO pages;");
+    assert!(
+        !served(&live).await.contains("dusk"),
+        "the rig did not make the re-render fail"
+    );
+
+    let next = call(
+        &mut live,
+        &[(
+            "n",
+            json!({"op": "object.update", "id": "a", "props": {"body": "next"}}),
+        )],
+    )
+    .await;
+    assert_eq!(next["header"]["rows_affected"], json!(1), "{next}");
+    let page = served(&live).await;
+    assert!(page.contains("<p>next</p>"), "{page}");
+    assert!(page.contains(r#"data-t="dusk""#), "{page}");
+
+    live.join.abort();
+}
+
+/// GH #1264: a re-render past `external_timeout_ms` is given up, keeps the pages
+/// last published (none is dropped half-rendered), and is caught up the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1264_a_republish_past_the_query_timeout_is_given_up_and_caught_up() {
+    let td = TempDir::new().expect("td");
+    let cell_dir = td.path().join("web");
+    std::fs::create_dir_all(&cell_dir).expect("dir");
+    seed(&cell_dir);
+    let mut live = start_with(
+        &cell_dir,
+        json!({ "mount": MOUNT, "external_timeout_ms": product_wait_ms() }),
+    )
+    .await;
+    root_with_a_prop(&mut live).await;
+
+    // Only the template is stuck, which an update does not read.
+    rig(
+        &cell_dir,
+        &format!(
+            "{ENDLESS} ALTER TABLE components RENAME TO components_away;
+             CREATE VIEW components AS
+               SELECT name, prop_schema, editable, layer,
+                      CASE WHEN (SELECT count(*) FROM endless) > 0 THEN template END AS template
+                 FROM components_away;"
+        ),
+    );
+    // The update has to land under the timeout that cuts its re-render.
+    set_timeout(&live, lands_then_cut_ms()).await;
+    let root = call(
+        &mut live,
+        &[(
+            "u",
+            json!({"op": "object.update", "id": "root", "props": {"t": "dusk"}}),
+        )],
+    )
+    .await;
+    assert_eq!(root["header"]["rows_affected"], json!(1), "{root}");
+    let page = served(&live).await;
+    assert!(page.contains("<p>first</p>"), "the old page stays: {page}");
+    assert!(!page.contains("dusk"), "{page}");
+
+    rig(
+        &cell_dir,
+        "DROP VIEW components; ALTER TABLE components_away RENAME TO components;",
+    );
+    set_timeout(&live, product_wait_ms()).await;
+    let next = call(
+        &mut live,
+        &[(
+            "n",
+            json!({"op": "object.update", "id": "a", "props": {"body": "next"}}),
+        )],
+    )
+    .await;
+    assert_eq!(next["header"]["rows_affected"], json!(1), "{next}");
+    let page = served(&live).await;
+    assert!(page.contains("<p>next</p>"), "{page}");
+    assert!(page.contains(r#"data-t="dusk""#), "{page}");
 
     live.join.abort();
 }

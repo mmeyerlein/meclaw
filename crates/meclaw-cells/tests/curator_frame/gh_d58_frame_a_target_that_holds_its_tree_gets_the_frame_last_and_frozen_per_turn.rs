@@ -42,10 +42,9 @@ fn listed_frame(h: &Hive, call: &Msg) -> Option<String> {
 }
 
 /// The model cells of the shipped compositions a curator cuts for.
-const SHIPPED_TARGETS: [&str; 7] = [
+const SHIPPED_TARGETS: [&str; 6] = [
     "talky/brain",
     "talky/quick",
-    "talky/quick_spec",
     "talky/quick_bridge",
     "cogny/brain",
     "simple-agent/brain",

@@ -254,15 +254,13 @@ fn build_tree(td: &tempfile::TempDir, base_url: &str) {
             v["params"]["model"] = json!("quick-mock");
         });
     }
-    // #1398: the quick voice's siblings, on the same closed port.
-    for sib in ["quick_spec", "quick_bridge"] {
-        let path = QUICK.replace("/quick/", &format!("/{sib}/"));
-        if root.join(&path).is_file() {
-            patch(root, &path, |v| {
-                v["params"]["base_url"] = json!(CLOSED_PORT);
-                v["params"]["model"] = json!("quick-mock");
-            });
-        }
+    // #1398: the quick voice's sibling, on the same closed port.
+    let path = QUICK.replace("/quick/", "/quick_bridge/");
+    if root.join(&path).is_file() {
+        patch(root, &path, |v| {
+            v["params"]["base_url"] = json!(CLOSED_PORT);
+            v["params"]["model"] = json!("quick-mock");
+        });
     }
 }
 

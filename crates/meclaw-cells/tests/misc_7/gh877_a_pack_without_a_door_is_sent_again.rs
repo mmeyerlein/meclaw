@@ -2230,15 +2230,17 @@ fn the_curator_summarizers_are_announced_with_their_need() {
             entry["requirement"], need,
             "and with a byte copy of its need, which the registry translates: {entry}"
         );
-        let rel = format!("./acme/members/alex/assistants/{NAME}/{rim}");
+        // GH #1616 (R-80-5): the push ends on the level's own `in_model` door,
+        // which hands it to the rim; the rim's door hands it to the curator.
+        let rel = format!("./acme/members/alex/assistants/{NAME}");
         assert!(
             edges.iter().any(|e| e["from"] == "."
                 && e["to"] == rel.as_str()
                 && e["condition"]
                     .as_str()
                     .is_some_and(|c| c.contains(&format!("hop.subscriber == '{path}'")))),
-            "the registry's push to {path} rides onto the rim it stands behind ({rel}), \
-             whose `in_model` door hands it to the curator: {edges:?}"
+            "the registry's push to {path} rides onto the level's door ({rel}), \
+             which hands it to the rim whose `in_model` door hands it to the curator: {edges:?}"
         );
     }
 }

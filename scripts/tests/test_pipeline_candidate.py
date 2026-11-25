@@ -1,7 +1,7 @@
 """Tests for `pipeline.py candidate <rev>` (`strand.sh candidate`, GH #1389).
 
 A candidate is one commit built on every named lane, each lane under its own
-lease `<wave>/candidate:<n>` taken through the normal admission, in its own
+lease `<wave>/candidate:<rev12>-<n>` taken through the normal admission, in its own
 target (`<root>/kb-target`, `--locked`); the sha256 of the binary must be the
 same on all of them (OR-LV-47: build02 built differently for weeks from a stale
 warm target, unseen because only one lane built). The binary then comes home
@@ -12,6 +12,7 @@ a throw-away store armed on the four lane names, the lane tree probe of a
 release answers "nothing lives there" (`schedule._lane_tree_probe`).
 """
 import dataclasses
+import fcntl
 import hashlib
 import io
 import json
@@ -21,11 +22,15 @@ import re
 import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 
 from scripts.pipeline import candidate, schedule
-from scripts.tests import store_isolation
+from scripts.tests import kit_time, store_isolation
 
 WAVE = "welle-c-2026-11-02"
 LANES = ("build01", "build02", "build03", "build04")
@@ -60,6 +65,8 @@ class FakeLanes:
         self.fetched = fetched
         self.calls = []
         self.fetches = []
+        self.pushes = []
+        self.pruned = []
         self.last = {}
 
     def find_lane(self, name, path=None):
@@ -75,6 +82,13 @@ class FakeLanes:
         data = queue.pop(0) if len(queue) > 1 else queue[0]
         self.last[lane.name] = data
         return {"sha256": sha(data), "cargo": "cargo 1.95.0", "version": "meclaw 9.9.9"}
+
+    def push_candidate(self, lane, path):
+        self.pushes.append((lane.name, os.path.basename(path)))
+
+    def prune_candidates(self, lane, keep, days):
+        self.pruned.append((lane.name, sorted(keep), days))
+        return []
 
     def fetch_candidate(self, lane, rev, dest_dir):
         self.fetches.append(lane.name)
@@ -113,9 +127,9 @@ class CandidateCase(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def candidate(self, fake, lanes=LANES, wait=False):
+    def candidate(self, fake, lanes=LANES, wait=False, rev=None):
         out = io.StringIO()
-        code = candidate.run(self.rev, repo=str(self.repo), lanes=list(lanes), wave=WAVE,
+        code = candidate.run(rev or self.rev, repo=str(self.repo), lanes=list(lanes), wave=WAVE,
                              receipts_dir=str(self.receipts), wait=wait, env=self.env,
                              out=out, lanes_mod=fake, bin_dir=str(self.bin_dir))
         return code, out.getvalue()
@@ -220,6 +234,343 @@ class CandidateCase(unittest.TestCase):
         self.assertEqual(6, code, out)
         self.assertIn("--version", out)
         self.assertFalse((self.bin_dir / ("meclaw-%s" % self.rev[:12])).exists())
+
+
+class SideBySideCase(CandidateCase):
+    """w2 candlease (#1638, B17 1 and 3): four lanes taken one by one stood
+    leased and empty until the last one was free, and two runs of one wave
+    shared the lease names `<wave>/candidate:<n>` and the machine's one lock."""
+
+    def second(self):
+        """Another commit of the repository (a build input moves: no reuse)."""
+        path = self.repo / "crates" / "x.rs"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n")
+        subprocess.run(GIT + ["-C", str(self.repo), "add", "-A"], check=True)
+        subprocess.run(GIT + ["-C", str(self.repo), "commit", "-q", "-m", "x"], check=True)
+        return subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def started(self, fake, **kw):
+        """`candidate` in a thread, its first build held: (thread, result, go)."""
+        building, go, got = threading.Event(), threading.Event(), []
+        real = fake.build_candidate
+
+        def build(lane, repo_root, rev, fresh=False):
+            building.set()
+            go.wait(kit_time.HANG)
+            return real(lane, repo_root, rev, fresh=fresh)
+        fake.build_candidate = build
+        th = threading.Thread(target=lambda: got.append(self.candidate(fake, **kw)), daemon=True)
+        self.addCleanup(th.join, kit_time.HANG)
+        self.addCleanup(go.set)
+        th.start()
+        self.assertTrue(building.wait(kit_time.HANG), "HANG: the first run never built")
+        return th, got, go
+
+    def test_a_waiting_candidate_keeps_no_lane_it_has_built(self):
+        # the lane build04 comes only once the other three went back: were one
+        # kept until the verdict, the wait for build04 would never see them free
+        back = threading.Semaphore(0)
+        take, release = schedule.candidate_take, schedule.candidate_release
+        got_back = []
+
+        def released(*args, **kw):
+            res = release(*args, **kw)
+            back.release()
+            return res
+
+        def taken(wave_name, *args, **kw):
+            if "build04" in args:
+                got_back.extend(back.acquire(timeout=kit_time.HANG) for _ in range(3))
+                if not all(got_back):
+                    return 3, "", "build01-03 stay leased while build04 is waited for"
+            return take(wave_name, *args, **kw)
+        fake = FakeLanes()
+        with mock.patch.object(schedule, "candidate_release", side_effect=released), \
+                mock.patch.object(schedule, "candidate_take", side_effect=taken):
+            code, out = self.candidate(fake, wait=True)
+        self.assertEqual(0, code, out)
+        self.assertEqual([True] * 3, got_back)
+        self.assertIn("EQUAL 4/4", out)
+        self.assertEqual([], self.held())
+
+    def test_the_queue_place_of_an_ended_candidate_frees_the_lane(self):
+        """w2 batchgolden (#1639), 24.11.: `w2/candidate:2` -- a candidate with
+        `--wait-admission` whose process had ended -- held build03 as an offer
+        from 16:05 on. The place of a candidate that ended goes with the next
+        take, also within the TTL."""
+        take = ["take", "--strand", "welle-c/x", "--lane", "build03"]
+        code, _, err = schedule.run_lanes(take, env=self.env, cwd=str(self.repo))
+        self.assertEqual(0, code, err)
+        prog = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
+                "from scripts.pipeline import schedule; "
+                "schedule.select.select = lambda *a: sys.exit(9); "   # blocked here: it ends
+                "schedule.candidate_take('welle-c', sys.argv[2], 1, 'build03', "
+                "env=json.loads(sys.argv[3]), cwd=sys.argv[4], wait=True)")
+        res = subprocess.run(
+            [sys.executable, "-c", prog, str(pathlib.Path(__file__).resolve().parents[2]),
+             self.rev[:12], json.dumps(self.env), str(self.repo)],
+            capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(9, res.returncode, res.stderr)
+        self.assertEqual([schedule.candidate_key("welle-c", self.rev[:12], 1)], self.held())
+        code, _, err = schedule.run_lanes(["release", "--strand", "welle-c/x"], env=self.env,
+                                          cwd=str(self.repo))
+        self.assertEqual(0, code, err)
+        take[2] = "welle-c/y"
+        code, _, err = schedule.run_lanes(take, env=self.env, cwd=str(self.repo))
+        self.assertEqual(0, code, err)
+        self.assertEqual([], self.held())
+
+    def test_a_failed_build_gives_its_lane_back_before_the_others_end(self):
+        fake = FakeLanes(broken={"build02"})
+        back = threading.Event()
+        release, real = schedule.candidate_release, fake.build_candidate
+        seen = []
+
+        def released(*args, **kw):
+            res = release(*args, **kw)
+            back.set()
+            return res
+
+        def build(lane, repo_root, rev, fresh=False):
+            if lane.name != "build02":
+                seen.append(back.wait(kit_time.HANG))
+            return real(lane, repo_root, rev, fresh=fresh)
+        fake.build_candidate = build
+        with mock.patch.object(schedule, "candidate_release", side_effect=released):
+            code, out = self.candidate(fake, lanes=("build01", "build02"))
+        self.assertEqual(5, code, out)
+        self.assertEqual([True], seen)
+        self.assertEqual([], self.held())
+
+    def test_the_rebuild_of_a_deviating_lane_is_leased_again(self):
+        fake = FakeLanes(builds={"build03": [OTHER, BINARY]})
+        real, held = fake.build_candidate, []
+
+        def build(lane, repo_root, rev, fresh=False):
+            if fresh:
+                held.extend(self.held())
+            return real(lane, repo_root, rev, fresh=fresh)
+        fake.build_candidate = build
+        code, out = self.candidate(fake, wait=True)
+        self.assertEqual(0, code, out)
+        self.assertEqual([schedule.candidate_key("welle-c", self.rev[:12], 3)], held)
+        self.assertEqual([], self.held())
+
+    def test_a_rebuild_whose_lane_is_gone_keeps_the_deviation_in_the_receipt(self):
+        # without --wait-admission the lane of a deviating build may be leased
+        # on before its rebuild: exit 3, and the finding "stale target" stays
+        release = schedule.candidate_release
+        others = []
+
+        def released(wave_name, r12, n, **kw):
+            res = release(wave_name, r12, n, **kw)
+            if n == 3:
+                others.append(schedule.run_lanes(["take", "--strand", "other/s", "--lane", "build03"],
+                                                 env=self.env, cwd=str(self.repo)))
+            return res
+        fake = FakeLanes(builds={"build02": [OTHER, BINARY], "build03": [OTHER]})
+        with mock.patch.object(schedule, "candidate_release", side_effect=released):
+            code, out = self.candidate(fake)
+        self.assertEqual(3, code, out)
+        self.assertEqual([0], [c for c, _, _ in others], others)
+        self.assertIn(("build02", True), fake.calls)
+        self.assertNotIn(("build03", True), fake.calls)
+        rec = self.receipt()
+        self.assertEqual("queued", rec["verdict"])
+        # build02 built equal from its empty target, build03 still differs
+        self.assertEqual((["build03"], sha(BINARY)), (rec.get("deviating"), rec.get("reference")))
+        self.assertEqual([], self.held())
+
+    def test_two_revs_of_one_wave_build_side_by_side(self):
+        new = self.second()
+        th, got, go = self.started(FakeLanes(), lanes=("build01",))
+        code, out = self.candidate(FakeLanes(), lanes=("build02",), rev=new)
+        self.assertEqual(0, code, out)
+        self.assertEqual([schedule.candidate_key("welle-c", self.rev[:12], 1)], self.held())
+        go.set()
+        th.join(kit_time.HANG)
+        self.assertEqual([0], [c for c, _ in got], got)
+        self.assertEqual([], self.held())
+
+    def test_a_second_run_of_one_rev_waits(self):
+        th, got, go = self.started(FakeLanes(), lanes=("build01",))
+        # without --wait-admission: exit 3 as before
+        code, out = self.candidate(FakeLanes(), lanes=("build02",))
+        self.assertEqual(3, code, out)
+        # with it: queued behind the first, then its own verdict
+        fake, second, order, met = FakeLanes(), [], [], []
+        at_lock = threading.Event()
+        flock, finish, real = candidate.fcntl.flock, candidate._Run.finish, fake.build_candidate
+
+        def lock(fh, flags):
+            if flags & fcntl.LOCK_NB or not str(getattr(fh, "name", "")).startswith(
+                    self.env["MECLAW_CANDIDATE_LOCK"]):
+                return flock(fh, flags)
+            # the second run's blocking lock: is it held when the run comes to it?
+            try:
+                flock(fh, flags | fcntl.LOCK_NB)
+                met.append("free")
+            except BlockingIOError:
+                met.append("held")
+            at_lock.set()
+            return flock(fh, flags)
+
+        def finished(run, verdict, *args, **kw):
+            order.append((run.lanes[0], verdict))
+            return finish(run, verdict, *args, **kw)
+
+        def build(lane, repo_root, rev, fresh=False):
+            order.append((lane.name, "build"))
+            return real(lane, repo_root, rev, fresh=fresh)
+        fake.build_candidate = build
+        with mock.patch.object(candidate.fcntl, "flock", side_effect=lock), \
+                mock.patch.object(candidate._Run, "finish", finished):
+            th2 = threading.Thread(target=lambda: second.append(
+                self.candidate(fake, lanes=("build02",), wait=True)), daemon=True)
+            self.addCleanup(th2.join, kit_time.HANG)
+            th2.start()
+            self.assertTrue(at_lock.wait(kit_time.HANG), "HANG: the second run never came to the lock")
+            # the first run is still in its build: the lock is its own
+            self.assertEqual(["held"], met)
+            go.set()
+            th.join(kit_time.HANG)
+            th2.join(kit_time.HANG)
+        self.assertEqual([0], [c for c, _ in got], got)
+        self.assertEqual([0], [c for c, _ in second], second)
+        # the second builds only when the first has its verdict
+        self.assertEqual([("build01", "EQUAL"), ("build02", "build"), ("build02", "EQUAL")], order)
+        self.assertEqual([], self.held())
+
+    def test_the_lease_names_its_rev_and_an_old_name_still_reads(self):
+        self.assertEqual("w2/candidate:%s-1" % ("a" * 12),
+                         schedule.candidate_key("w2", "a" * 12, 1))
+        # an entry an older kit took: `who` names it, `release` frees it
+        for verb in (["take", "--lane", "build01"], ["release"]):
+            argv = verb[:1] + ["--strand", "welle-c/candidate", "--holder", "1"] + verb[1:]
+            code, out, err = schedule.run_lanes(argv, env=self.env, cwd=str(self.repo))
+            self.assertEqual(0, code, out + err)
+            if verb[0] == "take":
+                _, out, err = schedule.run_lanes(["who"], env=self.env, cwd=str(self.repo))
+                self.assertIn("welle-c/candidate:1", out + err)
+                code, out = self.candidate(FakeLanes(), lanes=("build02",))
+                self.assertEqual(0, code, out)
+                self.assertEqual(["welle-c/candidate:1"], self.held())
+        self.assertEqual([], self.held())
+        code, out = self.candidate(FakeLanes())
+        self.assertEqual([schedule.candidate_key("welle-c", self.rev[:12], n) for n in (1, 2, 3, 4)],
+                         self.receipt()["leases"], out)
+
+
+class ReuseCase(CandidateCase):
+    """w1 kandidat (#1606, OR-54s-62): a candidate whose `core_sha` differs
+    from `<rev>` in no build input (`candidate.BUILD_INPUTS`) is not built
+    again -- the same binary goes under the new name, `reused_from` says whence."""
+
+    def commit(self, path, text="x\n"):
+        full = self.repo / path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(text)
+        subprocess.run(GIT + ["-C", str(self.repo), "add", "-A"], check=True)
+        subprocess.run(GIT + ["-C", str(self.repo), "commit", "-q", "-m", path], check=True)
+        return subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def old_candidate(self):
+        self.bin_dir.mkdir(parents=True, exist_ok=True)
+        path = self.bin_dir / ("meclaw-%s" % self.rev[:12])
+        path.write_bytes(BINARY)
+        path.chmod(0o755)
+        (self.bin_dir / ("meclaw-%s.origin.json" % self.rev[:12])).write_text(json.dumps(
+            {"core_sha": self.rev, "sha256": sha(BINARY), "lane": "build01", "cargo": "cargo 1.95.0",
+             "version": "meclaw 9.9.9"}, indent=1) + "\n")
+
+    def test_no_moved_build_input_reuses_the_candidate(self):
+        self.old_candidate()
+        new = self.commit("docs/x.md")
+        fake = FakeLanes()
+        code, out = self.candidate(fake, rev=new)
+        self.assertEqual(0, code, out)
+        self.assertEqual([], fake.calls)  # no build, no lane queue
+        self.assertEqual([], self.held())
+        dest = self.bin_dir / ("meclaw-%s" % new[:12])
+        self.assertEqual(BINARY, dest.read_bytes())
+        origin = json.loads((self.bin_dir / ("meclaw-%s.origin.json" % new[:12])).read_text())
+        self.assertEqual((new, self.rev, sha(BINARY)),
+                         (origin["core_sha"], origin["reused_from"], origin["sha256"]))
+        self.assertEqual(sorted((ln, "meclaw-%s" % new[:12]) for ln in LANES), sorted(fake.pushes))
+        self.assertRegex(out, r"(?m)^CANDIDATE %s REUSED from %s" % (new[:12], self.rev[:12]))
+        with open(self.receipts / ("candidate-%s.json" % new[:12]), encoding="utf-8") as fh:
+            rec = json.load(fh)
+        self.assertEqual(("REUSED", self.rev, 0), (rec["verdict"], rec["reused_from"], rec["exit"]))
+
+    def test_a_moved_file_below_crates_builds(self):
+        self.old_candidate()
+        new = self.commit("crates/meclaw/src/x.rs")
+        fake = FakeLanes()
+        code, out = self.candidate(fake, rev=new)
+        self.assertEqual(0, code, out)
+        self.assertEqual(sorted(LANES), sorted(ln for ln, _ in fake.calls))
+        self.assertNotIn("reused_from", json.loads(
+            (self.bin_dir / ("meclaw-%s.origin.json" % new[:12])).read_text()
+            if (self.bin_dir / ("meclaw-%s.origin.json" % new[:12])).exists() else "{}"))
+        self.assertEqual([], fake.pushes)
+
+
+# A fixed instant: the age of a candidate is data, never the machine's clock (TV-K1).
+PRUNE_NOW = 1_800_000_000
+
+
+class PruneCase(CandidateCase):
+    """`strand.sh candidate --prune`: a candidate no set of the three
+    repositories names and older than 14 days goes, here and on the lanes."""
+
+    def put(self, name, days):
+        self.bin_dir.mkdir(parents=True, exist_ok=True)
+        for n in (name, name + ".origin.json"):
+            p = self.bin_dir / n
+            p.write_text("x\n")
+            stamp = PRUNE_NOW - days * 86400
+            os.utime(p, (stamp, stamp))
+
+    def test_prune_keeps_named_and_young_candidates(self):
+        named, legacy = "b" * 40, "c" * 40
+        soul = self.tmp / "soul2me"
+        (soul / "sets").mkdir(parents=True)
+        (soul / "sets" / "0.73.json").write_text(json.dumps(
+            {"meclaw_core": legacy[:9] + " (x)", "meclaw_candidate": {"rev": named, "sha256": "0" * 64}}))
+        orga = self.tmp / "orga-hive"
+        orga.mkdir()  # no sets/ directory: names nothing
+        self.put("meclaw-" + "a" * 12, 20)
+        self.put("meclaw-" + named[:12], 20)
+        self.put("meclaw-" + legacy[:12], 20)
+        self.put("meclaw-" + "d" * 12, 2)
+        self.put("meclaw-0.86.1-asset", 20)
+        fake = FakeLanes()
+        out = io.StringIO()
+        code = candidate.prune(repo=str(self.repo), set_roots=[str(self.repo), str(soul), str(orga)],
+                               lanes=["build01", "build02"], bin_dir=str(self.bin_dir), out=out,
+                               lanes_mod=fake, now=PRUNE_NOW)
+        self.assertEqual(0, code, out.getvalue())
+        left = sorted(os.listdir(self.bin_dir))
+        self.assertNotIn("meclaw-" + "a" * 12, left)
+        self.assertNotIn("meclaw-%s.origin.json" % ("a" * 12), left)
+        for keep in (named[:12], legacy[:12], "d" * 12, "0.86.1-asset"):
+            self.assertIn("meclaw-" + keep, left)
+        self.assertEqual(["build01", "build02"], [ln for ln, _, _ in fake.pruned])
+        self.assertIn(named[:12], fake.pruned[0][1])
+        self.assertIn("PRUNED %s" % ("a" * 12), out.getvalue())
+
+    def test_prune_refuses_without_a_set_repository(self):
+        self.put("meclaw-" + "a" * 12, 20)
+        fake = FakeLanes()
+        out = io.StringIO()
+        code = candidate.prune(repo=str(self.repo), set_roots=[str(self.tmp / "gone")],
+                               lanes=["build01"], bin_dir=str(self.bin_dir), out=out, lanes_mod=fake)
+        self.assertEqual(2, code)
+        self.assertIn("meclaw-" + "a" * 12, os.listdir(self.bin_dir))
+        self.assertEqual([], fake.pruned)
 
 
 def setUpModule():

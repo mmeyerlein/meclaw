@@ -42,7 +42,7 @@ fn need_lead() {
 }
 
 /// The lanes between the curator's policy and the lead (GH #1474).
-const TO_LEAD: [&str; 3] = ["lead_ask", "lead_spec", "lead_note"];
+const TO_LEAD: [&str; 2] = ["lead_ask", "lead_note"];
 
 #[test]
 fn the_lead_talks_only_to_the_policy_and_its_own_store() {
@@ -64,7 +64,7 @@ fn the_lead_talks_only_to_the_policy_and_its_own_store() {
     // GH #1474: inside its own hive the lead's only neighbours are the rim
     // and its store, and only the lead reaches the store.
     let mut lead_peers = std::collections::BTreeSet::new();
-    for (from, to, _) in edges(&format!("{LEAD_HIVE}/config.json")) {
+    for (from, to, condition) in edges(&format!("{LEAD_HIVE}/config.json")) {
         for cell in [&from, &to] {
             assert!(
                 [".", "./lead", "./state"].contains(&cell.as_str()),
@@ -77,7 +77,12 @@ fn the_lead_talks_only_to_the_policy_and_its_own_store() {
         if to == "./lead" {
             lead_peers.insert(from.clone());
         }
-        if from == "./state" || to == "./state" {
+        // GH #1353: the params door of the sealed hive -- a params-only update
+        // for the store by its path, and the store's answer out of the rim. No
+        // row of the store moves on either.
+        let params_door = (from == "." && condition.contains("hop.route == 'in_params'"))
+            || (to == "." && condition.starts_with("has(hop.params_answer) && "));
+        if (from == "./state" || to == "./state") && !params_door {
             let other = if from == "./state" { &to } else { &from };
             assert_eq!(
                 other, "./lead",
@@ -115,8 +120,11 @@ fn the_lead_talks_only_to_the_policy_and_its_own_store() {
     }
     // In the composite that wires it, the lead hive's only neighbour is the
     // curator.
-    for (from, to, _) in edges(&format!("{LEAD_COMPOSITE}/config.json")) {
-        if from == LEAD_AT || to == LEAD_AT {
+    for (from, to, condition) in edges(&format!("{LEAD_COMPOSITE}/config.json")) {
+        // GH #1353: the params door into the sealed lead hive and its answer.
+        let params_door = (from == "." && condition.contains("hop.route == 'in_params'"))
+            || (to == "." && condition.contains("hop.route == 'params_applied'"));
+        if (from == LEAD_AT || to == LEAD_AT) && !params_door {
             let other = if from == LEAD_AT { &to } else { &from };
             assert_eq!(
                 other, CURATOR_AT,
@@ -154,10 +162,6 @@ fn the_switch_is_gone_from_the_policy() {
         "def routes_of(",
         "PATH_ROUTES = ",
         "RECALL_TO_FALLBACK = ",
-        "def spec_key(",
-        "def spec_verdict(",
-        "def spec_doomed(",
-        "def spec_settle(",
         "def without_ask(",
         "def early_interrupt(",
     ] {
@@ -170,7 +174,15 @@ fn the_switch_is_gone_from_the_policy() {
     // D58 lead (OR-d58-2.lead.7): `spec_scope` fed only the verdict field
     // `spec_allow`, which had no reader; both fell with the move, so neither
     // the policy nor the lead holds it -- still no second path.
-    for gone in ["def spec_scope(", "spec_allow"] {
+    // GH #1584: the speculation is gone, its helpers with it.
+    for gone in [
+        "def spec_scope(",
+        "spec_allow",
+        "def spec_key(",
+        "def spec_verdict(",
+        "def spec_doomed(",
+        "def spec_settle(",
+    ] {
         assert!(!policy.contains(gone), "the policy holds `{gone}`");
         assert!(!lead.contains(gone), "the lead still holds `{gone}`");
     }

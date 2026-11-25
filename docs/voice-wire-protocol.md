@@ -137,9 +137,9 @@ The cell cuts the outbound frames, and the provider does not. `hello` declares
 `audio_out_frame_ms`, 20 by default, and every binary frame the cell sends
 carries at most that much audio: a synthesis chunk is split before it goes out,
 so the number caps a frame instead of fixing its size. A frame is either exactly
-that long or the remainder of a provider chunk, never longer; an even remainder
-leaves at once instead of waiting for the next chunk, and the split never runs
-through a sample. `0` means the cell sends each chunk exactly as its provider
+that long or, as the last one of its audio, shorter, never longer; a remainder
+that fills no frame waits for the next chunk and leaves at the end of the
+spoken section, and the split never runs through a sample. `0` means the cell sends each chunk exactly as its provider
 produced it, and a client that cares about its worst-case frame size should read
 the number instead of measuring it. The reason it exists is a telephony edge:
 FreeSWITCH's `mod_audio_stream` 1.0.3 aborts the call on a frame longer than

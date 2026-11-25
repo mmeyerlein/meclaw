@@ -7,8 +7,7 @@
 //! would key it per target cell where it knows the cell that answered -- but
 //! the answer names none: talky's edges `./brain`, `./quick` and
 //! `./quick_bridge` -> `./curator` set only `hop.route` ("in_llm"), the
-//! llm cell's hop carries no sender. So `quick`, `quick_spec` and
-//! `quick_bridge` share `context_window:quick`; another WAY's window never
+//! llm cell's hop carries no sender. So `quick` and `quick_bridge` share `context_window:quick`; another WAY's window never
 //! cuts a row. This pins the foreign case both ways: a quick window never
 //! clamps the brain row, and does clamp a quick-way cell's row.
 //!
@@ -48,9 +47,7 @@ fn another_ways_window_never_cuts_the_row() {
         return;
     }
     assert_eq!(soft("brain", "quick"), 200_000);
-    for cell in ["quick_spec", "quick_bridge"] {
-        assert_eq!(soft(cell, "quick"), 200_000, "{cell}");
-    }
+    assert_eq!(soft("quick_bridge", "quick"), 200_000, "quick_bridge");
 }
 
 /// Lock (D58 target, contract point 7): each target's own reported window
@@ -61,7 +58,7 @@ fn each_target_has_its_own_window() {
     if !shipped() {
         return;
     }
-    for cell in ["brain", "quick", "quick_spec", "quick_bridge"] {
+    for cell in ["brain", "quick", "quick_bridge"] {
         assert_eq!(soft(cell, cell), 50_000, "{cell}");
     }
 }

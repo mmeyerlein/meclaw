@@ -140,7 +140,11 @@ fn the_presenter_is_installed_with_its_deciders_road() {
     let road = &entries[1];
     assert_eq!(road["scope"], SCOPE);
     let edges = road["diff"]["add_edges"].as_array().expect("edges");
-    assert_eq!(edges.len(), 3, "{edges:#?}");
+    assert_eq!(
+        edges.len(),
+        5,
+        "the decider's three, then since GH #1353 the params road's pair: {edges:#?}"
+    );
 
     let rel = "./acme/members/alex/apps/presenter";
     assert_eq!(edges[0]["from"], ".");

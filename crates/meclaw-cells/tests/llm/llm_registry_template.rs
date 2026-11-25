@@ -945,7 +945,19 @@ fn the_hive_carries_four_cells_and_no_clock() {
     let hive = read_json(&root.join("config.json"));
     let into_translate: Vec<&Value> = hive["params"]["graph"]["edges"]
         .as_array()
-        .map(|e| e.iter().filter(|e| e["to"] == "./translate").collect())
+        .map(|e| {
+            e.iter()
+                .filter(|e| e["to"] == "./translate")
+                // GH #1353: the params door -- the operator's update for the
+                // translator by its path; no question and no `update` enters by it.
+                .filter(|e| {
+                    !(e["from"] == "."
+                        && e["condition"]
+                            .as_str()
+                            .is_some_and(|c| c.contains("hop.route == 'in_params'")))
+                })
+                .collect()
+        })
         .unwrap_or_default();
     assert_eq!(into_translate.len(), 1, "{into_translate:?}");
     assert_eq!(into_translate[0]["from"], "./hand");

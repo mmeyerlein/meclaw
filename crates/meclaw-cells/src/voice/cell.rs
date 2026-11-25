@@ -108,18 +108,22 @@ pub enum VoiceEvent {
     /// before any clock did (GH #601).
     ///
     /// The socket side of this cell is not backpressure. The colony side is: a
-    /// listener that falls behind stalls the sender and loses nothing. But a
+    /// listener that falls behind stalls the handler and loses nothing. But a
     /// WebSocket client that stops reading cannot be waited on for ever without
     /// taking the listener down with it (GH #593), so once `DISPATCH_QUEUE`
     /// commands are queued behind an already full connection channel the
     /// connection is given up on. That verdict used to be a log line and a
     /// `Disconnected`; it is a message now, so a colony learns why a call ended
     /// from its own lanes rather than from an operator's terminal.
+    ///
+    /// A frame of outgoing audio the client does not take within the
+    /// operation's timeout is the same verdict, by the clock (GH #1634).
     ClientTooSlow {
         /// The session whose client stopped taking commands.
         session_id: String,
         /// How many queued commands were given up on with it: everything the
-        /// dispatch queue still held, plus the one that no longer fitted.
+        /// dispatch queue still held, plus the one that no longer fitted. For
+        /// audio, the frames of the chunk that were not taken.
         dropped: usize,
     },
     /// A duplex session said something (contract § 1.1).
@@ -298,6 +302,17 @@ pub enum VoiceEvent {
         /// meter reading stands in for a close that never arrived.
         complete: bool,
     },
+    /// How the audio of a duplex call went, over every provider session it ran
+    /// on (#1637): once, after the call's last [`Self::CallUsage`] and ahead of
+    /// its [`Self::Disconnected`], and only where `params.emit_audio_report`
+    /// orders it. A call whose session neither opened nor carried audio sends
+    /// none.
+    AudioReport {
+        /// The call.
+        session_id: String,
+        /// The account itself.
+        report: Box<crate::voice::audio_report::AudioReport>,
+    },
     /// An `in_seed` named a call no session holds -- neither parked at the
     /// ring nor held by a connection (review K5). The handler says so on the
     /// error lane as `unknown_session`.
@@ -360,6 +375,45 @@ impl SeedReason {
 }
 
 impl VoiceEvent {
+    /// The session this event is about; `None` where it is about the cell.
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::MountFailed(_) | Self::CredentialRoundExpired { .. } => None,
+            Self::Connected { session_id, .. }
+            | Self::Disconnected { session_id }
+            | Self::Control { session_id, .. }
+            | Self::Stt { session_id, .. }
+            | Self::SpeakEnded { session_id, .. }
+            | Self::ReleaseGraceExpired { session_id, .. }
+            | Self::ClientTooSlow { session_id, .. }
+            | Self::Live { session_id, .. }
+            | Self::LiveTick { session_id, .. }
+            | Self::LiveAudioOut { session_id, .. }
+            | Self::SpeakAudioOut { session_id, .. }
+            | Self::LiveEnded { session_id, .. }
+            | Self::DuplexFailed { session_id, .. }
+            | Self::Renewed { session_id, .. }
+            | Self::SeedAsk { session_id, .. }
+            | Self::CallMark { session_id, .. }
+            | Self::CallUsage { session_id, .. }
+            | Self::AudioReport { session_id, .. }
+            | Self::SeedUnheld { session_id }
+            | Self::BadAudioFrame { session_id, .. } => Some(session_id),
+        }
+    }
+
+    /// Where an event carries the longest wait of its session's events on the
+    /// way to the handler, in milliseconds: the forwarder of the I/O half fills
+    /// it in as the event passes (GH #1634) and drops its own count with it. A
+    /// call's report (#1637) carries it; it has to leave ahead of the
+    /// session's [`VoiceEvent::Disconnected`], which drops the count too.
+    pub(crate) fn longest_wait_slot(&mut self) -> Option<&mut Option<u64>> {
+        match self {
+            Self::AudioReport { report, .. } => Some(&mut report.forward_wait_max_ms),
+            _ => None,
+        }
+    }
+
     /// Tell the I/O half that the session of a `Connected` is taken (GH #836).
     ///
     /// [`VoiceCell`]'s own handler does it right after the session is in its
@@ -918,6 +972,12 @@ pub struct VoiceCell {
     /// through a speech synthesis alike. Settled at birth: the I/O half reads
     /// the same switch once per life.
     emit_first_audio: bool,
+    /// Whether a duplex call reports how its audio went on the `audio_report`
+    /// lane (`params.emit_audio_report`, #1637). Settled at birth.
+    emit_audio_report: bool,
+    /// The model the duplex calls of this cell run on, for that report; `None`
+    /// where the provider has no model.
+    duplex_model: Option<String>,
     /// Whether the end of a synthesis reaches the `speak_end` lane.
     emit_speak_end: bool,
     /// Operation-timeout for I/O this cell initiates.
@@ -929,6 +989,8 @@ pub struct VoiceCell {
     /// the idle deadline: the I/O half reads it at birth, and this is where an
     /// update keeps it until the next life.
     audio_out_frame_ms: u32,
+    /// Lead of the model's audio in milliseconds, carried for the same reason.
+    audio_out_lead_ms: u32,
     /// Whether an assistant turn is turned into speech text before it is
     /// queued. Read on every `in_speak`, so an update is in force at once.
     speak_plain: bool,
@@ -1037,10 +1099,13 @@ impl VoiceCell {
             duplex_delta_min: duplex_delta_min(params),
             duplex_emit_spoken: duplex_emit_spoken(params),
             emit_first_audio: params.emit_first_audio,
+            emit_audio_report: params.emit_audio_report,
+            duplex_model: duplex_model(params),
             emit_speak_end: params.emit_speak_end,
             external_timeout_ms: params.external_timeout_ms,
             provider_idle_timeout_ms: params.provider_idle_timeout_ms,
             audio_out_frame_ms: params.audio_out_frame_ms,
+            audio_out_lead_ms: params.audio_out_lead_ms,
             speak_plain: params.speak_plain,
             speak_partials: params.speak_partials,
             release_grace_ms: params.release_grace_ms,
@@ -1172,6 +1237,7 @@ impl VoiceCell {
             external_timeout_ms: self.external_timeout_ms,
             provider_idle_timeout_ms: self.provider_idle_timeout_ms,
             audio_out_frame_ms: self.audio_out_frame_ms,
+            audio_out_lead_ms: self.audio_out_lead_ms,
             speak_plain: self.speak_plain,
             speak_partials: crate::voice::params::flag01(self.speak_partials),
             release_grace_ms: self.release_grace_ms,
@@ -1185,6 +1251,7 @@ impl VoiceCell {
             x_title: self.attribution.0.clone(),
             http_referer: self.attribution.1.clone(),
             emit_first_audio: self.emit_first_audio,
+            emit_audio_report: self.emit_audio_report,
         }
     }
 
@@ -2385,9 +2452,13 @@ impl VoiceCell {
         let (kind, spoken) = match section {
             Some("fact") => (AppendKind::Commentary, true),
             Some("context") => (AppendKind::Thinking, false),
-            Some("correction") | Some("interrupt") | Some("renew") | Some("horizon") => {
+            Some("correction") | Some("interrupt") | Some("renew") => {
                 (AppendKind::Instructions, false)
             }
+            // A request to speak, like a `fact`, that opens no section here: what
+            // the model then says opens its own (GH #1595). Never Instructions
+            // (GH #1635): that is the channel that may cut running speech.
+            Some("horizon") => (AppendKind::Commentary, false),
             other => {
                 let detail = format!(
                     "hop.section must be one of fact, context, correction, interrupt, renew, \
@@ -2472,7 +2543,7 @@ impl VoiceCell {
             return;
         }
         if section == Some("horizon") {
-            self.advise_horizon(body, reply_target, sink, session_id)
+            self.advise_horizon(kind, body, reply_target, sink, session_id)
                 .await;
             return;
         }
@@ -2871,7 +2942,8 @@ impl VoiceCell {
     /// The curator's `horizon` (GH #1400): how many seconds the answer of a
     /// running tool round or delegation will take, as numbers only (`seconds`,
     /// `way`, `family` in the body, no words). The set's `horizon_text` with
-    /// `{seconds}` filled in goes to the model as ONE instruction at the
+    /// `{seconds}` filled in goes to the model as ONE append on `kind`, the
+    /// section's channel (`advise`, a commentary since GH #1635), at the
     /// line's first quiet moment, which the connection knows (`when_quiet`):
     /// no spoken section open and the model's own speech `spoken_quiet_ms`
     /// past, at the latest `spoken_cap_ms` after it came -- an append into
@@ -2883,6 +2955,7 @@ impl VoiceCell {
     /// one closed, so it would come after the answer (o8.5).
     async fn advise_horizon(
         &mut self,
+        kind: AppendKind,
         body: &Value,
         reply_target: Path,
         sink: &OutputSink,
@@ -2920,7 +2993,7 @@ impl VoiceCell {
             if let Some(state) = self.live_sessions.get_mut(&session_id) {
                 state.note_append(SentAppend {
                     event_id: event_id.clone(),
-                    kind: AppendKind::Instructions,
+                    kind,
                     chars: part.chars().count(),
                     delegation_id: None,
                     fallback: false,
@@ -2930,7 +3003,7 @@ impl VoiceCell {
                 .to_io
                 .send(VoiceReconfig::Advise {
                     session_id: session_id.clone(),
-                    kind: AppendKind::Instructions,
+                    kind,
                     event_id,
                     delegation_id: None,
                     content: part,
@@ -3357,13 +3430,13 @@ impl VoiceCell {
         self.emit(sink, content).await;
     }
 
-    /// Apply a runtime params update: merge, **move**, then persist — the
-    /// `web` cell's order (GH #410), for the same reason. Nothing reaches
-    /// `cell.db` that the socket did not accept, so a respawn cannot replay an
-    /// address this cell was never on.
+    /// Apply a runtime params update: merge, persist, then move — the `web`
+    /// cell's order. All or nothing: a refused update leaves no field behind
+    /// (GH #1353; the mount moved first once, and a failed write left it moved).
     async fn apply_params_update(
         &mut self,
         update: &Map<String, Value>,
+        push: &crate::params_overlay::ParamsPush,
         reply_target: Path,
         sink: &OutputSink,
         db: &mut DbConn,
@@ -3372,36 +3445,31 @@ impl VoiceCell {
         let (merged, overlay) = match crate::params_overlay::apply_update(&current, update) {
             Ok(ok) => ok,
             Err(e) => {
-                self.refuse(sink, reply_target, "invalid_input", &e.detail(), None)
+                self.refuse_params(sink, reply_target, push, &e.detail())
                     .await;
                 return;
             }
         };
-
-        // Written down, not acted on: the next life registers under it
-        // (ruling O-P-2). Nothing about a surface moves during an update any
-        // more — the cell owns no socket to move.
-        self.mount = merged.mount.clone();
 
         let now = crate::params_overlay::now_unix_seconds();
         let persist = db
             .call(move |c| crate::params_overlay::persist_params_overlay(c, &overlay, now))
             .await;
         if let Err(e) = persist {
-            self.refuse(
+            self.refuse_params(
                 sink,
                 reply_target,
-                "invalid_input",
-                &format!(
-                    "cell.db params write failed: {e} — the endpoint moved but a respawn \
-                     will not remember it"
-                ),
-                None,
+                push,
+                &format!("cell.db params write failed: {e}"),
             )
             .await;
             return;
         }
 
+        // Written down, not acted on: the next life registers under it
+        // (ruling O-P-2). Nothing about a surface moves during an update any
+        // more — the cell owns no socket to move.
+        self.mount = merged.mount.clone();
         self.default_mode = merged.default_mode;
         self.barge_in = merged.barge_in;
         self.emit_partials = merged.emit_partials;
@@ -3409,6 +3477,7 @@ impl VoiceCell {
         self.external_timeout_ms = merged.external_timeout_ms;
         self.provider_idle_timeout_ms = merged.provider_idle_timeout_ms;
         self.audio_out_frame_ms = merged.audio_out_frame_ms;
+        self.audio_out_lead_ms = merged.audio_out_lead_ms;
         self.speak_plain = merged.speak_plain;
         self.speak_partials = merged.speak_partials == "1";
         self.release_grace_ms = merged.release_grace_ms;
@@ -3430,6 +3499,22 @@ impl VoiceCell {
             // that is already asleep would be a turn cut by a number nobody
             // sent it with.
             session.release_grace_ms = merged.release_grace_ms;
+        }
+        push.applied(sink).await;
+    }
+
+    /// Refuse a params update: on the params lane the shared answer (GH #1353),
+    /// otherwise the `invalid_input` refusal it always was.
+    async fn refuse_params(
+        &self,
+        sink: &OutputSink,
+        target: Path,
+        push: &crate::params_overlay::ParamsPush,
+        detail: &str,
+    ) {
+        if !push.refused(sink, "invalid_input", detail).await {
+            self.refuse(sink, target, "invalid_input", detail, None)
+                .await;
         }
     }
 
@@ -3698,6 +3783,14 @@ fn duplex_delegation_fallback(params: &VoiceParams) -> String {
     match &params.duplex {
         Some(crate::voice::params::DuplexParams::GptLive(p)) => p.delegation_fallback.clone(),
         _ => crate::voice::params::DEFAULT_DELEGATION_FALLBACK.to_string(),
+    }
+}
+
+/// And for the model the `audio_report` lane names (#1637).
+fn duplex_model(params: &VoiceParams) -> Option<String> {
+    match &params.duplex {
+        Some(crate::voice::params::DuplexParams::GptLive(p)) => Some(p.model.clone()),
+        _ => None,
     }
 }
 
@@ -3971,6 +4064,14 @@ impl LongRunningCell for VoiceCell {
         async move {
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
+            // GH #1353: on the params lane an update or nothing -- nothing to
+            // speak, no box, no line event.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                self.refuse_params(sink, reply_target, &push, &detail).await;
+                return;
+            }
+
             // GH #1411: a partial of the model's answer (the `llm` cell's
             // sentence lane) is spoken only by a cascade cell that ordered it.
             // The member wires its `partial` edge whatever the channel says, so
@@ -4012,19 +4113,24 @@ impl LongRunningCell for VoiceCell {
             // The params slot first and exclusively: a message carrying it is
             // not something to say out loud.
             if let Some(params_val) = body.get("params") {
+                // GH #1353: a slot addressed to another cell moves nothing.
+                if let Some(detail) = push.foreign_detail() {
+                    self.refuse(sink, reply_target, "invalid_input", &detail, None)
+                        .await;
+                    return;
+                }
                 match params_val.as_object() {
                     Some(update) => {
                         let update = update.clone();
-                        self.apply_params_update(&update, reply_target, sink, db)
+                        self.apply_params_update(&update, &push, reply_target, sink, db)
                             .await;
                     }
                     None => {
-                        self.refuse(
+                        self.refuse_params(
                             sink,
                             reply_target,
-                            "invalid_input",
+                            &push,
                             "params slot: not a JSON object",
-                            None,
                         )
                         .await;
                     }
@@ -4488,8 +4594,8 @@ impl LongRunningCell for VoiceCell {
                     // who hung up from a client that stopped reading, which is
                     // the difference between a person leaving and a bug.
                     let detail = format!(
-                        "the client did not take {dropped} queued commands; \
-                         the connection was given up"
+                        "the client did not take {dropped} queued commands or audio \
+                         frames; the connection was given up"
                     );
                     self.emit_error(
                         sink,
@@ -4660,6 +4766,18 @@ impl LongRunningCell for VoiceCell {
                 } => {
                     self.emit_usage(&session_id, seconds, last, complete, sink)
                         .await;
+                }
+                VoiceEvent::AudioReport { session_id, report } => {
+                    // The connection sends this only where the switch orders
+                    // it; the handler asks again because the lane is its own.
+                    if self.emit_audio_report {
+                        let mut content =
+                            self.live_body("audio_report", &session_id, json!({}), json!([]));
+                        if let Some(body) = content.as_object_mut() {
+                            body.extend(report.body(self.duplex_model.as_deref()));
+                        }
+                        self.emit(sink, content).await;
+                    }
                 }
                 VoiceEvent::SeedUnheld { session_id } => {
                     // Review K5: a curator that names the wrong call hears
@@ -4866,6 +4984,42 @@ mod tests {
         )
     }
 
+    /// GH #1353: a refused update leaves no field behind, the mount included. The
+    /// `cell.db` has no `params` table, so the write fails.
+    #[tokio::test]
+    async fn gh1353_a_failed_write_leaves_the_mount_where_it_was() {
+        let mut cell = parked_cell(5_000);
+        let mut db = DbConn::wrap(
+            rusqlite::Connection::open_in_memory().expect("db"),
+            Some(Duration::from_secs(5)),
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        let own = "/main/members/tester/channels/voice";
+        let hop = Map::from_iter([
+            ("route".to_string(), json!("in_params")),
+            ("subscriber".to_string(), json!(own)),
+        ]);
+        let headers = meclaw_core::Headers::from_parts(Map::new(), hop);
+        let sink = OutputSink::new(
+            tx,
+            Path::new(own),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            32,
+            headers.clone(),
+            None,
+        );
+        let msg = meclaw_core::MessageBuilder::new(Path::new(own))
+            .headers(headers)
+            .body(Body::Inline(json!({"params": {"mount": "elsewhere"}})))
+            .build();
+        let (rc, _keep) = mpsc::channel(8);
+        cell.handle(msg, &sink, &mut db, &rc).await;
+        let answer = rx.recv().await.expect("an answer").content;
+        assert_eq!(answer["header"]["params_answer"], "params_refused");
+        assert_eq!(cell.overlay().mount, "voice", "nothing moved: {answer}");
+    }
+
     /// A session identity outlives a connection, and a release grace outlives a
     /// hang-up.
     ///
@@ -4994,7 +5148,7 @@ mod tests {
 
     /// The parts of one cut text name the same cut, and the next text names
     /// a cut of its own -- for an append sent at once and for the
-    /// waiting-time instruction, which waits for a quiet line.
+    /// waiting-time advise, which waits for a quiet line.
     ///
     /// The connection holds ONE waiting append and a newer one replaces it.
     /// Without the id it cannot tell the second part of a text from a newer
@@ -5059,6 +5213,7 @@ mod tests {
             None,
         );
         cell.advise_horizon(
+            AppendKind::Commentary,
             &json!({"seconds": 4}),
             Path::new("/caller"),
             &sink,
@@ -5076,7 +5231,7 @@ mod tests {
                 "Say that you look it up.",
                 "Ask nothing new meanwhile.",
             ],
-            "the waiting-time instruction leaves in three parts"
+            "the waiting-time advise leaves in three parts"
         );
         let waiting_cut = waiting[0].0.clone();
         assert!(!waiting_cut.is_empty(), "a cut has an id: {waiting:?}");

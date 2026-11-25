@@ -126,7 +126,9 @@ const GROWN_FROM: [(&str, &str); 3] = [
 /// D54g (GH #1564): the collector's clock (`collector/clock`), the one-shot
 /// that ends the wait for the route stamp -- thirty-six from `talky`,
 /// forty-one in all. MEASURED (41 against 40 in the strand's gate).
-const CELLS_AFTER_GROW: usize = 41;
+/// GH #1584: the speculation's cell (`quick_spec`) leaves talky --
+/// thirty-five from `talky`, forty in all.
+const CELLS_AFTER_GROW: usize = 40;
 
 /// GH #277: `talky` REFERENCES its sub-units instead of carrying copies of
 /// them, so the library the colony scans has to hold them next to it. They are

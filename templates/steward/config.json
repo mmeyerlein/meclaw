@@ -13,6 +13,10 @@
         {
           "route": "in_model",
           "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./judge`, the one llm cell of this hive, past every other cell, because a params body is not a request. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
@@ -27,6 +31,14 @@
         {
           "route": "model_refused",
           "because": "a model package pushed through `in_model` that `./judge` refused (GH #863): its error, with the cell's own path in `hop.refused_subscriber` and the model the push named in `hop.refused_model`, leaves here instead of reaching `./mutator` as a verdict -- before this repair the judge's out-edge was unconditional, so a refusal was read as a decision. A push addressed to another cell is refused as `invalid_input` without the two keys and still reaches the verdict edge -- the forward that caused it is the defect -- a refused push is nobody's request failing. Whoever draws this hive's push road draws one edge from here back to the registry's `in_refused` lane beside it; without one the refusal dead-letters `no_route`, loudly"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -104,12 +116,12 @@
         {
           "from": "./judge",
           "to": "./mutator",
-          "condition": "!has(hop.refused_subscriber) && (!has(hop.route) || hop.route != 'credential_request')"
+          "condition": "!has(hop.refused_subscriber) && (!has(hop.route) || hop.route != 'credential_request') && !has(hop.params_answer)"
         },
         {
           "from": "./judge",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -288,6 +300,190 @@
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.matches('/access/[^/]+$')"
+        },
+        {
+          "from": ".",
+          "to": "./charter",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/charter')"
+        },
+        {
+          "from": ".",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/clock') && !hop.subscriber.endsWith('/access/clock')"
+        },
+        {
+          "from": ".",
+          "to": "./judge",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/judge')"
+        },
+        {
+          "from": ".",
+          "to": "./receipts",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/receipts')"
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
+          "modifier": {
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./charter",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./charter",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./clock",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./clock",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./judge",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./judge",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./receipts",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "st_carry",
+              "st_cycle",
+              "st_goal",
+              "st_phase",
+              "st_reason",
+              "steward_origin"
+            ]
+          }
+        },
+        {
+          "from": "./receipts",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "st_carry",
               "st_cycle",

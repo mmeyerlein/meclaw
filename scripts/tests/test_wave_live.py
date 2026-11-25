@@ -175,5 +175,84 @@ class OpenCommandTest(unittest.TestCase):
         self.assertEqual("first", _git(self.root, "log", "-1", "--format=%s"))
 
 
+class OpenRecordsTheStartTest(OpenCommandTest):
+    """#1520: `wave open` records the wave start itself -- the rev before its own
+    commit, under the rule of `wave start` (the first start stands). d54s had
+    no start, because nobody ran `wave start --rev`, and its integration pass
+    fell back to the full suite."""
+
+    def setUp(self):
+        super().setUp()
+        self.db_path = self.root / "store" / "pipeline.db"
+
+    def starts(self):
+        from scripts.pipeline import narrow, store  # noqa: PLC0415
+        db = store.open(self.db_path)
+        try:
+            return narrow.wave_starts(db, WAVE)
+        finally:
+            store.close(db)
+
+    def open(self):
+        return wave.open_wave(WAVE, "Wave Z.", root=self.root, out=self.lines.append,
+                              today="2026-10-14", db_path=self.db_path)
+
+    def test_open_records_the_rev_before_its_own_commit(self):
+        before = _git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(0, self.open(), self.lines)
+        self.assertEqual([before], self.starts())
+        self.assertNotEqual(before, _git(self.root, "rev-parse", "HEAD"))
+        self.assertIn("WAVE-START %s %s" % (WAVE, before), self.lines)
+
+    def test_an_earlier_start_stands(self):
+        first = _git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(0, wave.start(WAVE, root=self.root, db_path=self.db_path, rev=first,
+                                       out=self.lines.append))
+        (self.root / "plans" / WAVE / "x.md").write_text("x\n", encoding="utf-8")
+        _git(self.root, "add", "plans")
+        _git(self.root, "commit", "-q", "-m", "second")
+        self.assertEqual(0, self.open(), self.lines)
+        self.assertEqual([first], self.starts())
+        self.assertTrue(any("first start stands" in ln for ln in self.lines), self.lines)
+
+    def test_open_on_a_branch_records_the_master_tip(self):
+        # review argvpre I-1: a branch with commits of its own -- its HEAD is no
+        # ancestor of master; the start is master's tip, as `wave start` defines it
+        tip = _git(self.root, "rev-parse", "master")
+        _git(self.root, "checkout", "-q", "-b", "side")
+        (self.root / "plans" / WAVE / "x.md").write_text("x\n", encoding="utf-8")
+        _git(self.root, "add", "plans")
+        _git(self.root, "commit", "-q", "-m", "side commit")
+        self.assertEqual(0, self.open(), self.lines)
+        self.assertEqual([tip], self.starts())
+        self.assertIn("WAVE-START %s %s" % (WAVE, tip), self.lines)
+
+    def test_a_refused_start_is_said_and_the_open_stays(self):
+        # no master: nothing to record, and the hint names no rev that would be refused
+        _git(self.root, "branch", "-m", "master", "main")
+        head = _git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(1, self.open(), self.lines)
+        self.assertEqual([], self.starts())
+        missing = [ln for ln in self.lines if ln.startswith("WAVE-START-MISSING %s" % WAVE)]
+        self.assertEqual(1, len(missing), self.lines)
+        self.assertIn("--rev <sha>", missing[0])
+        self.assertNotIn(head, missing[0])
+        self.assertEqual([WAVE], wave.live_running(
+            (self.root / "plans" / "README.md").read_text(encoding="utf-8")))
+        self.assertIn("WAVE-OPEN %s running since 2026-10-14" % WAVE, self.lines)
+        self.assertTrue(any(ln.startswith("WAVE-START-MISSING %s" % WAVE) for ln in self.lines),
+                        self.lines)
+
+    def test_a_missing_store_is_said_and_the_open_stays(self):
+        blocker = self.root / "not-a-dir"
+        blocker.write_text("", encoding="utf-8")
+        self.db_path = blocker / "pipeline.db"
+        self.assertEqual(1, self.open(), self.lines)
+        self.assertEqual([WAVE], wave.live_running(
+            (self.root / "plans" / "README.md").read_text(encoding="utf-8")))
+        self.assertTrue(any(ln.startswith("WAVE-START-MISSING %s" % WAVE) for ln in self.lines),
+                        self.lines)
+
+
 if __name__ == "__main__":
     unittest.main()

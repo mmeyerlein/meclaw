@@ -1038,6 +1038,11 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
     // `opened`, `closed` and `inner_silent` (one exit for the three lanes).
     // 55 -> 56 with GH #1411: a streamed sentence, `./assistants -> ./channels`
     // on `partial`, guarded on `hop.partial_of` and `context.channel_node`.
+    // 56 -> 57 with GH #1587 (d54s abbruch): the voice's cancel of a superseded
+    // delegation, `./channels -> ./assistants` on `delegation_cancel`
+    // re-stamped to `in_delegation_cancel`, the errand's road like `renewed`.
+    // 57 -> 56 with GH #1598: the sidecar edge `./assistants -> ./apps` left the
+    // member; an installed app draws `./assistants -> ./apps/<app>` for its section.
     assert_eq!(
         declared, 56,
         "the member's own edges to and from its assistants container are the member \
@@ -1078,7 +1083,9 @@ async fn c_a_second_assistant_is_one_instantiation_with_its_own_parameters() {
          to `in_briefing` when the member's own reply-to token says `inside`, and \
          \u{2014} since GH #896 \u{2014} the renewal of a duplex channel's live session, \
          off ./channels on `renewed` and re-stamped to `in_renewed` past the firewall \
-         like the errand, and \u{2014} since GH #907 \u{2014} a turn that carried a \
+         like the errand, and \u{2014} since GH #1587 \u{2014} the voice's cancel of a \
+         superseded delegation, off ./channels on `delegation_cancel` and re-stamped to \
+         `in_delegation_cancel` the same way, and \u{2014} since GH #907 \u{2014} a turn that carried a \
          document, off ./file-space on `turn` with its address line instead of the bytes and \
          re-stamped to `in_turn`. EIGHTEEN \
          leave it: recall, `sidecar` THREE times \u{2014} TWICE since GH #607 \u{2014} the one lane \
@@ -1230,9 +1237,10 @@ async fn d_a_second_channel_is_one_instantiation_in_the_member() {
         "the member ships fourteen edges between `./channels` and the rest of itself. Three \
          are the chat channel's own, from GH #454: the screened turn into `./firewall`, \
          the answer coming back from `./assistants` guarded on `context.channel_node`, and \
-         the connector's error out at the rim. Five more arrived with GH #455/#459, when \
-         a SCREEN became one of these channels: `./apps -> ./channels` carries an app's \
-         `view` towards the display named in the edge that leaves the app, and the way \
+         the connector's error out at the rim. Four more arrived with GH #455/#459, when \
+         a SCREEN became one of these channels (the fifth, `./apps -> ./channels` for an \
+         app's `view`, left with GH #1597: the screen's growth draws that edge straight to \
+         the screen, so a view for a screen this member lacks dead-letters nowhere), and the way \
          back off the screen is split on the OWNER the display stamped — `event` \
          into `./assistants` for `hop.owner.contains('/assistants/')`, `event` AND \
          `receipt` into `./apps` for `'/apps/'`, and one catch-all out at the rim on \
@@ -1251,8 +1259,12 @@ async fn d_a_second_channel_is_one_instantiation_in_the_member() {
          re-stamped into `./assistants` as `in_renewed`, the errand's road. The \
          fourteenth arrived with GH #1411: a streamed sentence of the answer, `partial` \
          out of `./assistants`, guarded on `hop.partial_of` and `context.channel_node` \
-         like the answer it is a prefix of. A second \
-         channel must not move any of them \
+         like the answer it is a prefix of. The fifteenth arrived with GH #1587: the \
+         voice's cancel of a superseded delegation, `delegation_cancel` re-stamped into \
+         `./assistants` as `in_delegation_cancel`, the errand's road like `renewed`. GH #1590's \
+         receipt edge `. -> ./channels` left again with GH #1597 for the same reason: the \
+         receipt reaches a screen on an edge its growth draws, never the empty container. \
+         A second channel must not move any of them \
          (templates/member/README.md § Why a container carries no contract). Move the \
          README with the number."
     );

@@ -7,11 +7,6 @@ pub mod assistant_followup;
 pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
 pub mod curator_profiles;
-pub mod gh_d38_k6_keep_recent_stays_the_floor;
-pub mod gh_d38_k6_null_budget_is_byte_identical;
-pub mod gh_d38_k6_the_budget_never_outgrows_the_aim;
-pub mod gh_d38_k6_the_budget_spans_the_day_boundary;
-pub mod gh_d38_k6_the_window_watch_reads_the_raw_part;
 pub mod gh_d38_k6b_the_budget_measures_the_rounds_as_sent;
 pub mod gh_d38_k6b_the_curate_stamp_measures_like_the_budget;
 pub mod gh_d38_k6b_the_rebuild_measures_a_cut_answer_as_sent;
@@ -57,7 +52,12 @@ pub mod gh_d38_z3_the_brief_carries_the_four_line_kinds;
 pub mod gh_d38_z3_the_brief_off_is_byte_identical;
 pub mod gh_d38_z3_the_handover_sets_the_brief_in_verbatim;
 pub mod gh_d38_z3_the_summary_is_itemised_and_attributed;
+pub mod gh_d54s_specaus_every_quick_call_lands_on_quick;
+pub mod gh_d54s_specaus_the_speculation_is_gone;
 pub mod gh_d583_nachlese_a_call_after_a_consult_is_judged_against_the_held_window;
 pub mod gh_d583_nachlese_a_key_with_spaces_is_taken_as_its_snake_form;
+pub mod gh_d583_nachlese_a_late_recall_pair_never_lands_before_the_turns_words;
+pub mod gh_d583_nachlese_a_mixed_recall_block_sends_no_quote_of_the_wall;
+pub mod gh_d583_nachlese_a_mostly_rejected_brief_leaves_the_old_window;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;

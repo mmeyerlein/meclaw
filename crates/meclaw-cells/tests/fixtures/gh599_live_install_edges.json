@@ -1,5 +1,5 @@
 {
-  "_source": "GH #599 -- the wiring a live colony carries for four installed apps, as its install manifests drew it and as it was measured standing: the three apps of the voice2vision repository (manifests/install.json, scripts/ambient_install.py, scripts/chat_install.py, scripts/v2v_install.py for the browser road, and the talky-chat twin every talky v-lane gets) and colony-view as the builder's member_devices renders it. Member-relative; the generation is called `sam`. The three voice2vision templates do not travel with this repository, so their declarations stand here as a fixture beside the edges they must render; the colony-view declaration is read from templates/colony-view/template.json. GH #965 (review N-1, OR-DP.M.18): the edges of an app that answers a tool call are the RENDERED ones, not the measured ones -- its results leave in the words of the call (`offer_tool`) and in the member's round (`ctx.member_person`, stamped by the builder), so a colony that installed it before carries the older exit until it is reinstalled.",
+  "_source": "GH #599 -- the wiring a live colony carries for four installed apps, as its install manifests drew it and as it was measured standing: the three apps of the voice2vision repository (manifests/install.json, scripts/ambient_install.py, scripts/chat_install.py, scripts/v2v_install.py for the browser road, and the talky-chat twin every talky v-lane gets) and colony-view as the builder's member_devices renders it. Member-relative; the generation is called `sam`. The three voice2vision templates do not travel with this repository, so their declarations stand here as a fixture beside the edges they must render; the colony-view declaration is read from templates/colony-view/template.json. GH #965 (review N-1, OR-DP.M.18): the edges of an app that answers a tool call are the RENDERED ones, not the measured ones -- its results leave in the words of the call (`offer_tool`) and in the member's round (`ctx.member_person`, stamped by the builder), so a colony that installed it before carries the older exit until it is reinstalled. GH #1598: the receipt of an app that listens on `mutation_committed` (colony-view) is the RENDERED edge too -- from the member straight to the app, not off the container, which a static member edge used to feed. Since GH #1598 a sidecar section is read off ./assistants straight into the app that offered it, not off the container.",
   "voice2vision": {
     "template": "voice2vision@0.7.2",
     "screen": "display",
@@ -86,7 +86,7 @@
         "condition": "has(hop.route) && (hop.route == 'turn' || hop.route == 'answer' || hop.route == 'partial')"
       },
       {
-        "from": "./apps",
+        "from": "./assistants",
         "to": "./apps/voice2vision",
         "condition": "has(hop.route) && hop.route == 'sidecar' && has(hop.section) && hop.section == 'display'"
       },
@@ -507,7 +507,7 @@
         "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/colony-view/')"
       },
       {
-        "from": "./apps",
+        "from": ".",
         "to": "./apps/colony-view",
         "condition": "has(hop.route) && hop.route == 'mutation_committed'"
       }

@@ -302,10 +302,18 @@ fn every_edge_around_the_one_talky_has_a_twin_around_the_other() {
     // `write` out of each keeper to `./followup`, `in_note`, `in_note_held`
     // and `note_receipt` between it and each keeper (five around each), four
     // around `./cogny` and two to and from `./followup_store`.
+    // GH #1587 (d54s abbruch): one hundred and forty-six -- the
+    // `in_delegation_cancel` door into each keeper (the voice's cancel of a
+    // superseded delegation, on its way to the keeper's curator).
+    // GH #1616 (R-80-5): one hundred and fifty-two -- the level's own `in_model`
+    // door hands a registry push to the rim that holds the named cell (`. -> ./talky`,
+    // `. -> ./talky-chat`, `. -> ./cogny`), and a refusal comes back out of each rim
+    // on `model_refused` (`./talky -> .` and its twins): one pair per keeper, one
+    // around the core.
     assert_eq!(
         hp.graph.edges.len(),
-        144,
-        "one hundred and forty-four edges, fifty-eight around each keeper. The number is asserted \
+        152,
+        "one hundred and fifty-two edges, sixty-one around each keeper. The number is asserted \
          so that an edge added on one side and forgotten on the other is loud"
     );
 }

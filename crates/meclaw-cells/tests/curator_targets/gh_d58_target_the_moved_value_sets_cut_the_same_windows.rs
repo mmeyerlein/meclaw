@@ -36,6 +36,11 @@
 //! gone there is nothing to record it from. The fixtures were recorded on the
 //! tree before the strand.
 //!
+//! One test per role, one for the guard and one for the compositions (GH
+//! #1640). The five roles ran in one test: 17 s alone, 207 s in the gate that
+//! killed a neighbour at 240 s. A role is one run of the talk, python work that
+//! stretches with the load of the lane.
+//!
 //! Runs the shipped curator hive (`support/curator_hive.rs`) on the corpus
 //! clock; no model.
 
@@ -237,7 +242,7 @@ const MAIN_TARGETS: [(&str, &str); 4] = [
     ("simple-agent/brain", "talky"),
     ("simple-agent/strong", "talky"),
 ];
-const FAST_TARGETS: [&str; 3] = ["talky/quick", "talky/quick_spec", "talky/quick_bridge"];
+const FAST_TARGETS: [&str; 2] = ["talky/quick", "talky/quick_bridge"];
 const WALL_ONLY: [&str; 11] = [
     "keep_recent_tokens",
     "compress_at",
@@ -324,95 +329,140 @@ fn compared(rebuild: &Value) -> Value {
     r
 }
 
-/// Under the switch, the windows and rebuilds of the roles as they stand,
-/// for every fixture that is missing. True when the switch is set.
-fn record() -> bool {
-    if std::env::var(BLESS).as_deref() != Ok("1") {
+/// Under the switch, the window and the rebuild of the role as it stands,
+/// where a fixture is missing. True when the switch is set.
+fn record(role: &str) -> bool {
+    if !recording() {
         return false;
     }
-    for role in ROLES {
-        let (path, rpath) = (fixture(role), rebuild_fixture(role));
-        if path.is_file() && rpath.is_file() {
-            continue;
-        }
-        let (w, r) = fixed_talk(&[("policy", "role", json!(role))], None, None, |_| {});
-        std::fs::create_dir_all(path.parent().expect("a dir")).expect("fixture dir");
-        if !path.is_file() {
-            std::fs::write(&path, sj::to_string_pretty(&w).expect("json") + "\n")
-                .expect("the fixture is written");
-        }
-        if !rpath.is_file() {
-            std::fs::write(&rpath, sj::to_string_pretty(&r).expect("json") + "\n")
-                .expect("the fixture is written");
-        }
+    let (path, rpath) = (fixture(role), rebuild_fixture(role));
+    if path.is_file() && rpath.is_file() {
+        return true;
+    }
+    let (w, r) = fixed_talk(&[("policy", "role", json!(role))], None, None, |_| {});
+    std::fs::create_dir_all(path.parent().expect("a dir")).expect("fixture dir");
+    if !path.is_file() {
+        std::fs::write(&path, sj::to_string_pretty(&w).expect("json") + "\n")
+            .expect("the fixture is written");
+    }
+    if !rpath.is_file() {
+        std::fs::write(&rpath, sj::to_string_pretty(&r).expect("json") + "\n")
+            .expect("the fixture is written");
     }
     true
 }
 
+/// The recorded window of `role` and its recorded rebuild, as compared.
+fn recorded(role: &str) -> (Value, Value) {
+    let (path, rpath) = (fixture(role), rebuild_fixture(role));
+    for p in [&path, &rpath] {
+        assert!(
+            p.is_file(),
+            "{role}: no fixture at {} -- recorded once with {BLESS}=1 before the move",
+            p.display()
+        );
+    }
+    (read_json(&path), compared(&read_json(&rpath)))
+}
+
+/// The talk for a main target whose profile is the value set of `role` gives
+/// the bytes recorded with the knob.
+fn the_value_set_cuts_the_same_window(role: &str) {
+    if !shipped() || record(role) {
+        return;
+    }
+    let mut failures = Vec::new();
+    let (want, want_rebuild) = recorded(role);
+    // The sets with a `summary` tier and a floor below the talk condense:
+    // talky's token floor (`keep_recent_tokens` 80000) keeps the whole
+    // talk raw, research has no `summary` tier.
+    let asks = !want_rebuild["summarizer"]
+        .as_array()
+        .is_none_or(|a| a.is_empty());
+    if asks != ["quick", "consult", "coding"].contains(&role) {
+        failures.push(format!(
+            "{role}: the recorded rebuild asks the summarizer: {asks} -- the talk does not \
+             reach the value set as it should"
+        ));
+    }
+    let main_profile = {
+        let mut p = value_set(role);
+        p["system"] = json!("delta");
+        p
+    };
+    let (got, got_rebuild) = fixed_talk(&[], Some("main"), Some("side"), |h| {
+        announce_profile(h, "main", main_profile);
+        announce_profile(h, "side", fast_profile(role));
+    });
+    let got_rebuild = compared(&got_rebuild);
+    for part in ["system", "messages", "tool_scope"] {
+        if canonical(&want[part]) != canonical(&got[part]) {
+            failures.push(format!(
+                "{role}: `{part}` differs\n  role:    {}\n  profile: {}",
+                canonical(&want[part]),
+                canonical(&got[part])
+            ));
+        }
+    }
+    for part in ["summarizer", "plan"] {
+        if canonical(&want_rebuild[part]) != canonical(&got_rebuild[part]) {
+            failures.push(format!(
+                "{role}: the rebuild's `{part}` differs\n  role:    {}\n  profile: {}",
+                canonical(&want_rebuild[part]),
+                canonical(&got_rebuild[part])
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// One test per value set; a set of `VALUE_SETS` without its test is a red
+/// test (`every_value_set_has_its_test`).
+macro_rules! per_role {
+    ($($test:ident: $role:literal),+ $(,)?) => {
+        const TESTED: &[&str] = &[$($role),+];
+        $(
+            #[test]
+            fn $test() {
+                the_value_set_cuts_the_same_window($role);
+            }
+        )+
+    };
+}
+
+per_role! {
+    the_talky_set_cuts_the_same_window: "talky",
+    the_quick_set_cuts_the_same_window: "quick",
+    the_consult_set_cuts_the_same_window: "consult",
+    the_coding_set_cuts_the_same_window: "coding",
+    the_research_set_cuts_the_same_window: "research",
+}
+
 #[test]
-fn gh_d58_target_the_moved_value_sets_cut_the_same_windows() {
-    if !shipped() || record() {
+fn every_value_set_has_its_test() {
+    assert_eq!(TESTED, ROLES);
+}
+
+/// The recording switch is set: the guard and the compositions say nothing.
+fn recording() -> bool {
+    std::env::var(BLESS).as_deref() == Ok("1")
+}
+
+/// The guard: a value set that moved wrongly must change a byte, so the
+/// five recorded windows and the five rebuilds are pairwise different.
+#[test]
+fn the_recorded_windows_and_rebuilds_differ_pairwise() {
+    if !shipped() || recording() {
         return;
     }
     let mut failures = Vec::new();
     let mut windows: Vec<(&str, String)> = Vec::new();
     let mut rebuilds: Vec<(&str, String)> = Vec::new();
     for role in ROLES {
-        let (path, rpath) = (fixture(role), rebuild_fixture(role));
-        for p in [&path, &rpath] {
-            assert!(
-                p.is_file(),
-                "{role}: no fixture at {} -- recorded once with {BLESS}=1 before the move",
-                p.display()
-            );
-        }
-        let want = read_json(&path);
-        let want_rebuild = compared(&read_json(&rpath));
+        let (want, want_rebuild) = recorded(role);
         windows.push((role, canonical(&want)));
         rebuilds.push((role, canonical(&want_rebuild)));
-        // The sets with a `summary` tier and a floor below the talk condense:
-        // talky's token floor (`keep_recent_tokens` 80000) keeps the whole
-        // talk raw, research has no `summary` tier.
-        let asks = !want_rebuild["summarizer"]
-            .as_array()
-            .is_none_or(|a| a.is_empty());
-        if asks != ["quick", "consult", "coding"].contains(&role) {
-            failures.push(format!(
-                "{role}: the recorded rebuild asks the summarizer: {asks} -- the talk does not \
-                 reach the value set as it should"
-            ));
-        }
-        let main_profile = {
-            let mut p = value_set(role);
-            p["system"] = json!("delta");
-            p
-        };
-        let (got, got_rebuild) = fixed_talk(&[], Some("main"), Some("side"), |h| {
-            announce_profile(h, "main", main_profile);
-            announce_profile(h, "side", fast_profile(role));
-        });
-        let got_rebuild = compared(&got_rebuild);
-        for part in ["system", "messages", "tool_scope"] {
-            if canonical(&want[part]) != canonical(&got[part]) {
-                failures.push(format!(
-                    "{role}: `{part}` differs\n  role:    {}\n  profile: {}",
-                    canonical(&want[part]),
-                    canonical(&got[part])
-                ));
-            }
-        }
-        for part in ["summarizer", "plan"] {
-            if canonical(&want_rebuild[part]) != canonical(&got_rebuild[part]) {
-                failures.push(format!(
-                    "{role}: the rebuild's `{part}` differs\n  role:    {}\n  profile: {}",
-                    canonical(&want_rebuild[part]),
-                    canonical(&got_rebuild[part])
-                ));
-            }
-        }
     }
-    // The guard: a value set that moved wrongly must change a byte, so the
-    // five recorded windows and the five rebuilds are pairwise different.
     for (what, seen) in [("window", &windows), ("rebuild", &rebuilds)] {
         for (i, (a, x)) in seen.iter().enumerate() {
             for (b, y) in seen.iter().skip(i + 1) {
@@ -424,6 +474,14 @@ fn gh_d58_target_the_moved_value_sets_cut_the_same_windows() {
             }
         }
     }
-    failures.extend(composition_findings());
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn the_compositions_carry_the_moved_values() {
+    if !shipped() || recording() {
+        return;
+    }
+    let failures = composition_findings();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

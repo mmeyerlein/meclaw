@@ -1,4 +1,4 @@
-# `operator@1.2.10`
+# `operator@1.3.0`
 
 **One front door into the OS, and one place a submission lives.** A sealed hive at the
 colony shell with one occupant per subject, reached by naming a lane and never a cell. It
@@ -68,11 +68,15 @@ question this template does not ask.
 | in | `in_draft` | a manifest the baumeister drew for an operator. Parked, answered, **not applied** — the only sender is the level's own `./builder -> ./operator` edge |
 | in | `in_verdict` | the broker's answer to the one capability question a submission asks — the only sender is the level's own `./access -> ./operator` edge |
 | in | `export_done` | what the export lane answered |
+| in | `in_params` | a params-only update for one running cell: `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. See *A parameter update* ([#1353](https://github.com/mmeyerlein/meclaw/issues/1353)) |
+| in | `in_params_answer` | the answer of the cell an `in_params` update named -- the only senders are the level's own edges, which re-stamp `params_applied` and `params_refused` onto it |
 | out | `export` | the export request on its way down, carrying `hop.target` and — when the caller named one — `hop.export_to` |
 | out | `receipt` | what happened — **four senders, one lane** |
 | out | `ask` | the capability question, raised by `./submit` and answered back in on `in_verdict` |
 | out | `mutate` | the checked, attributed manifest, on its way to a door the colony's root draws or nobody does |
 | out | `sub_receipt` | the submitter's own receipt, let out **only** when it carries `hop.error_code` or `hop.registers_class` |
+| out | `params_receipt` | the answer of the cell an `in_params` update named, in its own words |
+| out | `params_applied`, `params_refused` | the same answer from a cell INSIDE this hive, before the level re-stamps it |
 
 `in_receipt` and `apply` were lanes of this rim through 1.0.0 and are edges inside it now:
 `./intake -> ./submit` and `./submit -> ./intake`. Three lanes arrived in their place, and
@@ -105,6 +109,7 @@ learns which one they typed instead of reading a queue.
 | `submit/` | `in_apply`, `in_verdict` | a **ref** onto the `submit` template: the gate that asks the broker and the one node in the tree with a reach onto the mutation door |
 | `export/` | `in_dump`, `export_done` | turns `{target, export_to?}` into a request on the lane the memory accepts, and renders `hop.export_hive` / `hop.seed_dir` out of what comes back |
 | `lifecycle/` | `in_lifecycle` | composes a birth / sleep / wake manifest and hands it to `intake` next door |
+| `params/` | `in_params_answer` | hands the answer of a cell on as `params_receipt`; reads and checks nothing |
 | `unknown/` | nothing else fired | one receipt, `unknown_route` |
 | `drafts/` | only `./intake` | a `store`: one row per parked draft, keyed by its digest |
 
@@ -183,6 +188,55 @@ that speaks the `lifecycle` occupant's dialect rather than the hop's.
 tells the shell to send the draft to `in_submit` the way it did before — for a rebuild script
 replaying wishes somebody has already read. The default is the halt, because a proposal that
 applies itself by default is the surprising one.
+
+## A parameter update (`in_params`, [#1353](https://github.com/mmeyerlein/meclaw/issues/1353))
+
+An operator changes a running cell inside a sealed hive without a rebirth and without parking
+the cell's store:
+
+```
+POST /messages  {"target": "/os",
+                 "hop": {"route": "in_params",
+                         "subscriber": "/os/orgs/acme/members/alex/assistants/scribe/talky/quick"},
+                 "body": {"system": {}, "params": {"tool_call_limit": 24}}}
+
+   -> params_receipt   hop.params_answer       = "params_applied"
+                       hop.applied_subscriber  = "<the cell>"
+   or params_receipt   hop.params_answer       = "params_refused"
+                       hop.refused_subscriber  = "<the cell>"
+                       hop.error_code          = "<the cell's own code>"
+                       body.meta.detail        = "<why>"
+```
+
+The update needs no cell here: it passes the hive path unchanged, and the level's edge carries it
+on. Nothing is checked on the way and no table of keys is kept. What a cell takes is the cell's own
+rule, and it applies an update only when `hop.subscriber` is its own path. The lane carries an update
+and nothing else: work in the body (a turn, an op, `system`, an attachment) is not run but answered
+with `params_refused` and `invalid_input`; a store whose contract requires `messages` refuses work
+without them one step earlier, as `consumes_violation` and without a receipt. The answer comes back on
+a lane of its own, because a cell of THIS hive answers on `params_applied` and `params_refused` too.
+It is not `receipt`: a level above reads `receipt` as the outcome of a submission.
+
+At the level above, the shell draws:
+
+```
+.            --in_params-->       ./operator     unchanged
+./operator   --in_params-->       ./orgs         unchanged, guarded: hop.subscriber under that hive;
+                                                 likewise to each other shell hive with the door
+./orgs       --params_applied-->  ./operator     set_hop route 'in_params_answer'
+./orgs       --params_refused-->  ./operator     set_hop route 'in_params_answer'
+./operator   --params_receipt-->  .
+```
+
+- A target without a door is a dead letter, `hive_no_route`, and nobody answers. The default door
+  (*An unknown lane is an answer*) stays closed to this lane on purpose.
+- A path under a door hive where no cell stands may end on the name of another cell: that cell
+  applies nothing and refuses in its own shape, on its own error road and not to the asker.
+- A store with `write_surface: "internal"` answers `params_refused` with `write_denied`, and a timer
+  whose `accept_ops` does not list `params` with `op_not_accepted`.
+
+A level that sends `in_params` subscribes to `params_receipt` (`params.required_drains`). The whole
+road: `docs/meclaw-overview.md` § Params into a sealed hive.
 
 ## What it is not
 
@@ -330,6 +384,8 @@ rather than a lane every level offers separately.
   `code.author` is enabled.
 - `crates/meclaw-cells/tests/misc_3/gh425_the_digest_is_one_definition.rs` — the digest helper,
   byte for byte, across every script that carries it.
+- `crates/meclaw-colony/tests/misc/params_road_out_of_the_shell.rs` — the params road: the answer
+  as `params_receipt`, the edges the builder draws, and the form the submitter's gate holds them to.
 - `crates/meclaw-cells/tests/misc_4/gh474_a_draft_waits_for_a_yes.rs` — the halt: what `in_draft` parks
   and answers, what a quoted digest un-parks, what an unknown one refuses, and which of the two
   roads the shell takes with and without `hop.auto_submit`.

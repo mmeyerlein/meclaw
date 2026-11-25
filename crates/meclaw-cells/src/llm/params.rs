@@ -130,10 +130,12 @@ pub enum CacheMode {
     /// The Messages wire (`provider: "anthropic"`) takes the top-level
     /// `cache_control` mark instead (GH #1241).
     Implicit,
-    /// Chat-completions: `cache_control` marks at the end of the system
-    /// message and at the end of the stable history; the Messages wire marks
-    /// the same two ends (GH #1241). The Responses wire has no block marks and
-    /// falls back to `implicit` (OR-KX-C1).
+    /// Chat-completions and the Messages wire (GH #1241): `cache_control`
+    /// marks at the end of the system part, at the end of the stable history
+    /// and, when the request ends on a tool result, at the end of that round
+    /// (OR-58-63; on the Messages wire not when the round's thinking is sent
+    /// back). The Responses wire has no block marks and falls back to
+    /// `implicit` (OR-KX-C1).
     Breakpoints,
 }
 

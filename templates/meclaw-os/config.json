@@ -37,11 +37,11 @@
         },
         {
           "route": "in_hand",
-          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from \"llm-registry@2.16.1\""
+          "because": "a command for the colony's model registry: move a tier, set or clear a replacement (\"model X everywhere -> Y\", \"this brain -> Y\"), reset one cell, register a subscriber and what it states it needs, keep the catalogue (`model_upsert`, `model_retire`), ask again what a failed translation left open (`retranslate`), or read the view per cell (`show`). The shell carries the lane because the registry is ONE per colony and every brain an organisation grows is its subscriber. The door edge promotes `context.actor` to `operator`: whoever posts at this rim is the operator of this colony, and a command with no actor would be refused inside. Derived from \"llm-registry@2.16.2\""
         },
         {
           "route": "in_select",
-          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from \"llm-registry@2.16.1\""
+          "because": "a question for the colony's model registry: which model serves this tier or these requirements, right now. The door edge promotes `context.asker` to `operator`. Derived from \"llm-registry@2.16.2\""
         },
         {
           "route": "in_turn",
@@ -78,6 +78,10 @@
         {
           "route": "in_lifecycle",
           "because": "birth, sleep or wake for a node somewhere in the colony. It is a lane of the shell for the same reason `in_submit` is: what it becomes is a manifest, and the one authoring path is here. Derived from operator@1.0.0"
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this colony (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. It passes the front door, and this level's own edges carry it on to the hive the path names -- the organisations, or one of the shell's own hives. Answered by exactly one `params_receipt`; a path no door leads to ends as the dead letter `hive_no_route`. It is a lane of the shell because the contact stands here and the organisations below draw no edge from a sender of their own. Derived from operator"
         },
         {
           "route": "in_export",
@@ -156,6 +160,10 @@
         {
           "route": "receipt",
           "because": "what the front door answered -- a submission's counts, an export's result, a refusal, or a lane nobody wired. It is not `ack`: `ack` is a decided outcome of the broker or of an organisation, and a receipt is the record of a change an operator asked for. Only the receipts of a caller OUTSIDE the colony leave here: a receipt marked `hop.submitter_kind == 'agent'` belongs to the assistant that submitted, and this level's own `./operator -> ./orgs` edge carries it back down as `in_build_result` instead. The colony that instantiates this shell MUST drain what does leave, or an operator learns nothing about a manifest that has no rollback. Derived from operator@1.0.0"
+        },
+        {
+          "route": "params_receipt",
+          "because": "what the addressed cell answered to an `in_params` update (GH #1353): `hop.params_answer` is `params_applied` or `params_refused`, the cell names itself in `applied_subscriber` or `refused_subscriber`, and a refusal carries the cell's own code and its detail. It is not `receipt`: that one is the record of a manifest, this one the word of one cell. Derived from operator"
         },
         {
           "route": "close_report",
@@ -806,6 +814,128 @@
           "from": ".",
           "to": "./operator",
           "condition": "has(hop.route) && hop.route == 'in_lifecycle'"
+        },
+        {
+          "from": ".",
+          "to": "./operator",
+          "condition": "has(hop.route) && hop.route == 'in_params'"
+        },
+        {
+          "from": "./operator",
+          "to": "./orgs",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.startsWith('/os/orgs/')"
+        },
+        {
+          "from": "./operator",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.startsWith('/os/access/')"
+        },
+        {
+          "from": "./operator",
+          "to": "./argus",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.startsWith('/os/argus/')"
+        },
+        {
+          "from": "./operator",
+          "to": "./builder",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.startsWith('/os/builder/')"
+        },
+        {
+          "from": "./operator",
+          "to": "./llm-registry",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.startsWith('/os/llm-registry/')"
+        },
+        {
+          "from": "./orgs",
+          "to": "./operator",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_params_answer'"
+            }
+          }
+        },
+        {
+          "from": "./access",
+          "to": "./operator",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_params_answer'"
+            }
+          }
+        },
+        {
+          "from": "./argus",
+          "to": "./operator",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_params_answer'"
+            }
+          }
+        },
+        {
+          "from": "./builder",
+          "to": "./operator",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_params_answer'"
+            }
+          }
+        },
+        {
+          "from": "./llm-registry",
+          "to": "./operator",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
+          "modifier": {
+            "set_hop": {
+              "route": "'in_params_answer'"
+            }
+          }
+        },
+        {
+          "from": "./operator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'params_receipt'",
+          "modifier": {
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./operator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'params_applied' && has(hop.applied_subscriber) && hop.applied_subscriber.startsWith('/os/operator/')",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_receipt'"
+            },
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
+        },
+        {
+          "from": "./operator",
+          "to": ".",
+          "condition": "has(hop.route) && hop.route == 'params_refused' && has(hop.refused_subscriber) && hop.refused_subscriber.startsWith('/os/operator/')",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_receipt'"
+            },
+            "delete_context": [
+              "operator_caller",
+              "requester_build_op",
+              "sub_sha"
+            ]
+          }
         },
         {
           "from": "./operator",

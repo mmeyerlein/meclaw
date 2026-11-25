@@ -13,6 +13,10 @@
         {
           "route": "in_model",
           "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to `./writer`, the one llm cell of this hive, past every other cell, because a params body is not a request. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
@@ -31,6 +35,14 @@
         {
           "route": "error",
           "because": "a failure of `./access`, the broker that hands this template's cells their credentials sealed (GH #801): a refused or failed credential round. Which cell inside produced it is not the caller's business; a parent that drains nothing loses every refusal"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -39,7 +51,7 @@
         {
           "from": ".",
           "to": "./prep",
-          "condition": "has(hop.route) && hop.route.startsWith('in_') && hop.route != 'in_model'"
+          "condition": "has(hop.route) && hop.route.startsWith('in_') && hop.route != 'in_model' && !(has(hop.route) && hop.route == 'in_params')"
         },
         {
           "from": ".",
@@ -80,7 +92,7 @@
         {
           "from": "./writer",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -128,6 +140,52 @@
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
+            "delete_context": [
+              "window_refit"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./access",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.matches('/access/[^/]+$')"
+        },
+        {
+          "from": ".",
+          "to": "./writer",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/writer')"
+        },
+        {
+          "from": "./access",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
+          "modifier": {
+            "delete_context": [
+              "window_refit"
+            ]
+          }
+        },
+        {
+          "from": "./writer",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "window_refit"
+            ]
+          }
+        },
+        {
+          "from": "./writer",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "window_refit"
             ]

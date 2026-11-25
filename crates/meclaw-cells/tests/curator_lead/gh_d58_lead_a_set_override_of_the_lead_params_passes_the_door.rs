@@ -65,7 +65,6 @@ fn set_value(knob: &str, shipped: &Value) -> Value {
         "path_routes" => json!("talk:brain,simple:quick,*:brain"),
         "departures" => json!("consult:10000"),
         "fallback" => json!("quick:brain"),
-        "spec_target" => json!("quick_spec"),
         "bridge_target" => json!("*:quick"),
         _ => shipped.clone(),
     }

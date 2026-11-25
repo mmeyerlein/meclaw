@@ -3,13 +3,13 @@
 //!
 //! WHY this file exists: the curator tells its switch what only the window
 //! sees -- a note at every closed turn (`turn_end`), at an escalation, at a
-//! consult the speaking model started (`lead_note`), and the events of a
-//! speculation: a spec answer, a partial, a delta stamp (`lead_spec`). With
+//! consult the speaking model started (`lead_note`), and the delta stamp
+//! (GH #1584: since the speculation is gone it rides `lead_note` too). With
 //! the switch a hive of its own, every one of them crosses the curator's
 //! boundary; in a composite without a lead each would end as a dead letter
 //! `hive_no_route` there, one per turn at least. Without a lead none is
-//! sent: whole turns, an errand the speaking model starts itself, a spec
-//! answer, a partial and a delta stamp reach the curator, and nothing
+//! sent: whole turns, an errand the speaking model starts itself and a delta
+//! stamp reach the curator, and nothing
 //! leaves on a lane to a lead.
 //!
 //! Runs the shipped curator hive (`support/curator_hive.rs`) without a lead;
@@ -55,33 +55,16 @@ fn gh_d58_lead_without_a_lead_no_event_and_no_note_leaves() {
         json!([tool_call("e1", "ask_advice")]),
     );
     seen.extend(to_lead(&h));
-    // The events of a speculation, as a composite with a fast voice sends
-    // them: a delta stamp, a partial and an answer of a spec call.
+    // The delta stamp, as a composite with a fast voice sends it.
     let ctx = json!({"session_id": "s1", "turn_id": "t4", "iter": "0",
                      "curator_call": first.hop["curator_call"], "audience_set": ROUND_E});
     h.out.clear();
     h.lane(
         "in_delta_stamp",
-        ctx.clone(),
+        ctx,
         json!({"session_id": "s1", "turn_id": "t4"}),
         json!({"messages": [], "stamp": {"turn_id": "t4", "path": "simple",
                                           "text_norm": "plan my week"}}),
-    );
-    seen.extend(to_lead(&h));
-    h.out.clear();
-    h.lane(
-        "in_spec_partial",
-        ctx.clone(),
-        json!({"session_id": "s1", "turn_id": "t4"}),
-        json!({"messages": [said("Let me")]}),
-    );
-    seen.extend(to_lead(&h));
-    h.out.clear();
-    h.lane(
-        "in_spec_llm",
-        ctx,
-        json!({"session_id": "s1", "turn_id": "t4", "finish_reason": "stop"}),
-        json!({"messages": [said("Let me see.")]}),
     );
     seen.extend(to_lead(&h));
     assert!(

@@ -2,13 +2,13 @@
 //!
 //! WHY this file exists: the switch of the curator -- which way a call leaves
 //! on (`path_routes`, `way_of`), the memory rule (`recall_to_fallback`), the
-//! speculation's verdict, the escalation of the quick voice, the clarify
+//! escalation of the quick voice, the clarify
 //! turn, the bridge and the live feed -- lived spread over ~1 830 lines of
 //! `curator/policy`, interleaved with the window it shapes (`win` 7005 ->
 //! 7612). R-38-4 takes it out into a cell of its own, `curator/lead`, with
 //! a narrow contract: in, the route stamp (`path`, `needs`, `families`) and
 //! the turn's head (channel, engine, session, call id, turn, tool iteration,
-//! consult id, spec, escalation); out, one verdict. This table pins the
+//! consult id, escalation); out, one verdict. This table pins the
 //! verdict of the pure decision `lead_verdict(stamp, head, state)` of the
 //! shipped lead script for every way the C0 corpus records -- the same cases
 //! the policy decided before the move, so the move changes no way.
@@ -48,12 +48,12 @@ use curator_hive::*;
 use meclaw_core::serde_json::{Value, json};
 
 /// The fields of the verdict the table pins, in this order.
-const FIELDS: [&str; 6] = ["target", "fallback", "departs", "side", "reason", "spec"];
+const FIELDS: [&str; 5] = ["target", "fallback", "departs", "side", "reason"];
 
 fn head(extra: Value) -> Value {
     let mut h = json!({"channel": "text", "live": "", "session": "s1",
                        "turn": "t1", "iter": 0, "ask_id": "", "ask_class": "",
-                       "spec": "", "escalate": ""});
+                       "escalate": ""});
     for (k, v) in extra.as_object().cloned().unwrap_or_default() {
         h[k] = v;
     }
@@ -65,7 +65,7 @@ fn stamp(path: &str, needs: Value, families: Value) -> Value {
 }
 
 fn no_state() -> Value {
-    json!({"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}})
+    json!({"escalated": "", "ask_pending": {}})
 }
 
 fn state(extra: Value) -> Value {
@@ -76,18 +76,16 @@ fn state(extra: Value) -> Value {
     s
 }
 
-/// The verdict of a call on `way` under talky's wiring: `target` the way's
-/// own target (`quick_spec` for the spec call; `held` -- a kept answer -- is
-/// the fast target `quick` again), `departs` for an errand way. `bridge` is
+/// The verdict of a call on `way` under talky's wiring: `departs` for an
+/// errand way. `bridge` is
 /// the side call beside it, as the way of before named it: `tool` under
 /// `must_call` and first, an errand class under `external` -- `consult`
 /// with the person's turn, `research` with the target's window
 /// (`bridge_wording` of talky).
-fn verdict(way: &str, target: &str, reason: &str, spec: &str, bridge: &str) -> Value {
+fn verdict(way: &str, reason: &str, bridge: &str) -> Value {
     let (t, fallback, departs) = match way {
         "consult" => ("", "", json!({"class": "consult", "wait_ms": 10000})),
         "research" => ("", "", json!({"class": "research", "wait_ms": 120000})),
-        "quick" if target == "quick_spec" => ("quick_spec", "", json!({})),
         "quick" => ("quick", "brain", json!({})),
         other => (other, "", json!({})),
     };
@@ -102,12 +100,7 @@ fn verdict(way: &str, target: &str, reason: &str, spec: &str, bridge: &str) -> V
         _ => json!([{"when": "external", "target": "quick", "window": "turn", "first": false}]),
     };
     json!({"target": t, "fallback": fallback, "departs": departs, "side": side,
-           "reason": reason, "spec": spec})
-}
-
-fn with(mut v: Value, k: &str, x: Value) -> Value {
-    v[k] = x;
-    v
+           "reason": reason})
 }
 
 /// The verdict of the shipped lead under the params `over`, cut to [`FIELDS`].
@@ -165,8 +158,6 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
         return;
     }
     let none = json!([]);
-    let spec_on = json!({"spec_ahead": "1"});
-    let fired = json!({"spec": {"call": "c-other", "state": "fired"}});
     // (case, params, stamp, head, state, verdict)
     let table: Vec<(&str, Value, Value, Value, Value, Value)> = vec![
         (
@@ -175,7 +166,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("talk", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("brain", "brain", "path", "", ""),
+            verdict("brain", "path", ""),
         ),
         (
             "simple is the quick voice's",
@@ -183,7 +174,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("quick", "quick", "path", "", ""),
+            verdict("quick", "path", ""),
         ),
         (
             "a simple turn that needs a tool gets the tool round and its bridge",
@@ -191,7 +182,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", json!(["tool"]), json!(["weather"])),
             head(json!({})),
             no_state(),
-            verdict("quick", "quick", "path", "", "tool"),
+            verdict("quick", "path", "tool"),
         ),
         (
             "complex is a consult with its bridge",
@@ -199,7 +190,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("complex", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("consult", "backend", "path", "", "consult"),
+            verdict("consult", "path", "consult"),
         ),
         (
             "research is an errand with its bridge",
@@ -207,7 +198,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("research", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("research", "backend", "path", "", "research"),
+            verdict("research", "path", "research"),
         ),
         (
             "no stamp keeps the brain",
@@ -215,7 +206,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("brain", "brain", "no_path", "", ""),
+            verdict("brain", "no_path", ""),
         ),
         (
             "a path path_routes does not name keeps the brain",
@@ -223,7 +214,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("dance", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("brain", "brain", "no_route", "", ""),
+            verdict("brain", "no_route", ""),
         ),
         (
             "a name path_routes gives is the target as it stands -- a target is any name the \
@@ -232,7 +223,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("fly", "fly", "path", "", ""),
+            verdict("fly", "path", ""),
         ),
         (
             "the answer of a consult is spoken, never consulted again",
@@ -240,7 +231,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("complex", none.clone(), none.clone()),
             head(json!({"ask_id": "k-c0"})),
             no_state(),
-            verdict("brain", "brain", "answer", "", ""),
+            verdict("brain", "answer", ""),
         ),
         (
             "a clarify turn goes by path_routes like any class without its own entry",
@@ -248,7 +239,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("clarify", none.clone(), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("brain", "brain", "no_route", "", ""),
+            verdict("brain", "no_route", ""),
         ),
         (
             "recall_to_fallback sends a simple memory turn to the brain",
@@ -256,7 +247,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", json!(["memory"]), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("brain", "brain", "memory", "", ""),
+            verdict("brain", "memory", ""),
         ),
         (
             "off, the memory turn stays quick",
@@ -264,15 +255,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", json!(["memory"]), none.clone()),
             head(json!({})),
             no_state(),
-            verdict("quick", "quick", "path", "", ""),
-        ),
-        (
-            "a spec curate rides the quick way to its own cell",
-            spec_on.clone(),
-            stamp("", none.clone(), none.clone()),
-            head(json!({"spec": "1"})),
-            no_state(),
-            verdict("quick", "quick_spec", "spec", "call", ""),
+            verdict("quick", "path", ""),
         ),
         (
             "a tool round that came back without a call escalates",
@@ -280,7 +263,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", json!(["tool"]), none.clone()),
             head(json!({"iter": 1, "escalate": "no_tool_call"})),
             no_state(),
-            verdict("brain", "brain", "escalate:no_tool_call", "", ""),
+            verdict("brain", "escalate:no_tool_call", ""),
         ),
         (
             "an escalated turn stays with the brain in its next iteration",
@@ -288,7 +271,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", json!(["tool"]), none.clone()),
             head(json!({"iter": 1})),
             state(json!({"escalated": "t1"})),
-            verdict("brain", "brain", "escalated", "", ""),
+            verdict("brain", "escalated", ""),
         ),
         (
             "past fast_max_iter the brain speaks",
@@ -296,7 +279,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", json!(["tool"]), none.clone()),
             head(json!({"iter": 3})),
             no_state(),
-            verdict("brain", "brain", "iterations", "", ""),
+            verdict("brain", "iterations", ""),
         ),
         (
             "a turn of a running session takes the way of its stamp",
@@ -304,7 +287,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("talk", none.clone(), none.clone()),
             head(json!({"channel": "phone", "live": "call-1"})),
             no_state(),
-            verdict("brain", "brain", "path", "", ""),
+            verdict("brain", "path", ""),
         ),
         (
             "a phone turn takes the way of its stamp",
@@ -312,53 +295,7 @@ fn the_lead_names_way_and_target_for_every_way_of_the_corpus() {
             stamp("simple", none.clone(), none.clone()),
             head(json!({"channel": "phone"})),
             no_state(),
-            verdict("quick", "quick", "path", "", ""),
-        ),
-        (
-            "a talk stamp drops the speculation",
-            spec_on.clone(),
-            stamp("talk", none.clone(), none.clone()),
-            head(json!({})),
-            state(fired.clone()),
-            verdict("brain", "brain", "path", "dropped:path:talk", ""),
-        ),
-        (
-            "a memory turn drops the speculation",
-            json!({"spec_ahead": "1", "recall_to_fallback": "1"}),
-            stamp("simple", json!(["memory"]), none.clone()),
-            head(json!({})),
-            state(fired.clone()),
-            verdict("brain", "brain", "memory", "dropped:memory", ""),
-        ),
-        (
-            "a quick turn waits for the spec answer",
-            spec_on.clone(),
-            stamp("simple", none.clone(), none.clone()),
-            head(json!({})),
-            state(fired.clone()),
-            verdict("quick", "quick", "path", "wait", ""),
-        ),
-        (
-            "a held spec answer is kept and no call goes",
-            spec_on.clone(),
-            stamp("simple", none.clone(), none.clone()),
-            head(json!({})),
-            state(json!({"spec": {"call": "c-other", "state": "held"},
-                      "spec_held": {"call": "c-other", "answer": "Sunny.", "finish": "stop"}})),
-            verdict("quick", "held", "path", "kept", ""),
-        ),
-        (
-            "a family the spec call could not reach dooms it",
-            spec_on.clone(),
-            stamp("simple", json!(["tool"]), json!(["orga"])),
-            head(json!({})),
-            state(fired.clone()),
-            with(
-                verdict("quick", "quick", "path", "dropped:family:orga", "tool"),
-                "side",
-                json!([{"when": "must_call", "target": "quick_bridge", "window": "turn",
-                        "first": true}]),
-            ),
+            verdict("quick", "path", ""),
         ),
     ];
     let mut wrong = Vec::new();

@@ -21,8 +21,11 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS))
 
 from pipeline import events  # noqa: E402
+from pipeline import register  # noqa: E402
 
 RUNNER = str(SCRIPTS / "pipeline" / "unit_runner.py")
+REPLAY = SCRIPTS / "tests" / "fixtures" / "pipeline" / "unit_select_replay.json"
+REGISTER_PY = SCRIPTS / "pipeline" / "register.py"
 
 
 # gate-selftest loads every module into one process: no fixture event of this
@@ -430,6 +433,305 @@ class TestTailKeepsFailures(unittest.TestCase):
     def test_a_short_output_is_kept_whole(self):
         lines = ["a", "FAIL: x", "b"]
         self.assertEqual(lines, unit_runner.keep_failures(lines, 30))
+
+
+# --- the diff selection (#1605) -------------------------------------------------
+# A station with `"select": "imports"` runs only the test files whose hull --
+# imports, transitively, plus the repository paths their text names -- reaches
+# a changed file; its `guards` always run; a changed file no hull reaches adds
+# nothing, unless it cannot be read or an unresolved import may name it (#1618);
+# a data file selects the tests that name its deepest named ancestor directory.
+# The cases build a small attrappe repo.
+
+TEST = "import unittest\n{head}\n\nclass T(unittest.TestCase):\n    def test_0(self):\n        pass\n"
+
+# the attrappe: scripts/ on sys.path (as the satellites put it), a support
+# package, a test that reads a data file by its path, a tree scanner (guard)
+TREE = {
+    "scripts/a.py": "A = 1\n",
+    "scripts/b.py": "B = 2\n",
+    "scripts/run.sh": "echo run\n",
+    "lab/data.json": "{}\n",
+    "docs/x.md": "# x\n",
+    "tests/__init__.py": "",
+    "tests/support/__init__.py": "",
+    "tests/support/helper.py": "from scripts import b\n",
+    "tests/kit/__init__.py": "",
+    "tests/kit/test_a.py": TEST.format(
+        head="import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', "
+             "'scripts'))\nimport a"),
+    "tests/kit/test_b.py": TEST.format(head="from tests.support import helper"),
+    "tests/kit/test_c.py": TEST.format(
+        head="import os\nROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))\n"
+             "DATA = os.path.join(ROOT, 'lab', 'data.json')"),
+    "tests/kit/test_guard.py": TEST.format(head="import os"),
+}
+ALL = ["tests/kit/test_a.py", "tests/kit/test_b.py", "tests/kit/test_c.py",
+       "tests/kit/test_guard.py"]
+
+
+class Attrappe(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        for rel, text in TREE.items():
+            write(self.root, rel, text)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def runner(self, *args):
+        try:
+            return subprocess.run(
+                [sys.executable, RUNNER, "--root", self.root, "--include", "tests/*/test_*.py",
+                 "--select", "imports", "--guard", "tests/kit/test_guard.py"] + list(args),
+                capture_output=True, text=True, timeout=4 * kit_time.HANG)
+        except subprocess.TimeoutExpired as exc:
+            raise kit_time.Hang("HANG: unit_runner %s" % " ".join(args)) from exc
+
+    def listed(self, *changed, extra=()):
+        res = self.runner("--list", *["--changed=%s" % c for c in changed], *extra)
+        lines = res.stdout.splitlines()
+        return [l.split(" ", 1)[1] for l in lines if l.startswith("UNIT ")], lines, res
+
+
+class Select(Attrappe):
+    def test_a_diff_at_a_module_runs_exactly_its_tests_plus_the_guards(self):
+        got, _, _ = self.listed("scripts/a.py")
+        self.assertEqual(["tests/kit/test_a.py", "tests/kit/test_guard.py"], got)
+        # transitively through tests.support into scripts/
+        got, _, _ = self.listed("scripts/b.py")
+        self.assertEqual(["tests/kit/test_b.py", "tests/kit/test_guard.py"], got)
+        got, _, _ = self.listed("tests/support/helper.py")
+        self.assertEqual(["tests/kit/test_b.py", "tests/kit/test_guard.py"], got)
+
+    def test_a_path_the_test_text_names_is_in_its_hull(self):
+        got, _, _ = self.listed("lab/data.json")
+        self.assertEqual(["tests/kit/test_c.py", "tests/kit/test_guard.py"], got)
+
+    def test_a_changed_test_file_runs_itself(self):
+        got, _, _ = self.listed("tests/kit/test_c.py")
+        self.assertEqual(["tests/kit/test_c.py", "tests/kit/test_guard.py"], got)
+
+    def test_a_file_no_hull_reaches_selects_nothing_of_its_own(self):
+        # #1618 (OR-w1.reichweite.1): a readable file no test reaches adds no
+        # test; its neighbours in the diff and the guards still run
+        got, lines, _ = self.listed("scripts/a.py", "scripts/run.sh")
+        self.assertEqual(["tests/kit/test_a.py", "tests/kit/test_guard.py"], got, lines[-1:])
+        self.assertNotIn("all run", lines[-1])
+        self.assertIn("imports reach 1 of 2 changed files", lines[-1])
+
+    def test_a_data_file_selects_the_tests_naming_its_deepest_named_directory(self):
+        # Review #1618: the test builds the path below `fixtures/set` from a
+        # variable; the directory holds Python, so the hull keeps it out of its
+        # data directories. A diff at a data file there selects the tests that
+        # name `fixtures/set`, not the ones naming only `fixtures`, not every file
+        write(self.root, "tests/kit/fixtures/set/build.py", "B = 1\n")
+        write(self.root, "tests/kit/fixtures/set/x.json", "{}\n")
+        write(self.root, "tests/kit/test_f.py", TEST.format(
+            head="import os\nSET = os.path.join(os.path.dirname(__file__), 'fixtures', 'set')"))
+        write(self.root, "tests/kit/test_g.py", TEST.format(
+            head="import os\nFIX = os.path.join(os.path.dirname(__file__), 'fixtures')"))
+        got, lines, _ = self.listed("tests/kit/fixtures/set/x.json")
+        self.assertEqual(["tests/kit/test_f.py", "tests/kit/test_guard.py"], got, lines[-1:])
+        self.assertNotIn("all run", lines[-1])
+
+    def test_an_unreadable_file_runs_everything(self):
+        path = os.path.join(self.root, "scripts/locked.py")
+        write(self.root, "scripts/locked.py", "L = 1\n")
+        os.chmod(path, 0)
+        if os.access(path, os.R_OK):
+            self.skipTest("root reads every file")
+        got, lines, _ = self.listed("scripts/locked.py")
+        self.assertEqual(ALL, got)
+        self.assertIn("scripts/locked.py cannot be read (all run)", lines[-1])
+
+    def test_a_module_an_unresolved_import_may_name_runs_everything(self):
+        # test_h imports `hidden` from a sys.path entry the selection cannot
+        # see: a changed hidden.py may be what it imports, so every file runs
+        write(self.root, "lab/deep/hidden.py", "H = 1\n")
+        write(self.root, "tests/kit/test_h.py", TEST.format(
+            head="import os, sys\nsys.path.insert(0, os.environ['HIDDEN_DIR'])\nimport hidden"))
+        got, lines, _ = self.listed("lab/deep/hidden.py")
+        self.assertEqual(sorted(ALL + ["tests/kit/test_h.py"]), sorted(got), lines[-1:])
+        self.assertIn("lab/deep/hidden.py may be an unresolved import (all run)", lines[-1])
+
+    def test_a_module_reached_through_a_named_script_selects_that_test_too(self):
+        # test_sh reaches scripts/x.py only through the shell script it names,
+        # test_imp imports it: a diff at x.py must select both (Review pywahl)
+        write(self.root, "scripts/x.py", "X = 1\n")
+        write(self.root, "scripts/go.sh", '#!/bin/sh\nexec python3 "$ROOT/scripts/x.py" "$@"\n')
+        write(self.root, "tests/kit/test_imp.py", TEST.format(
+            head="import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), "
+                 "'..', '..', 'scripts'))\nimport x"))
+        write(self.root, "tests/kit/test_sh.py", TEST.format(
+            head="import subprocess\nRUN = ['sh', 'scripts/go.sh']"))
+        got, lines, _ = self.listed("scripts/x.py")
+        self.assertEqual(["tests/kit/test_guard.py", "tests/kit/test_imp.py",
+                          "tests/kit/test_sh.py"], sorted(got), lines[-1:])
+
+    def test_a_script_without_suffix_is_followed_by_its_shebang(self):
+        # an executable without a suffix (a `#!` line) runs what it names, so the
+        # hull follows it like go.sh (Delta-Check blattwahl)
+        write(self.root, "scripts/x.py", "X = 1\n")
+        write(self.root, "scripts/go", '#!/bin/sh\nexec python3 "$ROOT/scripts/x.py" "$@"\n')
+        write(self.root, "tests/kit/test_sh.py", TEST.format(
+            head="import subprocess\nRUN = ['sh', 'scripts/go']"))
+        got, lines, _ = self.listed("scripts/x.py")
+        self.assertEqual(["tests/kit/test_guard.py", "tests/kit/test_sh.py"], sorted(got), lines[-1:])
+
+    def test_a_data_file_is_a_leaf(self):
+        # a data file a test names selects that test only when it is itself in
+        # the diff; what the data file names does not widen the hull (Befund #1605)
+        write(self.root, "conf/run.json", '{"run": "scripts/b.py", "also": "scripts/a.py"}\n')
+        write(self.root, "tests/kit/test_d.py", TEST.format(
+            head="import os\nCONF = os.path.join('conf', 'run.json')"))
+        got, lines, _ = self.listed("scripts/b.py")
+        self.assertEqual(["tests/kit/test_b.py", "tests/kit/test_guard.py"], got, lines[-1:])
+        got, lines, _ = self.listed("conf/run.json")
+        self.assertEqual(["tests/kit/test_d.py", "tests/kit/test_guard.py"], got, lines[-1:])
+
+    def test_a_deleted_module_counts_as_unknown(self):
+        os.remove(os.path.join(self.root, "scripts/b.py"))
+        got, _, _ = self.listed("scripts/b.py")
+        # still imported by helper.py: the name resolves to the deleted path
+        self.assertEqual(["tests/kit/test_b.py", "tests/kit/test_guard.py"], got)
+        got, _, _ = self.listed("scripts/gone.py")
+        self.assertEqual(ALL, got)
+
+    def test_documentation_alone_runs_only_the_guards(self):
+        got, _, _ = self.listed("docs/x.md")
+        self.assertEqual(["tests/kit/test_guard.py"], got)
+
+    def test_select_all_runs_everything_and_says_why(self):
+        got, lines, _ = self.listed(extra=["--select-all", "release: every file"])
+        self.assertEqual(ALL, got)
+        self.assertIn("release: every file", lines[-1])
+
+    def test_the_summary_names_k_of_n_files_and_the_reason(self):
+        res = self.runner("--changed=scripts/a.py")
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        last = res.stdout.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("UNIT-SUMMARY 2/2 "), last)
+        self.assertIn("selected 2 of 4 files", last)
+        self.assertIn("1 guard", last)
+
+    def test_nothing_selected_is_green_and_says_so(self):
+        res = subprocess.run(
+            [sys.executable, RUNNER, "--root", self.root, "--include", "tests/*/test_*.py",
+             "--select", "imports", "--changed=docs/x.md"],
+            capture_output=True, text=True, timeout=4 * kit_time.HANG)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("selected 0 of 4 files", res.stdout)
+
+    def test_dir_units_are_selected_by_their_files(self):
+        res = subprocess.run(
+            [sys.executable, RUNNER, "--root", self.root, "--include", "tests/*/test_*.py",
+             "--by", "dir", "--list", "--select", "imports", "--changed=scripts/a.py"],
+            capture_output=True, text=True, timeout=4 * kit_time.HANG)
+        self.assertIn("UNIT tests/kit", res.stdout.splitlines())
+
+
+def _replay_tree(root, case):
+    for rel, text in case["tree"].items():
+        write(root, rel, text)
+    for i in range(case["fillers"]):
+        write(root, "tests/filler/test_%d.py" % i, "")
+
+
+class Replay(unittest.TestCase):
+    """Three real diffs of a satellite, neutralised (every path component mapped
+    one-to-one onto a neutral name): the skeleton of every file on the hull of
+    the then red test files and the selected ones (their import lines and the
+    paths they name), the diff, the red files."""
+
+    def test_every_file_that_was_red_is_selected(self):
+        doc = json.loads(REPLAY.read_text(encoding="utf-8"))
+        self.assertEqual({"case_a", "case_b", "case_c"}, {c["name"] for c in doc["cases"]})
+        for case in doc["cases"]:
+            with self.subTest(case=case["name"]), tempfile.TemporaryDirectory() as root:
+                _replay_tree(root, case)
+                tests = unit_runner.find_files(root, case["include"], case.get("exclude", []))
+                picked, reason = unit_runner.select_files(
+                    root, tests, case["diff"], case.get("guards", []))
+                self.assertEqual(sorted(case["selected"]), sorted(picked), reason)
+                for red in case["red"]:
+                    self.assertIn(red, picked, reason)
+                self.assertEqual(case["tests"], len(tests))
+                self.assertLess(len(picked), len(tests), reason)
+                self.assertNotIn("all run", reason)
+                guards = unit_runner.find_files(root, case.get("guards", []))
+                self.assertLessEqual(set(guards), set(picked))
+                if "data_only" in case:
+                    # Review #1618: a diff only at the data file selects the
+                    # tests that name its directory, nothing else, not all
+                    only = case["data_only"]
+                    picked, reason = unit_runner.select_files(root, tests, only["diff"])
+                    self.assertEqual(sorted(only["selected"]), sorted(picked), reason)
+                    self.assertNotIn("all run", reason)
+
+
+# --- the register --------------------------------------------------------------
+
+def _station(**extra):
+    st = {"name": "unit", "scope": "all", "stage": ["strand", "integration", "release"],
+          "cargo": 0, "inputs": ["scripts/**", "tests/**"], "after": [], "timeout_min": 5,
+          "cmds": [{"argv": ["{python}", "{pipeline}/unit_runner.py", "--root", "{root}",
+                             "--include", "tests/*/test_*.py"], "cwd": "{root}"}],
+          "parallel": {"by": "file", "workers": 2}}
+    st.update(extra)
+    return st
+
+
+def _write_register(root, *stations):
+    write(root, "pipeline/stations.json", json.dumps(
+        {"schema": "meclaw.pipeline.stations/1", "repo": "coding",
+         "stations": list(stations)}) + "\n")
+
+
+class RegisterSelect(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def argv(self, mode, files):
+        plan = register.build_plan(self.root, mode, None, files=files)
+        return plan["stations"][0]["cmds"][0]["argv"]
+
+    def test_resolve_hands_the_diff_of_the_stations_inputs_to_a_select_station(self):
+        _write_register(self.root, _station(select="imports", guards=["tests/kit/test_g*.py"]))
+        argv = self.argv("strand", ["docs/a.md", "scripts/a.py", "tests/kit/test_x.py"])
+        tail = argv[argv.index("tests/*/test_*.py") + 1:]
+        self.assertEqual(["--select=imports", "--changed=scripts/a.py",
+                          "--changed=tests/kit/test_x.py", "--guard=tests/kit/test_g*.py"], tail)
+
+    def test_release_and_ci_run_every_file(self):
+        _write_register(self.root, _station(select="imports"))
+        for mode in ("release", "ci"):
+            argv = self.argv(mode, ["scripts/a.py"])
+            self.assertIn("--select=imports", argv)
+            self.assertFalse([a for a in argv if a.startswith("--changed")], mode)
+            self.assertTrue([a for a in argv if a.startswith("--select-all=%s" % mode)], argv)
+
+    def test_a_station_without_select_keeps_its_argv(self):
+        _write_register(self.root, _station())
+        argv = self.argv("strand", ["scripts/a.py"])
+        self.assertEqual("tests/*/test_*.py", argv[-1])
+
+    def test_the_register_refuses_a_bad_select(self):
+        for bad in (_station(select="names"), _station(select="imports", guards="tests/x.py"),
+                    _station(select="imports", cmds=[{"argv": ["{python}", "-c", "1"]}])):
+            _write_register(self.root, bad)
+            with self.assertRaisesRegex(register.RegisterError, r"select|guards"):
+                register.load_register(self.root)
+
+    def test_the_docstring_names_no_switch_that_does_not_exist(self):
+        for path in (REGISTER_PY, pathlib.Path(RUNNER)):
+            self.assertFalse("--pair" in path.read_text(encoding="utf-8"), path.name)
+
 
 
 if __name__ == "__main__":

@@ -40,10 +40,9 @@ fn read(rel: &str) -> Value {
 }
 
 /// The model cells the curators of the shipped composites cut for.
-const TARGETS: [(&str, &str); 7] = [
+const TARGETS: [(&str, &str); 6] = [
     ("talky", "brain"),
     ("talky", "quick"),
-    ("talky", "quick_spec"),
     ("talky", "quick_bridge"),
     ("cogny", "brain"),
     ("simple-agent", "brain"),

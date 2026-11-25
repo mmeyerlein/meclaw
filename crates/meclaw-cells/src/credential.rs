@@ -607,7 +607,10 @@ impl<T: Send + 'static> CredentialSlots<T> {
         };
         // A zero bound would be a channel that cannot be built; one slot is the
         // smallest buffer that still parks the item that triggers the round.
-        let (items_tx, items_rx) = tokio::sync::mpsc::channel(wait_max.max(1));
+        // GH #1627: above `MAX_PERMITS` tokio panics building it, in the cell's
+        // own task at the first parked item; `wait_max` is a plain param.
+        let room = wait_max.clamp(1, tokio::sync::Semaphore::MAX_PERMITS);
+        let (items_tx, items_rx) = tokio::sync::mpsc::channel(room);
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         items_tx
             .try_send(item)

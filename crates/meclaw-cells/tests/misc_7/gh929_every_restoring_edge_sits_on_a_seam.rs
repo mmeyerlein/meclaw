@@ -221,30 +221,8 @@ const SEAMS: &[Row] = &[
         ),
         "< 12 && has(context.inner_source)",
     ),
-    // #1398: the quick voice's siblings -- the speculation and the bridge on
-    // cells of their own -- take the same round, each in both copies.
-    split(
-        row(
-            TALKY,
-            "./curator",
-            "./quick_spec",
-            "model_call",
-            None,
-            Seam::Round,
-        ),
-        "&& !(has(context.inner_source)",
-    ),
-    split(
-        row(
-            TALKY,
-            "./curator",
-            "./quick_spec",
-            "model_call",
-            None,
-            Seam::Round,
-        ),
-        "< 12 && has(context.inner_source)",
-    ),
+    // #1398: the bridge sibling of the quick voice takes the same round, in
+    // both copies (GH #1584: the speculation's sibling is gone).
     split(
         row(
             TALKY,
@@ -266,17 +244,6 @@ const SEAMS: &[Row] = &[
             Seam::Round,
         ),
         "< 12 && has(context.inner_source)",
-    ),
-    // GH #1275: a kept speculative quick answer is the quick call's answer,
-    // released by the curator onto the splitter -- the quick voice's round
-    // once more, bounded by the same iteration counter.
-    row(
-        TALKY,
-        "./curator",
-        "./splitter",
-        "spec_release",
-        None,
-        Seam::Round,
     ),
     // A close job enters the curator (GH #940, ADR-0002 E8): since a turn of
     // another round seals its channel's generation, a `close` can leave the

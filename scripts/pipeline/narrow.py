@@ -477,18 +477,23 @@ def drift_note(cov, since, files, since_terms, rdeps_left, res, now=None, diff_t
     except (KeyError, TypeError, ValueError, AttributeError):
         age = "of unknown age"
     drifted = len(set(since) - set(files))
+    fresh = "a fresh map (`scripts/pipeline.py coverage build`) narrows them"
     return ("narrowing: coverage map %s is %s and predates %d file(s) changed on the base "
             "since (not in this diff) -- rdeps(%s) kept for that drift, %d of %d "
-            "binaries; a fresh map (`scripts/pipeline.py coverage build`) narrows them"
+            "binaries; %s"
             % (str(cov.get("rev"))[:9], age, drifted, ", ".join(held),
-               res["binaries"]["selected"], res["binaries"]["total"]))
+               res["binaries"]["selected"], res["binaries"]["total"], fresh))
 
 
-def state(on, map_rev, narrowed=None):
-    """The narrowing state a selection carries (the cache key reads `on` and `map`)."""
+def state(on, map_rev, narrowed=None, binaries=None):
+    """The narrowing state a selection carries (the cache key reads `on` and `map`
+    only). `binaries` (OR-W1-P-22): `{selected, total, without_map}` of a plan
+    the map narrowed -- k of n test binaries, m without the map."""
     out = {"on": bool(on), "map": str(map_rev or "") if on else ""}
     if narrowed:
         out["narrowed"] = narrowed
+    if binaries:
+        out["binaries"] = binaries
     return out
 
 
@@ -587,10 +592,16 @@ def narrow(select, files, repo, graph_doc, cov, cov_why=None, now=None, metadata
                              % (", ".join(unknown), t))
     if narrowed:
         notes.append("narrowing: %s" % narrowed)
+    counts = None
     if res["coverage"]["used"]:
-        notes.append("narrowing: on, map %s -- %d of %d binaries"
-                     % (str(usable.get("rev"))[:9], res["binaries"]["selected"],
-                        res["binaries"]["total"]))
+        # OR-W1-P-22: what the map spared -- the same plan without it
+        bare = impact_mod.impact(want, stage, graph_doc, repo=repo, coverage=None, now=now,
+                                 stations=False, narrowed=narrowed, no_map=skip_map)
+        counts = {"selected": res["binaries"]["selected"], "total": res["binaries"]["total"],
+                  "without_map": bare["binaries"]["selected"]}
+        notes.append("narrowing: on, map %s -- %d of %d test binaries, without map %d"
+                     % (str(usable.get("rev"))[:9], counts["selected"], counts["total"],
+                        counts["without_map"]))
     # B-2: the filter is rendered from `terms` -- the drift terms of
     # `map_fits` and the rdeps of `since_plan` RUN, not only build
     filt = impact_mod.render_filter(terms, stage, repo) or select.get("filter")
@@ -623,7 +634,7 @@ def narrow(select, files, repo, graph_doc, cov, cov_why=None, now=None, metadata
                # when no rdeps was left to replace
                narrow=state(res["coverage"]["used"] or (narrowed and usable is not None
                                                         and "all()" not in terms),
-                            (usable or {}).get("rev"), narrowed),
+                            (usable or {}).get("rev"), narrowed, counts),
                why=list(select.get("why") or []) + ["narrow: %s" % n for n in notes])
     if out["all"]:
         out.pop("compile", None)
@@ -1105,6 +1116,12 @@ def merge_decision(repo, base, strand_run, db):
     if len(parents) > 2:
         return no("%d parents -- more than one strand parent" % len(parents))
     p1, p2 = parents
+    if base and _commit(repo, base) == p2:
+        # w1 stapelmerge (#1603): the merge point plans from the strand (or
+        # stack) tip its receipt covers (`merge.gate_base`) -- the diff is what
+        # the merge point writes plus master's move; nothing left to narrow.
+        return no("stage:merge from the tip %s -- its receipt covers it, the plan is "
+                  "%s..HEAD (the merge point's writes and master's move)" % (p2[:9], p2[:9]))
     if not base or _commit(repo, base) != p1:
         return no("the first parent %s is not the base %s" % (p1[:9], (base or "?")[:9]))
     if not strand_run:

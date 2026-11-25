@@ -34,7 +34,7 @@ use meclaw_testing::{deadline, surface_listener, wait};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// The hang mark the harness's tests pass to the client's waits: the repo's
 /// `HANG` convention scaled by `MECLAW_TEST_TIME_FACTOR` (TV-Z3), never a
@@ -192,6 +192,11 @@ pub struct FakeDuplex {
     /// its socket with [`FakeSession::hang_up`]. Off everywhere else, where
     /// the fake behaves exactly as it always has.
     renewing: bool,
+    /// GH #1460: where set, a session opened as a renewal says `Started` only
+    /// once the test opens this gate -- so a test can have the handover reach
+    /// the connection before the renewal it is for has started. `None`
+    /// everywhere else: a renewal starts the moment it opens, as it always did.
+    renewal_start: Option<watch::Receiver<bool>>,
 }
 
 impl DuplexProvider for FakeDuplex {
@@ -255,10 +260,18 @@ impl FakeDuplex {
         let ended = self.ended.clone();
         let renewed_starts = Arc::clone(&self.renewed_starts);
         let renewing = self.renewing;
+        let renewal_start = if renewed {
+            self.renewal_start.clone()
+        } else {
+            None
+        };
         Box::pin(async move {
             let index = starts.fetch_add(1, Ordering::SeqCst) + 1;
             if renewed {
                 renewed_starts.fetch_add(1, Ordering::SeqCst);
+            }
+            if let Some(mut gate) = renewal_start {
+                let _ = gate.wait_for(|open| *open).await;
             }
             let _ = events
                 .send(DuplexEvent::Started {
@@ -514,6 +527,19 @@ fn wire_fake_full(
     renewing: bool,
     sessions_cap: usize,
 ) -> Wired {
+    wire_fake_gated(fail, linger, rate, audio_cap, renewing, sessions_cap, None)
+}
+
+/// [`wire_fake_full`] with the start gate of GH #1460 (see [`FakeDuplex`]).
+fn wire_fake_gated(
+    fail: bool,
+    linger: bool,
+    rate: u32,
+    audio_cap: usize,
+    renewing: bool,
+    sessions_cap: usize,
+    renewal_start: Option<watch::Receiver<bool>>,
+) -> Wired {
     let (controls_tx, controls) = mpsc::unbounded_channel();
     let (sessions_tx, sessions) = mpsc::channel(sessions_cap);
     let (audio_tx, audio) = mpsc::channel(audio_cap);
@@ -539,6 +565,7 @@ fn wire_fake_full(
         ended: ended_tx,
         renewed_starts: Arc::clone(&renewed_starts),
         renewing,
+        renewal_start,
     });
     Wired {
         provider,
@@ -881,6 +908,35 @@ pub async fn boot_seeded(
     .await
 }
 
+/// [`boot_seeded`] with a renewing fake whose renewals hold their `Started`
+/// until the test sends `true` on the returned gate (GH #1460): the order
+/// "handover first, start second" is the test's to set, not the scheduler's.
+pub async fn boot_seeded_held_start(
+    raw: Value,
+    renew_after_ms: u64,
+    renew_grace_ms: u64,
+    seed_wait_ms: u64,
+) -> (Live, watch::Sender<bool>) {
+    let (gate_tx, gate_rx) = watch::channel(false);
+    let wired = wire_fake_gated(false, false, RATE, 4096, true, 64, Some(gate_rx));
+    let live = boot_core(
+        raw,
+        Some(wired.provider.clone()),
+        Some(wired),
+        QUIET_MS,
+        CAP_MS,
+        CLOSE_GRACE_MS,
+        TICK_MS,
+        renew_after_ms,
+        renew_grace_ms,
+        (0, meclaw_cells::voice::duck::DuckParams::default()),
+        seed_wait_ms,
+        0,
+    )
+    .await;
+    (live, gate_tx)
+}
+
 /// Boot a duplex cell that recovers a call after its provider ended the
 /// session in charge (GH #1377): `recover_max` attempts per call, with the
 /// renewing fake -- whose [`FakeSession::stop`] plays the provider ending a
@@ -1057,6 +1113,8 @@ async fn boot_core_paged(
     io.duplex_hold_idle_ms = hold_idle_ms;
     // D48/DK: the call marks come from the params document, as in the factory.
     io.duplex_call_marks = params.call_marks.clone();
+    // #1637: and so does the audio report.
+    io.emit_audio_report = params.emit_audio_report;
     io.cell_path = Path::new("/voice");
     io.surfaces = Arc::clone(&surfaces);
 

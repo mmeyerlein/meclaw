@@ -35,7 +35,7 @@ pub const OPEN: &str = "round_open";
 
 /// talky's model cells a side call can reach; their profiles name the slot of
 /// the side text (`instructions.side_slot`, orchestrator ruling b).
-pub const TALKY_FAST_CELLS: [&str; 3] = ["quick", "quick_bridge", "quick_spec"];
+pub const TALKY_FAST_CELLS: [&str; 2] = ["quick", "quick_bridge"];
 
 /// The two conditions of a side call or a conditional feed (contract point 1).
 pub const EXTERNAL: &str = "external";
@@ -282,7 +282,7 @@ pub fn ask_head(live: &str) -> Value {
 
 /// The lead's state rows of a session that has decided nothing yet.
 pub fn no_state() -> Value {
-    json!({"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}})
+    json!({"escalated": "", "ask_pending": {}})
 }
 
 /// `lead_verdict` of the shipped lead under `knobs` for a stamp of `path`,

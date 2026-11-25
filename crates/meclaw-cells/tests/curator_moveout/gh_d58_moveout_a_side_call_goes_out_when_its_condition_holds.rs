@@ -53,19 +53,6 @@ fn gh_d58_moveout_a_side_call_goes_out_when_its_condition_holds() {
         "a tool turn's verdict carries one side entry under `must_call`: {v}"
     );
     assert!(sides_of(&v, EXTERNAL).is_empty(), "{v}");
-    // Under speculation the side call has a cell of its own (`bridge_target`).
-    let v = verdict(
-        lead_knobs(json!({"spec_ahead": "1"})),
-        "simple",
-        &["tool"],
-        &["weather"],
-        LIVE_H,
-    );
-    assert_eq!(
-        sides_of(&v, MUST_CALL)[0]["target"],
-        json!("quick_bridge"),
-        "{v}"
-    );
 
     // The condition holds: the side call goes, as a call of its own.
     let mut h = moveout_hive(&[]);

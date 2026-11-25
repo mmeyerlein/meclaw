@@ -96,7 +96,7 @@ CLASSES (a path can carry several)
                   `gate-selftest`), scripts/cargo-target.sh, scripts/lane_sync.sh,
                   scripts/strand-gate.sh, scripts/harness_fold.py,
                   scripts/check_roadmap_anchors.py, scripts/git_merge_display_sync.py,
-                  scripts/git_merge_script_inline.py,
+                  scripts/git_merge_script_inline.py, scripts/hive_doors.py,
                   scripts/display_sheet_strip.py (rule: a script a test under
                   scripts/tests/ imports, runs or copies into a fixture tree and
                   runs is gate_infra -- its solo diff plans that test, GH #1199;
@@ -346,15 +346,6 @@ STATIONS (S strand, I integration, R release, C ci)
                     self-test, a re-grade of the COMMITTED transcripts, the
                     runner's --self-test, the fingerprint's self-test. A part
                     whose module and data are both absent is "not built yet"
-    persona-receipt persona_source/evals_persona; I/R always; never in C.
-                    `fingerprint.py --check` recomputes the persona fingerprint
-                    from the tree and holds it against the committed report
-                    (ADR-0029). NOTE in S, whatever it finds. In I/R: GREEN when
-                    the report covers the tree and is green, RED when it covers
-                    it and is red or when the checker breaks -- and when the
-                    report is stale, incomplete or absent the pass does not turn
-                    red, it ASKS the owner (ruling on GH #621, 2026-09-22; see
-                    `gate.sh --decide`). No station talks to a provider
     export-selftest export_infra; I/R always (seconds, pure Python). Two
                     commands: the drift fixtures and the lock of
                     `export-tree-tests` (`test_export_tree_tests.py`)
@@ -678,11 +669,9 @@ LANE_ENV = {
 # stations REWRITE these files while the run is in progress, so without the
 # subtraction every release gate ends `dirty: true` and the export refuses.
 #
-# `workshop/evals/persona/last_run.json` is deliberately NOT here (L-12): it is
-# not rewritten by a station -- the persona run is an artefact nobody's gate
-# performs -- and it IS the measurement `persona-receipt` holds the tree
-# against. Dropping it from the diff would let a new report travel without the
-# station that reads it.
+# `workshop/evals/persona/last_run.json` is deliberately NOT here (L-12): no
+# station rewrites it, and a committed report is a change of the suite
+# (`evals_persona`) that `persona-cases` re-grades.
 IGNORED = (
     "workshop/evals/scenarios/last_run.json",
     "workshop/evals/builder-scenarios/last_run.json",
@@ -712,7 +701,7 @@ CORPUS_SOURCES = (
     "workshop/fixtures/negative/*/expected_error.json",
 )
 
-# What a persona is made of, for the persona gate (ADR-0029, GH #882): every
+# What a persona is made of (GH #882; the station that read it went with ADR-0054): every
 # file whose bytes can change what the measured models read, which tools they
 # get, whether and where the sidecar writes -- also as the override of a ref
 # marker. A SUPERSET, same discipline as CORPUS_SOURCES: only the direction
@@ -787,7 +776,6 @@ CI_EXCLUDED = frozenset({
     "display-lab",       # workshop/tools/display-lab/
     "llm-conformance",   # workshop/tools/llm-conformance/
     "persona-cases",     # workshop/evals/persona/
-    "persona-receipt",   # workshop/evals/persona/
     "export-selftest",   # plans/export-fixtures/
     "export-tree-tests",  # plans/export-fixtures/
     "export-tree-kit",   # plans/export-fixtures/
@@ -808,7 +796,7 @@ STATION_ORDER = (
     "tests", "slow-tests", SCENARIO_STATION, "doctests", "deny",
     "scenarios:memory", "scenarios:builder", "scenarios:display",
     "browser:display", "recall-harness",
-    "deny-advisories", "crate-isolation", "persona-cases", "persona-receipt",
+    "deny-advisories", "crate-isolation", "persona-cases",
     "export-selftest", "export-tree-tests", "export-tree-kit", "export-audit",
 )
 
@@ -974,21 +962,39 @@ class GatePlanError(Exception):
 
 
 Station = collections.namedtuple(
-    "Station", "name scope cargo cmds cwds run parallel", defaults=(None, True, None))
+    "Station", "name scope cargo cmds cwds run parallel paths",
+    defaults=(None, True, None, None))
+
+# The argv word the executor replaces with the path of a list file it writes
+# into the run's workspace, one path of the station's `paths` per line (#1520).
+# A diff against the export base holds tens of thousands of paths; on the argv
+# they ended the integration pass at exec ("Argument list too long"), and
+# stdin is closed for every station.
+PATHS_FILE = "{paths}"
 
 
-def station(name, scope, cargo, cmds, cwds=None, run=True, parallel=None):
+def station(name, scope, cargo, cmds, cwds=None, run=True, parallel=None, paths=None):
     """Build a `Station`, defaulting the per-command cwd list to all-unset.
 
     `parallel` (V0 § 4, additive): how the executor may split the station,
-    e.g. `{"by": "cmd"}` -- its commands run side by side. None: in order."""
+    e.g. `{"by": "cmd"}` -- its commands run side by side. None: in order.
+    `paths`: the list the executor writes for the argv word `PATHS_FILE`."""
     if cwds is None:
         cwds = [None] * len(cmds)
     if len(cwds) != len(cmds):
         # A caller bug inside this module, not a property of the diff.
         raise ValueError("station %s: %d commands but %d cwds"
                          % (name, len(cmds), len(cwds)))
-    return Station(name, scope, cargo, cmds, cwds, run, parallel)
+    return Station(name, scope, cargo, cmds, cwds, run, parallel,
+                   None if paths is None else list(paths))
+
+
+def precheck_station(files):
+    """The form station over `files`: the paths ride beside the argv, which
+    names only their list file (`PATHS_FILE`, #1520)."""
+    return station("precheck", "form", False,
+                   [["python3", "scripts/precheck.py", "--files-from", PATHS_FILE]],
+                   paths=files)
 
 
 # --- path matching ----------------------------------------------------------
@@ -1380,7 +1386,7 @@ def _classes_of_path(path):
             or path in BROWSER_ENGINE_PINS):
         cls.add("display_browser")
 
-    # The persona gate (ADR-0029, GH #882): the suite itself -- its committed
+    # The persona suite (GH #882): the suite itself -- its committed
     # report included, which is why that report is not in IGNORED -- and the
     # sources a persona is made of, with the same glob semantics as
     # CORPUS_SOURCES. `workshop/evals/engine.py` carries `persona_source` beside
@@ -1412,6 +1418,9 @@ def _classes_of_path(path):
                  "scripts/strand-gate.sh", "scripts/harness_fold.py",
                  "scripts/check_roadmap_anchors.py", "scripts/git_merge_display_sync.py",
                  "scripts/display_sheet_strip.py",
+                 # GH #1353: the params doors, run by their test in fixture trees
+                 # (the drift pin over templates/ is `tree-rules`)
+                 "scripts/hive_doors.py",
                  # d58-2 mergedrv (#1470): the merge driver of the cells with an
                  # inline script runs in fixture repositories of its own test
                  # and of the strand kit's (`new` installs it)
@@ -4490,13 +4499,12 @@ def plan(paths, mode, repo=None):
     # --- form, before anything takes the lock. A red form station costs the
     # queue and the build for a `cargo fmt` somebody forgot; measured over
     # three waves, that was four of twenty-three red strand runs (5 771 s).
-    # The paths travel on the ARGV, not on stdin: the runner runs every
-    # station with stdin closed, because a station that reads it eats the
-    # rest of its own command list.
+    # The paths travel neither on stdin -- the runner runs every station with
+    # stdin closed, because a station that reads it eats the rest of its own
+    # command list -- nor on the argv, which an export-sized diff overflows
+    # (#1520): in a list file the executor writes (`PATHS_FILE`).
     if files and not ci:
-        out["precheck"] = station(
-            "precheck", "form", False,
-            [["python3", "scripts/precheck.py", "--files"] + list(files)])
+        out["precheck"] = precheck_station(files)
 
     # --- always: the anchor and claim gates. Seconds, and they are the ones
     # that catch a doc that promised something the code no longer carries.
@@ -4512,9 +4520,14 @@ def plan(paths, mode, repo=None):
     out["claims"] = station(
         "claims", "claims.tsv", False,
         [["python3", "scripts/check_claims.py"] + check])
+    # Its second command is the drift pin of the params doors (GH #1353): every
+    # sealed hive with a params-overlay cell carries the door `hive_doors.py`
+    # writes -- one `accepts` row without its inner edge is a refused mutation
+    # in a running colony, so it is red on every diff, not on a template's alone.
     out["tree-rules"] = station(
         "tree-rules", "templates+examples", False,
-        [["python3", "scripts/check_tree_rules.py"]])
+        [["python3", "scripts/check_tree_rules.py"],
+         ["python3", "scripts/hive_doors.py", "--check"]])
     # The testing-bans inventory (VORGABEN § 5.4): a pass and the public CI
     # count the whole tree against the baseline; a strand's added lines are
     # `precheck`'s.
@@ -4611,6 +4624,7 @@ def plan(paths, mode, repo=None):
               "scripts.tests.test_precheck_fixed_caps",
               "scripts.tests.test_pipeline_locks",
               "scripts.tests.test_harness_fold",
+              "scripts.tests.test_hive_doors",
               "scripts.tests.test_pipeline_pre",
               "scripts.tests.test_pipeline_cascade_dry",
               "scripts.tests.test_display_sync",
@@ -4981,18 +4995,14 @@ def plan(paths, mode, repo=None):
         scope, iso = crate_isolation(repo)
         out["crate-isolation"] = station("crate-isolation", scope, True, iso)
 
-    # --- the persona gate (ADR-0029, GH #882). Two FREE stations read a committed
-    # measurement; the paid or long run is an artefact, never a station.
+    # --- the persona suite (GH #882): ONE free station over the committed suite;
+    # the receipt station that asked in every pass is gone (ADR-0054, GH #1593).
     persona = "workshop/evals/persona"
     if ir or "evals_persona" in classes:
         out["persona-cases"] = station(
             "persona-cases", _case_scope(repo, persona + "/scenarios", recursive=True), False,
             [["python3", "persona_cases.py", "--self-test"], ["python3", "persona_cases.py"]],
             cwds=[persona, persona])
-    if ir or classes & {"persona_source", "evals_persona"}:
-        out["persona-receipt"] = station(
-            "persona-receipt", "fingerprint", False,
-            [["python3", "fingerprint.py", "--check"]], cwds=[persona])
 
     if "export_infra" in classes or ir:
         # Seconds of pure Python, so the integration pass pays for it too --
@@ -5076,7 +5086,8 @@ def plan(paths, mode, repo=None):
         # aborts on drift; that ref moves by hand after an export, so a stale
         # or missing one would turn the strand red regardless of its diff.
         # `--keep-going` builds no commit and never reads the parent. I/R keep
-        # the default -- there the check is wanted.
+        # the default; make_export's dry audit (I, `--skip-cargo`) asks no
+        # remote itself (GH #1617: a lane has no GitHub credentials), R checks.
         # GH #1199 (v2-r3-mergegate): the strand judges its diff -- R2b/R2c/R2d
         # over the exported tests it touches (make_export.py among them: the
         # whole tree). Profiled 16.10.: 162 s, of which R15 97 s and R2b-R2d 26 s.
@@ -5235,7 +5246,6 @@ STATION_TRIGGERS = {
     "deny-advisories": ((), ("release",)),
     "crate-isolation": ((), ("release",)),
     "persona-cases": (("evals_persona",), IR_MODES),
-    "persona-receipt": (("persona_source", "evals_persona"), IR_MODES),
     "export-selftest": (("export_infra",), IR_MODES),
     "export-tree-tests": ((), ("release",)),
     "export-tree-kit": (("gate_infra", "make_export"), ("release",)),
@@ -5353,6 +5363,8 @@ def to_json(paths, mode, repo=None, explain=False):
             row["run"] = False
         if st.parallel:
             row["parallel"] = st.parallel
+        if st.paths is not None:
+            row["paths"] = list(st.paths)
         if st.name in ENV_STATIONS:
             row["env"] = True
         if explain:

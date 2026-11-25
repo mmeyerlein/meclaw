@@ -50,6 +50,10 @@ fn knobs(bound: Option<i64>) -> Vec<(&'static str, Value)> {
         ("second_judge", json!("judge_two")),
         ("second_wait_ms", json!(5000)),
         ("choices", risk_choice()),
+        // GH #1585 (contract point 1): a note that `steer` pulls onto
+        // `notes_class` asks no second judge at all; these pins hold the bound
+        // of a turn that IS sharpened, so the note steers nothing here.
+        ("notes_class", json!("")),
         ("stamp_out", json!("1")),
     ];
     if let Some(b) = bound {

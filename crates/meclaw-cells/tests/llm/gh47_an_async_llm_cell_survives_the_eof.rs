@@ -25,8 +25,12 @@ use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem}
 use meclaw_core::serde_json::{json, to_string_pretty};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
-use meclaw_testing::mock_http::{MockResponse, start_mock_server_capturing};
+use meclaw_testing::mock_http::MockResponse;
+// harness_fold: #[path = "mock_openai.rs"]
+#[allow(unused_imports)]
+use crate::mock_openai; // harness_fold: mod mock_openai;
 use meclaw_testing::topologies::phase_3a::CaptureCell;
+use mock_openai::MockOpenAI;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -83,8 +87,8 @@ async fn boot(drain_budget_ms: u64) -> Fixture {
     // Dropping the returned `JoinHandle` DETACHES the mock server rather than
     // stopping it (tokio semantics), so it serves for the whole test; the
     // fixture only needs its address and its capture log.
-    let (addr, _server, captured) =
-        start_mock_server_capturing(vec![MockResponse::ok_json(COMPLETION).with_delay(HELD)]).await;
+    let MockOpenAI { addr, captured, .. } =
+        MockOpenAI::start(vec![MockResponse::ok_json(COMPLETION).with_delay(HELD)]).await;
     let base_url = format!("http://{addr}/v1");
 
     let td = tempfile::TempDir::new().expect("tempdir");

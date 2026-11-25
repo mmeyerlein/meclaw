@@ -494,8 +494,10 @@ fn screen_edges() -> Vec<Value> {
             "condition": "has(hop.error_code)",
             "modifier": {"set_hop": {"route": "'error'"}}
         }),
+        // GH #1597: the view comes straight out of `./apps`, on the edge the screen's
+        // growth draws at the member -- the member carries no view into its channels.
         json!({
-            "from": "./channels", "to": format!("./channels/{SCREEN_NAME}"),
+            "from": "./apps", "to": format!("./channels/{SCREEN_NAME}"),
             "condition": format!(
                 "has(hop.route) && hop.route == 'view' && \
                  has(context.channel_node) && context.channel_node == '{SCREEN_NAME}'"),

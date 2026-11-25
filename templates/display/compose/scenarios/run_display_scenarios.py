@@ -24,7 +24,8 @@ The numbers, one station (development-rules § 10):
     CURATOR  114/114  scenarios through the cell, driven like a `resident` code cell
                       (`curator_driver.Hive`: compile once, exec per message into one
                       dict, the store and the display in-process; Q-07 and S-062 are
-                      colony-only -> SKIP)
+                      colony-only -> SKIP, and the SKIP line names the colony test
+                      that proves them)
     REBUILD  114/114  after the last step: one stroke on the running cell, and the same
                       stroke on a KILLED cell over a copy of the store and the tree -- the
                       display ends up byte-equal, and the killed one asked select, read,
@@ -50,8 +51,11 @@ COMPOSE = os.path.join(HERE, "..", "compose.py")
 sys.path.insert(0, HERE)
 from curator_driver import Hive  # noqa: E402
 
-COLONY_ONLY = {"Q-07": "710_the_screen_hears_only_what_is_said.rs",
-               "S-062": "710_the_screen_hears_only_what_is_said.rs"}
+# The colony test that proves each colony-only scenario (GH #1590): the SKIP line names it,
+# binary and test, so a report reads where the proof runs instead of a bare omission.
+COLONY_PROOF = ("proven by meclaw-cells 710_the_screen_hears_only_what_is_said"
+                "::the_screen_hears_only_what_is_said")
+COLONY_ONLY = {"Q-07": COLONY_PROOF, "S-062": COLONY_PROOF}
 TRIGGERS = ("app_write", "app_withdraw", "verdict", "tap", "hold", "stroke")
 HEADER_MAX = 512
 DOOR_CODES = ("view_refused", "invalid_view")
@@ -485,8 +489,11 @@ def run_boot():
     return failures
 
 
-def boot_retry_hive(fail):
-    """Two new windows inside the boot window; with `fail`, the first boot select fails."""
+def boot_retry_hive(fail, receipt=False):
+    """Two new windows inside the boot window; with `fail`, the first boot select fails.
+
+    With `receipt`, a mutation receipt (GH #1590) reaches the cell before the second write:
+    after a failed select it is the message that asks again, otherwise it is silent."""
     # the judge on: an app write that is a first write asks it (source (a)); a replayed
     # row and its repeat would not -- that is what the retry has to keep apart
     hive = Hive(dict(IDLE_PARAMS, judge="on"), hold_internal=True)
@@ -501,17 +508,23 @@ def boot_retry_hive(fail):
         failed["envelope"]["header"]["hop"] = {"operation": "select", "rows_affected": 0,
                                                "duration_ms": 0, "error_code": "db_error"}
         hive.flush()                     # the select fails: the cell is cold again
+    if receipt:
+        hive.send({"body": {"messages": []},
+                   "envelope": {"header": {"hop": {"route": "mutation_committed"},
+                                           "context": {}}}})
+        hive.flush()
     hive.send_event({"kind": "app_write", "oid": "view.alex.b",
                      "view": dict(view, title="B", touched="1100")}, 1100)
     hive.flush()
     return hive
 
 
-def run_boot_retry():
+def run_boot_retry(receipt=False):
     """A boot select that fails is asked again by the next message, and that select reads
     the writes queued before it: those are left out of the replay (`seen`), so their own
-    passes are first writes again -- the screen is the one of a boot that never failed."""
-    hive, control = boot_retry_hive(True), boot_retry_hive(False)
+    passes are first writes again -- the screen is the one of a boot that never failed.
+    With `receipt` the next message is a mutation receipt (GH #1590), not an app write."""
+    hive, control = boot_retry_hive(True, receipt), boot_retry_hive(False, receipt)
     failures = []
     selects = [h for h in hive.hops if "select" in h["ops"]]
     if len(selects) != 2:
@@ -969,6 +982,8 @@ def main(argv):
     if "--boot-only" in picked:
         rc |= single("BOOT", [("two writes inside the boot window", run_boot),
                               ("a failed boot select asked again", run_boot_retry),
+                              ("a failed boot select asked again by a receipt",
+                               lambda: run_boot_retry(receipt=True)),
                               ("a row gone while the cell was down", run_boot_row_gone),
                               ("a work hint queued with its block is drawn first",
                                run_boot_hint_first),

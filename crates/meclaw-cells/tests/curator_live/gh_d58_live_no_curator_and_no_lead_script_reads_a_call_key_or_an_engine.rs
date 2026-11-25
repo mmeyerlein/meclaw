@@ -30,17 +30,7 @@ use meclaw_core::serde_json::{self as sj, Value, json};
 
 /// The literal sites that stay: `(cell, literal, a piece of the line)`. All
 /// are the column `call_id` of a ledger table (the id of one model call).
-const KEPT: [(&str, &str, &str); 15] = [
-    (
-        "curator/policy",
-        "call_id",
-        "upd(\"calls\", a.get(\"use\") or {}, {\"call_id\": call_})",
-    ),
-    (
-        "curator/policy",
-        "call_id",
-        "\"where\": {\"call_id\": {\"in\": ids}}}),",
-    ),
+const KEPT: [(&str, &str, &str); 14] = [
     (
         "curator/policy",
         "call_id",
@@ -82,6 +72,13 @@ const KEPT: [(&str, &str, &str); 15] = [
         // D58 moveout (GH #1476): the snapshot row of each side call, one seq
         // past the call's own per entry.
         "\"seq\": s_seq + 1 + s_i, \"call_id\": b_head[\"curator_call\"],",
+    ),
+    (
+        "curator/policy",
+        "call_id",
+        // d54s bruecke (GH #1586): the `calls` row of a failed side call's
+        // second try, under its own id (`<call>-fallback`).
+        "\"call_id\": r_head[\"curator_call\"], \"session_id\": r_ses",
     ),
     (
         "curator/policy",

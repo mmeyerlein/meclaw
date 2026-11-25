@@ -231,6 +231,31 @@ pub struct WebCell {
     pub(crate) join_chunk_bytes: Option<u64>,
     /// GH #1002: the join timeout, as written. See [`WebCell::mount`].
     pub(crate) join_timeout_ms: Option<u64>,
+    /// GH #1264: the last re-render failed as a whole, so the next one takes
+    /// every route.
+    republish_due: bool,
+}
+
+/// Refuse a params update: on the params lane the shared answer (GH #1353),
+/// otherwise the whole-reply refusal of the other unreadable messages.
+async fn refuse_params(
+    sink: &OutputSink,
+    reply_target: meclaw_core::Path,
+    push: &crate::params_overlay::ParamsPush,
+    started: tokio::time::Instant,
+    text: String,
+) {
+    if push.refused(sink, "invalid_input", &text).await {
+        return;
+    }
+    let duration_ms = started.elapsed().as_millis() as i64;
+    let content = output::build_refusal("params", "invalid_input", text, duration_ms);
+    let _ = sink
+        .push(CellOutput {
+            target: reply_target,
+            content,
+        })
+        .await;
 }
 
 impl WebCell {
@@ -265,6 +290,7 @@ impl WebCell {
             external_timeout_ms: params.external_timeout_ms,
             join_chunk_bytes: params.join_chunk_bytes,
             join_timeout_ms: params.join_timeout_ms,
+            republish_due: false,
         }
     }
 
@@ -298,23 +324,47 @@ impl WebCell {
     /// root's child list (a root child created, moved or deleted) is a
     /// difference of the root's keyed list (GH #1013): it used to send the
     /// whole packed tree, and the browser re-created every node of the page.
-    async fn publish_and_push(&self, db: &mut DbConn, touched: &ops::Touched) {
+    ///
+    /// GH #1264: a re-render that fails as a whole, or runs past
+    /// `external_timeout_ms`, leaves its write unpublished. The next write then
+    /// re-renders every route: patching only its own slots into the old pages
+    /// would keep the lost write invisible.
+    async fn publish_and_push(&mut self, db: &mut DbConn, touched: &ops::Touched) {
         // The pages last published are the ones every frame was computed
         // against; the handler is their only writer, so the watch holds them.
         let old = self.pages_tx.borrow().clone();
         // GH #1013: the generation these pages and their diffs go out as.
         let generation = old.generation + 1;
-        let touched = touched.clone();
-        let Ok(done) = db
-            .call(move |conn| render::rerender(conn, &old, &touched))
+        let touched = if self.republish_due {
+            ops::Touched {
+                slots: Vec::new(),
+                structural: true,
+            }
+        } else {
+            touched.clone()
+        };
+        // Held to the timeout's interrupt, and thrown away when it fired: a
+        // route an interrupt failed is missing from the pages it returns.
+        let done = db
+            .call_with_timeout(move |conn| {
+                let conn = &*conn;
+                ops::reading(conn, || render::rerender(conn, &old, &touched))
+            })
             .await
-        else {
-            tracing::error!(
-                path = %self.path,
-                "web: could not re-render after a write — the display keeps serving \
-                 whatever it last published"
-            );
-            return;
+            .map_err(|e| e.to_string())
+            .and_then(|done| done.map_err(|e| e.to_string()));
+        self.republish_due = done.is_err();
+        let done = match done {
+            Ok(done) => done,
+            Err(e) => {
+                tracing::error!(
+                    path = %self.path,
+                    error = %e,
+                    "web: could not re-render after a write — the display keeps serving \
+                     whatever it last published until the next write"
+                );
+                return;
+            }
         };
         tracing::trace!(
             path = %self.path,
@@ -387,8 +437,20 @@ impl WebCell {
         let new_value = value.get("value").cloned().unwrap_or(Value::Null);
         let (id, prop) = (id.to_string(), prop.to_string());
 
-        db.call(move |conn| ops::set_editable(conn, &id, &prop, &new_value))
+        // The closure's answer is the verdict (it rolls back what was
+        // interrupted), so the clock alone never calls a landed write lost.
+        match db
+            .call_with_timeout_verdict(move |conn| {
+                Ok(ops::set_editable(conn, &id, &prop, &new_value))
+            })
             .await
+        {
+            Ok(Ok(done)) => done,
+            Ok(Err(_)) | Err(_) => (
+                EventReply::Error("query_timeout".to_string()),
+                ops::Touched::default(),
+            ),
+        }
     }
 
     /// Apply a runtime params update.
@@ -402,24 +464,16 @@ impl WebCell {
     /// 1.5.0. A refusal writes nothing.
     ///
     /// Silent on success, in the shape every other cell type's params update
-    /// has (`proxy`, `timer`, `mcp`).
+    /// has (`proxy`, `timer`, `mcp`); answered on the params lane (GH #1353).
     async fn apply_params_update(
         &mut self,
         update: &Map<String, Value>,
         started: tokio::time::Instant,
         reply_target: meclaw_core::Path,
+        push: &crate::params_overlay::ParamsPush,
         sink: &OutputSink,
         db: &mut DbConn,
     ) {
-        let refuse = |text: String| {
-            output::build_refusal(
-                "params",
-                "invalid_input",
-                text,
-                started.elapsed().as_millis() as i64,
-            )
-        };
-
         let current = crate::web::params::WebOverlay {
             mount: self.mount.clone(),
             identity_header: self.identity_header.clone(),
@@ -435,12 +489,7 @@ impl WebCell {
         let (merged, overlay) = match crate::params_overlay::apply_update(&current, update) {
             Ok(ok) => ok,
             Err(e) => {
-                let _ = sink
-                    .push(CellOutput {
-                        target: reply_target,
-                        content: refuse(e.detail()),
-                    })
-                    .await;
+                refuse_params(sink, reply_target, push, started, e.detail()).await;
                 return;
             }
         };
@@ -454,15 +503,11 @@ impl WebCell {
             // so this is the whole of the damage: the next life reads the
             // birth params, and the sender is told rather than left believing
             // the display was renamed.
-            let _ = sink
-                .push(CellOutput {
-                    target: reply_target,
-                    content: refuse(format!(
-                        "cell.db params write failed: {e} — the update is not \
-                         remembered and the next life starts on the birth params"
-                    )),
-                })
-                .await;
+            let text = format!(
+                "cell.db params write failed: {e} — the update is not \
+                 remembered and the next life starts on the birth params"
+            );
+            refuse_params(sink, reply_target, push, started, text).await;
             return;
         }
 
@@ -479,6 +524,7 @@ impl WebCell {
         db.set_query_timeout(Some(std::time::Duration::from_millis(
             self.external_timeout_ms,
         )));
+        push.applied(sink).await;
     }
 
     /// Emit one semantic browser event on the cell's out-edges.
@@ -642,6 +688,13 @@ impl LongRunningCell for WebCell {
             let started = tokio::time::Instant::now();
             let reply_target = msg.reply_to.clone().unwrap_or_else(|| msg.target.clone());
 
+            // GH #1353: on the params lane an update or nothing, no tool call.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                refuse_params(sink, reply_target, &push, started, detail).await;
+                return;
+            }
+
             // The params-update slot (`config.md` § Access), handled FIRST and
             // exclusively: a message that carries it is not a tool call, and
             // reading it as one would refuse a valid update for having no
@@ -650,24 +703,20 @@ impl LongRunningCell for WebCell {
             if let Body::Inline(v) = &msg.body
                 && let Some(params_val) = v.get("params")
             {
+                // GH #1353: a slot addressed to another cell moves nothing.
+                if let Some(detail) = push.foreign_detail() {
+                    refuse_params(sink, reply_target, &push, started, detail).await;
+                    return;
+                }
                 match params_val.as_object() {
                     Some(update) => {
                         let update = update.clone();
-                        self.apply_params_update(&update, started, reply_target, sink, db)
+                        self.apply_params_update(&update, started, reply_target, &push, sink, db)
                             .await;
                     }
                     None => {
-                        let _ = sink
-                            .push(CellOutput {
-                                target: reply_target,
-                                content: output::build_refusal(
-                                    "params",
-                                    "invalid_input",
-                                    "params slot: not a JSON object".to_string(),
-                                    started.elapsed().as_millis() as i64,
-                                ),
-                            })
-                            .await;
+                        let text = "params slot: not a JSON object".to_string();
+                        refuse_params(sink, reply_target, &push, started, text).await;
                     }
                 }
                 return;
@@ -754,7 +803,14 @@ impl LongRunningCell for WebCell {
             let mut applied = if db_legs.is_empty() {
                 Vec::new()
             } else {
-                db.call(move |conn| ops::apply_all(conn, &db_legs)).await
+                // GH #1264: under the operation timeout (rule 12), which bounds
+                // a bundle of any size. The legs carry the verdict themselves
+                // (`apply_all`): a commit that landed is never called lost.
+                db.call_with_timeout_verdict(move |conn| Ok(ops::apply_all(conn, &db_legs)))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default()
             }
             .into_iter();
 
@@ -919,7 +975,11 @@ impl LongRunningCell for WebCell {
                         let _ = respond.send(reply);
                     }
 
-                    if accepted && !touched.slots.is_empty() {
+                    // GH #1264: the same condition as the message lane above.
+                    // `structural` with no slot is the page root; without it an
+                    // editable root prop was stored, answered `ok` and never
+                    // published.
+                    if accepted && (!touched.slots.is_empty() || touched.structural) {
                         // The write landed, so everyone looking at that page —
                         // the sender included — gets the new picture: the ONE
                         // slot the write touched, not the whole packed tree

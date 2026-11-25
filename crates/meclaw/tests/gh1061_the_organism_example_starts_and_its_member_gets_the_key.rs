@@ -16,8 +16,9 @@
 //! 3. two turns go to `/door` before the key, the daemon is stopped by its pid
 //!    while they are still at work, `stub-secret-<n>` goes in on stdin;
 //! 4. the daemon starts again and replays what the stop left open, and the
-//!    first turn's OWN trace (the `message_id` its `POST /messages` got back)
-//!    holds a brain's answer to a stub request that carried
+//!    first turn's OWN trace (the `message_id` its `POST /messages` got back,
+//!    or the chain the collector's clock opened for it, GH #1596) holds a
+//!    brain's answer to a stub request that carried
 //!    `Authorization: Bearer stub-secret-<n>` -- and so does the second's.
 //!
 //! WHERE THE STUB IS. The brains' `base_url` is a literal of their templates,
@@ -173,6 +174,72 @@ fn keyed_answers(seen: &[Seen], rows: &[Value], trace: &str, bearer: &str) -> BT
         .filter(|r| r["trace_id"].as_str() == Some(trace))
         .filter_map(answered_request)
         .filter(|&n| seen.get(n).is_some_and(|s| s.keyed_chat(bearer)))
+        .collect()
+}
+
+/// What [`turn_rows`] hands back: the chains of a turn, their rows, and one
+/// line per clock and strike it read, for a hang.
+type TurnChains = (BTreeSet<String>, Vec<Value>, Vec<String>);
+
+/// The chains a turn's work runs in (GH #1596), with their rows: its own trace
+/// -- the `message_id` its POST got back -- and every chain a collector clock
+/// opened for it. A turn whose memory leg did not come within
+/// `recall_wait_ms` goes on in the strike's chain: `./clock` is a fresh
+/// origin, and the turn keeps what it needs in its window leg (collector
+/// README, "The context of a woken turn"). Over the stop of this road the
+/// window leg is older than that bound when the second boot comes up, so the
+/// strike (`catch_up`) fires the turn before the replayed recall is back --
+/// measured red in the strand gate of #1596: both keyed brain answers stood in
+/// the two strikes' chains, none in the POST traces. A chain counts only when the strike names
+/// the turn: the turn's own trace orders the one-shot (its `assemble -> clock`
+/// row names the clock), the strike reaches that clock's `assemble` as a
+/// source message (`@external`), and its headers carry the turn key, which
+/// holds the turn's trace id. Any other trace still never counts.
+async fn turn_rows(api: SocketAddr, trace: &str) -> Result<TurnChains, String> {
+    let mut rows = message_log(api, &format!("&trace_id={trace}")).await?;
+    let clocks: BTreeSet<String> = rows
+        .iter()
+        .filter_map(|r| r["to_path"].as_str())
+        .filter(|p| p.ends_with("/collector/clock"))
+        .map(str::to_string)
+        .collect();
+    let mut traces = BTreeSet::from([trace.to_string()]);
+    let mut strikes = vec![format!("clocks named by the turn: {clocks:?}")];
+    for clock in &clocks {
+        // The strike reaches the collector's `assemble` beside the clock as a
+        // source message (`from_path` "@external", the timer's own origin),
+        // in a chain of its own; it names the turn in its headers.
+        let assemble = format!("{}/assemble", clock.trim_end_matches("/clock"));
+        for strike in message_log(api, &format!("&to_path_prefix={assemble}")).await? {
+            let from = strike["from_path"].as_str().unwrap_or("?");
+            let Some(t) = strike["trace_id"].as_str().filter(|t| *t != trace) else {
+                continue;
+            };
+            let names_turn = strike["headers_json"]
+                .as_str()
+                .is_some_and(|h| h.contains(trace));
+            if from == "@external" && names_turn && traces.insert(t.to_string()) {
+                strikes.push(format!("strike of {clock} for the turn: chain {t}"));
+            }
+        }
+    }
+    for woken in traces.iter().filter(|t| t.as_str() != trace) {
+        rows.extend(message_log(api, &format!("&trace_id={woken}")).await?);
+    }
+    Ok((traces, rows, strikes))
+}
+
+/// The keyed answers of a turn: [`keyed_answers`] over every chain of
+/// [`turn_rows`].
+fn turn_answers(
+    seen: &[Seen],
+    rows: &[Value],
+    traces: &BTreeSet<String>,
+    bearer: &str,
+) -> BTreeSet<usize> {
+    traces
+        .iter()
+        .flat_map(|t| keyed_answers(seen, rows, t, bearer))
         .collect()
 }
 
@@ -1128,10 +1195,12 @@ async fn gh1061_the_organism_example_starts_and_its_member_gets_the_key() {
     let t0 = Instant::now();
     let mut answers = Vec::new();
     for (turn, trace) in [(FIRST_TURN, &first_turn), (SECOND_TURN, &second_turn)] {
-        let filter = format!("&trace_id={trace}");
         let last = RefCell::new(Vec::new());
+        let chains = RefCell::new(BTreeSet::new());
+        let strikes = RefCell::new(Vec::new());
         let read_failed = RefCell::new(None);
-        let (filter, rows_seen, failed, stub, want) = (&filter, &last, &read_failed, &stub, &want);
+        let (rows_seen, chains_seen, strikes_seen, failed, stub, want) =
+            (&last, &chains, &strikes, &read_failed, &stub, &want);
         let what = format!(
             "the replayed turn {turn:?} (trace {trace}) holds a brain's answer to a request \
              with the deposited bearer"
@@ -1141,10 +1210,12 @@ async fn gh1061_the_organism_example_starts_and_its_member_gets_the_key() {
             || {
                 daemon.alive(&what);
                 async move {
-                    match message_log(api, filter).await {
-                        Ok(rows) => {
-                            let held = answered_with_key(&stub.seen(), &rows, trace, want);
+                    match turn_rows(api, trace).await {
+                        Ok((traces, rows, strikes)) => {
+                            let held = !turn_answers(&stub.seen(), &rows, &traces, want).is_empty();
                             *rows_seen.borrow_mut() = rows;
+                            *chains_seen.borrow_mut() = traces;
+                            *strikes_seen.borrow_mut() = strikes;
                             *failed.borrow_mut() = None;
                             held
                         }
@@ -1157,6 +1228,8 @@ async fn gh1061_the_organism_example_starts_and_its_member_gets_the_key() {
             },
             || {
                 let mut state = stub.state(want);
+                state.push(format!("chains of the turn: {:?}", chains_seen.borrow()));
+                state.extend(strikes_seen.borrow().iter().cloned());
                 state.extend(trace_state(&rows_seen.borrow()));
                 state.push(format!("last log read failed: {:?}", read_failed.borrow()));
                 state.extend(daemon.state());
@@ -1164,7 +1237,12 @@ async fn gh1061_the_organism_example_starts_and_its_member_gets_the_key() {
             },
         )
         .await;
-        answers.push(keyed_answers(&stub.seen(), &last.borrow(), trace, want));
+        answers.push(turn_answers(
+            &stub.seen(),
+            &last.borrow(),
+            &chains.borrow(),
+            want,
+        ));
     }
     // Re-check legacy-b fix4 A-H1: "both turns" are two stub requests, never
     // one answer counted for both traces.

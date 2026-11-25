@@ -345,6 +345,20 @@ async fn emit_invalid_input(
         .await;
 }
 
+/// Refuse a params update: on the params lane the shared answer (GH #1353),
+/// otherwise the `invalid_input` tool result it always was.
+async fn refuse_params(
+    sink: &OutputSink,
+    target: &Path,
+    push: &crate::params_overlay::ParamsPush,
+    detail: String,
+    started: tokio::time::Instant,
+) {
+    if !push.refused(sink, "invalid_input", &detail).await {
+        emit_invalid_input(sink, target, detail, "params_update", started).await;
+    }
+}
+
 /// GH #132 — the ops that CHANGE the store. Everything not named here is a
 /// read (`select`, `search`, `traverse`, `similar`, `alias_candidates`) and is
 /// never bounded by the write surface.
@@ -510,6 +524,14 @@ impl StatefulCell for StoreCell {
             let store_path = sink.sender_path().clone();
             let sender = msg.reply_to.clone();
 
+            // GH #1353: on the params lane an update or nothing. Before the seed
+            // lane and every op: the lane crosses the seal this store sits behind.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                refuse_params(sink, &reply_target, &push, detail, started).await;
+                return;
+            }
+
             // #1233 (T6-08): the door's seed lane — the rows of a committed
             // `seed_rows`, written on this cell's own connection and answered
             // with a digest receipt (`store::seed::seed_lane_receipt`).
@@ -539,7 +561,29 @@ impl StatefulCell for StoreCell {
             // an immutable (`schema`) / unknown / malformed update is a loud
             // `invalid_input` reject with NO partial apply.
             let mut has_params = false;
+            let has_messages = matches!(&msg.body, Body::Inline(v)
+                if v.get("messages").and_then(|m| m.as_array()).is_some_and(|a| !a.is_empty()));
+            // GH #1353: a slot addressed to another cell moves nothing. A
+            // params-only message is refused; beside an op the slot is skipped
+            // whole and the op runs (the `llm` cell's GH #862 rule).
+            let foreign = push.foreign_detail();
             if let Body::Inline(v) = &msg.body
+                && v.get("params").is_some()
+                && !has_messages
+                && let Some(detail) = &foreign
+            {
+                emit_invalid_input(
+                    sink,
+                    &reply_target,
+                    detail.clone(),
+                    "params_update",
+                    started,
+                )
+                .await;
+                return;
+            }
+            if let Body::Inline(v) = &msg.body
+                && foreign.is_none()
                 && let Some(params_val) = v.get("params")
             {
                 has_params = true;
@@ -553,6 +597,9 @@ impl StatefulCell for StoreCell {
                     sender.as_ref(),
                     "params_update",
                 ) {
+                    if push.refused(sink, "write_denied", &detail).await {
+                        return;
+                    }
                     emit_write_denied(sink, &reply_target, None, detail, "params_update", started)
                         .await;
                     return;
@@ -560,14 +607,8 @@ impl StatefulCell for StoreCell {
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
                     None => {
-                        emit_invalid_input(
-                            sink,
-                            &reply_target,
-                            "invalid params slot: not a JSON object".to_string(),
-                            "params_update",
-                            started,
-                        )
-                        .await;
+                        let detail = "invalid params slot: not a JSON object".to_string();
+                        refuse_params(sink, &reply_target, &push, detail, started).await;
                         return;
                     }
                 };
@@ -580,14 +621,8 @@ impl StatefulCell for StoreCell {
                             })
                             .await;
                         if let Err(e) = persist {
-                            emit_invalid_input(
-                                sink,
-                                &reply_target,
-                                format!("cell.db params write failed: {e}"),
-                                "params_update",
-                                started,
-                            )
-                            .await;
+                            let detail = format!("cell.db params write failed: {e}");
+                            refuse_params(sink, &reply_target, &push, detail, started).await;
                             return;
                         }
                         // Live apply: self.params + DbConn query timeout (path C,
@@ -596,23 +631,16 @@ impl StatefulCell for StoreCell {
                         db.set_query_timeout(self.query_timeout());
                     }
                     Err(e) => {
-                        emit_invalid_input(
-                            sink,
-                            &reply_target,
-                            e.detail(),
-                            "params_update",
-                            started,
-                        )
-                        .await;
+                        refuse_params(sink, &reply_target, &push, e.detail(), started).await;
                         return;
                     }
                 }
             }
 
-            // params-only message (no tool_call to follow): persist + stay silent.
-            let has_messages = matches!(&msg.body, Body::Inline(v)
-                if v.get("messages").and_then(|m| m.as_array()).is_some_and(|a| !a.is_empty()));
+            // params-only message (no tool_call to follow): persist + stay
+            // silent, except on the params lane (GH #1353).
             if has_params && !has_messages {
+                push.applied(sink).await;
                 return;
             }
 

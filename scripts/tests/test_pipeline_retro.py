@@ -104,16 +104,17 @@ class StoreCase(unittest.TestCase):
 class RuleTableTests(StoreCase):
     def test_rules_are_data_with_the_fixed_names(self):
         names = [r["rule"] for r in retro.RULES]
+        # OR-W1-P-22: coverage_stale and coverage_skipped_no_lane are retired
         self.assertEqual(names, ["station_drift", "cache_quota_low", "flake_rate_high",
-                                 "coverage_stale", "minimum_stale", "lane_reserve_breached",
-                                 "stray_target_old", "turnaround_spread",
-                                 "coverage_skipped_no_lane"])
+                                 "minimum_stale", "lane_reserve_breached",
+                                 "stray_target_old", "turnaround_spread"])
+        self.assertNotIn("coverage_stale", retro.RULE_FUNCS)
         for rule in retro.RULES:
             self.assertEqual(sorted(rule), ["metric", "proposal", "rule", "threshold", "window"])
             self.assertTrue(rule["proposal"].endswith("."))
 
     def test_proposal_lines_are_sorted_and_deterministic(self):
-        findings = [{"rule": "coverage_stale", "subject": "coverage"},
+        findings = [{"rule": "flake_rate_high", "subject": "a::b"},
                     {"rule": "cache_quota_low", "subject": "meclaw/integration"}]
         lines = retro.proposal_lines(findings)
         self.assertEqual(lines, retro.proposal_lines(list(reversed(findings))))
@@ -409,26 +410,13 @@ class FindingRuleTests(StoreCase):
         retro.evaluate(self.db, now=at(60))  # no cache rows yet: no data, no finding
         self.assertEqual(retro.open_findings(self.db), [])
 
-    def test_finding_rule_coverage_stale(self):
-        cov = {"rev": "c0", "runner": "lane-a", "secs": 60, "tests": 10, "files": 5,
-               "edges": 20, "granularity": "module"}
-        events.emit(self.db, "coverage_built", "status", cov, at=at(0))
-        retro.evaluate(self.db, now=at(0, days=6))
-        self.assertEqual(retro.open_findings(self.db), [])
-        retro.evaluate(self.db, now=at(0, days=8))
-        found = retro.open_findings(self.db)
-        self.assertEqual([(f["rule"], f["subject"], f["value"], f["since"]) for f in found],
-                         [("coverage_stale", "coverage", 8.0, at(0))])
-
     def test_evaluate_takes_an_aware_datetime(self):
         """night.py passes `now` as a datetime in local time."""
-        cov = {"rev": "c0", "runner": "lane-a", "secs": 60, "tests": 10, "files": 5,
-               "edges": 20, "granularity": "module"}
-        events.emit(self.db, "coverage_built", "status", cov, at=at(0))
+        self._station_series(150.0)
         local = timezone(timedelta(hours=2))
-        retro.evaluate(self.db, now=(T0 + timedelta(days=8)).astimezone(local))
+        retro.evaluate(self.db, now=(T0 + timedelta(days=1)).astimezone(local))
         (found,) = retro.open_findings(self.db)
-        self.assertEqual((found["value"], found["at"]), (8.0, at(0, days=8)))
+        self.assertEqual((found["rule"], found["at"]), ("station_drift", at(0, days=1)))
 
     def _fingerprint(self, run, when, **changes):
         events.emit(self.db, "run_dispatched", "note",
@@ -472,7 +460,7 @@ class FindingRuleTests(StoreCase):
         def boom(db, now):
             raise RuntimeError("broken rule")
 
-        retro.RULE_FUNCS["coverage_stale"] = boom
+        retro.RULE_FUNCS["minimum_stale"] = boom
         self.addCleanup(retro.RULE_FUNCS.update, broken)
         seqs = retro.evaluate(self.db, now=at(0, days=1))
         self.assertEqual(len(seqs), 1)
@@ -583,11 +571,9 @@ class HookTests(StoreCase):
         self.addCleanup(setattr, metrics, "post", orig)
         os.environ[URL_ENV] = "http://user:secret@metrics.invalid/write"
         self.addCleanup(os.environ.pop, URL_ENV, None)
+        FindingRuleTests._station_series(self, 150.0)
         events.HOOKS.append(retro.hook)
-        cov = {"rev": "c0", "runner": "lane-a", "secs": 60, "tests": 10, "files": 5,
-               "edges": 20, "granularity": "module"}
-        events.emit(self.db, "coverage_built", "status", cov, at=at(0))
-        retro.evaluate(self.db, now=at(0, days=9))
+        retro.evaluate(self.db, now=at(0, days=1))
         failed = self.events_of("metrics_failed")
         self.assertTrue(failed)
         self.assertNotIn("secret", json.dumps(failed))

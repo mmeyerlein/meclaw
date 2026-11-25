@@ -454,6 +454,15 @@ fn screen_edges() -> Vec<Value> {
                  has(context.channel_node) && context.channel_node == '{SCREEN_NAME}'"),
             "modifier": {"set_hop": {"route": "'in_view'"}}
         }),
+        // GH #1597: an app's view does not pass the container any more -- the member
+        // carries none into it; the screen's growth draws this edge at the member.
+        json!({
+            "from": "./apps", "to": format!("./channels/{SCREEN_NAME}"),
+            "condition": format!(
+                "has(hop.route) && hop.route == 'view' && \
+                 has(context.channel_node) && context.channel_node == '{SCREEN_NAME}'"),
+            "modifier": {"set_hop": {"route": "'in_view'"}}
+        }),
     ]
 }
 

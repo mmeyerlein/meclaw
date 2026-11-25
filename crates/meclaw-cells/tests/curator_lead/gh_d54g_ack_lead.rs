@@ -16,7 +16,7 @@
 //!   entry in `side`, everything else of the verdict stays.
 //! * `live_turn` `listen` (shipped: `call`) names no target for the turn of
 //!   a running session: `target ""`, `listen: true`, no side call, no feed,
-//!   reason `listen`; a speculative ask of that turn parks. Never for an
+//!   reason `listen`. Never for an
 //!   event round and never for the round that answers a consult -- those
 //!   would stay without an answer.
 //! * `event_routes` (shipped empty) names the target of an event round by
@@ -235,7 +235,7 @@ fn gh_d54g_ack_a_live_turn_is_only_heard_when_told_so() {
             ack_knobs(json!({ LIVE_TURN: "listening" })),
             "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
             json!([stamp, live_head(),
-                   {"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}}]),
+                   {"escalated": "", "ask_pending": {}}]),
         );
         assert_eq!(odd, base, "{stamp}: an unknown word reads as `call`");
         assert!(
@@ -248,7 +248,7 @@ fn gh_d54g_ack_a_live_turn_is_only_heard_when_told_so() {
                 ack_knobs(json!({ LIVE_TURN: known })),
                 "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
                 json!([stamp, live_head(),
-                       {"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}}]),
+                       {"escalated": "", "ask_pending": {}}]),
             );
             assert!(
                 !said.contains("live_turn"),
@@ -256,49 +256,6 @@ fn gh_d54g_ack_a_live_turn_is_only_heard_when_told_so() {
             );
         }
     }
-}
-
-#[test]
-fn gh_d54g_ack_a_speculative_ask_of_a_heard_turn_parks() {
-    if !shipped() {
-        return;
-    }
-    let spec_head = ack_head(json!({"live": ACK_LIVE, "spec": "1"}));
-    let stamp = ack_stamp("simple", &[], &[]);
-
-    // The control: with speculation on, a called turn's speculative ask is
-    // a call on the speculation's target.
-    let called = ack_verdict(
-        ack_knobs(json!({"spec_ahead": "1"})),
-        stamp.clone(),
-        spec_head.clone(),
-    );
-    assert_eq!(
-        (called["spec"].clone(), called["target"].clone()),
-        (json!("call"), json!("quick_spec")),
-        "the control speculates: {called}"
-    );
-
-    let listen = ack_knobs(json!({"spec_ahead": "1", LIVE_TURN: "listen"}));
-    let v = ack_verdict(listen.clone(), stamp.clone(), spec_head);
-    assert_eq!(
-        v["spec"],
-        json!("parked"),
-        "the speculative ask of a heard turn parks: {v}"
-    );
-    assert_ne!(
-        v["target"],
-        json!("quick_spec"),
-        "no speculation call leaves for a heard turn: {v}"
-    );
-
-    // A speculative ask of a turn without a handle speculates as before.
-    let text = ack_verdict(listen, stamp, ack_head(json!({"spec": "1"})));
-    assert_eq!(
-        (text["spec"].clone(), text["target"].clone()),
-        (json!("call"), json!("quick_spec")),
-        "a turn without a handle speculates: {text}"
-    );
 }
 
 #[test]
@@ -568,7 +525,6 @@ fn gh_d54g_ack_fresh_knobs_change_nothing() {
     let heads = [
         ack_head(json!({})),
         live_head(),
-        ack_head(json!({"live": ACK_LIVE, "spec": "1"})),
         ack_head(json!({"live": ACK_LIVE, "ask_id": "k-c-t0"})),
         event_head(json!({"live": ACK_LIVE})),
         event_head(json!({})),
@@ -675,7 +631,7 @@ fn verdict_and_said(knobs: Value, stamp: Value, head: Value) -> (Value, String) 
         knobs,
         "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
         json!([stamp, head,
-               {"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}}]),
+               {"escalated": "", "ask_pending": {}}]),
     );
     assert!(v.is_object(), "a verdict: {v} {err}");
     (v, err)

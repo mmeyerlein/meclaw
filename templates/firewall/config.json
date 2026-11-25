@@ -32,6 +32,10 @@
           "route": "in_sweep",
           "context": [],
           "because": "expire whatever is due. It carries no keys and answers about no particular turn. Custody measures its timeouts whenever it is touched -- a new hold, a release -- so a hive with traffic expires its pile without this lane; what the lane adds is a receipt ON TIME in a hive that went quiet, which is exactly when a forgotten hold is easiest to forget. Wire it to a timer if the answer matters more than the traffic does."
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
@@ -54,6 +58,14 @@
         {
           "route": "hold",
           "because": "a turn was parked and its row is written. The notice carries hop.hold_id, hop.rule_id, hop.expires_at, hop.held_at and the turn ITSELF, so a cell on this lane can show a person what is waiting without a store read. It is the one lane of this hive that is NOT required: a colony with no enabled `hold` row never produces one, and a colony that enables one without drawing this edge still learns -- the notice is a recorded, self-localising no_route in the DLQ, and the turn's expiry receipt arrives on `reject`, which every parent already drains (GH #450)"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -421,6 +433,67 @@
               "port_run",
               "port_table",
               "user_id",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./rules",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/rules')"
+        },
+        {
+          "from": "./rules",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "fw_body",
+              "fw_now",
+              "fw_phase",
+              "fw_hold",
+              "store_origin",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "user_id",
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase",
+              "fw_kind",
+              "fw_inner_source",
+              "fw_deliver_channel_node"
+            ]
+          }
+        },
+        {
+          "from": "./rules",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "fw_body",
+              "fw_now",
+              "fw_phase",
+              "fw_hold",
+              "store_origin",
+              "port_phase",
+              "port_run",
+              "port_table",
+              "user_id",
+              "wd_body",
+              "wd_meta",
+              "wd_now",
+              "wd_phase",
               "fw_kind",
               "fw_inner_source",
               "fw_deliver_channel_node"

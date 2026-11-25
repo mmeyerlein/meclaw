@@ -324,10 +324,11 @@ impl Lab {
     }
 
     /// A view for the screen `name`, sent where a member's application sends
-    /// it: to the member's channels, on the screen's name.
+    /// it: out of the member's apps, on the screen's name (GH #1597: the edge
+    /// that carries it on is the one the screen's growth drew).
     async fn view_reaches(&self, name: &str) {
         let mark = self.mark();
-        let msg = MessageBuilder::new(Path::new(CHANNELS))
+        let msg = MessageBuilder::new(Path::new(&format!("{MEMBER_PATH}/apps")))
             .hop(as_map(&json!({"route": "view"})))
             .context(as_map(&json!({"channel_node": name,
                                     "audience_set": r#"["member:member"]"#})))

@@ -2896,7 +2896,7 @@ fn win_step(aud: &Value, session: &str, ledger: &Value) -> (Value, Map<String, V
     // wired as the harness wires it, `LEAD_WIRING`).
     let route = ledger["route"].as_str().unwrap_or("brain");
     let way = |m: &Value| match m["header"]["target"].as_str().unwrap_or("") {
-        "quick" | "quick_spec" | "quick_bridge" => "quick".to_string(),
+        "quick" | "quick_bridge" => "quick".to_string(),
         "" => "brain".to_string(),
         t => t.to_string(),
     };

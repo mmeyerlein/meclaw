@@ -75,5 +75,15 @@
       "note": "measured.json + responses/basic,reasoning,tool"
     }
   },
-  "cost_usd": 0.004066
+  "cost_usd": 0.004066,
+  "refusals": [
+    {
+      "rule": "R3",
+      "param": "reasoning_off",
+      "wire": "chat",
+      "status": 400,
+      "body": "{\"error\":{\"message\":\"Reasoning is mandatory for this endpoint and cannot be disabled.\",\"code\":400,\"metadata\":{\"provider_name\":null}}}"
+    }
+  ],
+  "refusals_measured_at": "2026-11-23T11:35:03Z"
 }

@@ -5,12 +5,14 @@
 pub mod curator_hive;
 #[path = "../support/curator_lead.rs"]
 pub mod curator_lead;
+#[path = "../support/curator_moveout.rs"]
+pub mod curator_moveout;
 #[path = "../support/curator_target.rs"]
 pub mod curator_target;
 pub mod gh_d54g_ack_lead;
+pub mod gh_d54s_bruecke_a_failed_bridge_tries_its_fallback;
 pub mod gh_d583_schnell_facts_land_on_top;
 pub mod gh_d583_schnell_no_composition_cell_name_in_identifiers;
-pub mod gh_d583_schnell_the_lead_decides_the_delta;
 pub mod gh_d583_schnell_the_menu_is_a_superset;
 pub mod gh_d58_lead_a_composition_without_a_lead_runs_on_the_target_it_names;
 pub mod gh_d58_lead_a_fresh_lead_leaves_the_target_to_the_curate;

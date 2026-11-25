@@ -355,14 +355,26 @@ def stale_frozen(repo, frozen=None):
             for (doc, path), n in sorted(frozen.items()) if dead.get((doc, path), 0) < n]
 
 
+def _is_binary(path):
+    """A NUL byte in the first KiB: a database, an image, an archive -- no text
+    that could name a test path (d54s lanekit, Nr. 42: 10 267 such files under
+    soul2me docs/ filled `unread` and hid a real mis-encoded text file)."""
+    try:
+        with open(path, "rb") as fh:
+            return b"\0" in fh.read(1024)
+    except OSError:
+        return False
+
+
 def dead_path_mentions(repo, frozen=None, unread=None, core=None):
     """`[(doc, path)]`: test paths named in code spans under `templates/**/*.md`
     and `docs/**/*.md`, or anywhere in another UTF-8 file under those two
     roots, that the tree does not hold (relative ones resolved against the
     file's directory). A historical doc's mention is excused up to its count in
-    `frozen` (default `FROZEN_HISTORICAL`), never beyond. A file that is not
-    UTF-8 cannot be read; its path goes to the list `unread`, when given, so
-    the caller can say so (review Z-D M1). `__pycache__` holds byte code, not
+    `frozen` (default `FROZEN_HISTORICAL`), never beyond. A binary file (NUL
+    in its first KiB) is skipped unread; a text file that is not UTF-8 cannot
+    be read; its path goes to the list `unread`, when given, so the caller can
+    say so (review Z-D M1). `__pycache__` holds byte code, not
     text, and is not counted. A tree without `crates/` (a consumer repository
     running the kit) resolves a repository-relative path against `core`, the
     meclaw-core tree the kit comes from, when given (GH #1291: a consumer's
@@ -376,6 +388,8 @@ def dead_path_mentions(repo, frozen=None, unread=None, core=None):
         for doc in _tree_files(pathlib.Path(repo, top)):
             rel = doc.relative_to(repo).as_posix()
             historical = rel.startswith(HISTORICAL_DOCS)
+            if _is_binary(doc):
+                continue
             try:
                 text = _read(str(doc))
             except UnicodeDecodeError:

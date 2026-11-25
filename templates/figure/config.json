@@ -87,6 +87,10 @@
           "required": true
         },
         {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
+        },
+        {
           "route": "mutation_committed",
           "because": "the graph moved: handed on to the agent, which asks for its tools again and enrols itself on a receipt that concerns it (simple-agent@2 `enrol`)"
         },
@@ -211,6 +215,14 @@
         {
           "route": "note_receipt",
           "because": "D58 note (GH #1477): the answer of its simple-agent's curator to the sender of a shown `once` note that carried a `receipt` (`note_once` \"1\"), handed out unchanged -- every field in the head: `note_source`, `note_id`, `receipt`, `session_id`, `turn_id`, `target`, `at`. Where it goes from here is wired by whoever sends the notes"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -450,7 +462,7 @@
         {
           "from": "./simple-agent",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -532,6 +544,23 @@
           "from": "./simple-agent",
           "to": ".",
           "condition": "!has(hop.refused_subscriber) && has(hop.route) && hop.route == 'note_receipt'",
+          "modifier": {
+            "delete_context": [
+              "figure_turn",
+              "figure_kind",
+              "figure_day"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./simple-agent",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.matches('/simple-agent/(curator/|memory-hive/)?[^/]+$')"
+        },
+        {
+          "from": "./simple-agent",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
           "modifier": {
             "delete_context": [
               "figure_turn",

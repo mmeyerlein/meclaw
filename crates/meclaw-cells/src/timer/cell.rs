@@ -157,6 +157,12 @@ impl LongRunningCell for TimerCell {
         reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            // GH #1353: on the params lane an update or nothing, no op.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                refuse_params(sink, &msg, &push, "invalid_input", &detail).await;
+                return;
+            }
             let body_val = match msg.body {
                 meclaw_core::Body::Inline(ref v) => v.clone(),
                 _ => {
@@ -177,13 +183,19 @@ impl LongRunningCell for TimerCell {
             // standalone:
             // apply + persist + live-set, then return silently (no op follows).
             if let Some(params_val) = body_val.get("params") {
+                // GH #1353: a slot addressed to another cell moves nothing.
+                if let Some(detail) = push.foreign_detail() {
+                    crate::timer::emit::emit_op_error(sink, &msg, "invalid_input", &detail, None)
+                        .await;
+                    return;
+                }
                 if !self.accepts("params") {
-                    crate::timer::emit::emit_op_error(
+                    refuse_params(
                         sink,
                         &msg,
+                        &push,
                         "op_not_accepted",
                         "this timer does not accept a params update (params.accept_ops)",
-                        None,
                     )
                     .await;
                     return;
@@ -191,12 +203,12 @@ impl LongRunningCell for TimerCell {
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
                     None => {
-                        crate::timer::emit::emit_op_error(
+                        refuse_params(
                             sink,
                             &msg,
+                            &push,
                             "invalid_input",
                             "params slot: not a JSON object",
-                            None,
                         )
                         .await;
                         return;
@@ -216,23 +228,23 @@ impl LongRunningCell for TimerCell {
                         match persist {
                             Ok(Ok(())) => {}
                             Ok(Err(e)) => {
-                                crate::timer::emit::emit_op_error(
+                                refuse_params(
                                     sink,
                                     &msg,
+                                    &push,
                                     "invalid_input",
                                     &format!("cell.db params write failed: {e}"),
-                                    None,
                                 )
                                 .await;
                                 return;
                             }
                             Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                                crate::timer::emit::emit_op_error(
+                                refuse_params(
                                     sink,
                                     &msg,
+                                    &push,
                                     "query_timeout",
                                     "params write exceeded query_timeout_ms",
-                                    None,
                                 )
                                 .await;
                                 return;
@@ -243,16 +255,10 @@ impl LongRunningCell for TimerCell {
                         db.set_query_timeout(Some(std::time::Duration::from_millis(
                             self.query_timeout_ms,
                         )));
+                        push.applied(sink).await;
                     }
                     Err(e) => {
-                        crate::timer::emit::emit_op_error(
-                            sink,
-                            &msg,
-                            "invalid_input",
-                            &e.detail(),
-                            None,
-                        )
-                        .await;
+                        refuse_params(sink, &msg, &push, "invalid_input", &e.detail()).await;
                     }
                 }
                 // Standalone params-update → done (no schedule op in this message).
@@ -1131,6 +1137,20 @@ fn past_at_detail(
         at.to_rfc3339_opts(SecondsFormat::Millis, true),
         now.to_rfc3339_opts(SecondsFormat::Millis, true),
     ))
+}
+
+/// Refuse a params update: on the params lane the shared answer (GH #1353),
+/// otherwise the op error every other refusal of this cell is.
+async fn refuse_params(
+    sink: &OutputSink,
+    msg: &Message,
+    push: &crate::params_overlay::ParamsPush,
+    error_code: &str,
+    detail: &str,
+) {
+    if !push.refused(sink, error_code, detail).await {
+        crate::timer::emit::emit_op_error(sink, msg, error_code, detail, None).await;
+    }
 }
 
 /// Helper: loads the current active snapshot fresh from `cell.db` (including the

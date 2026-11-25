@@ -21,7 +21,8 @@ pub use body::Body;
 pub use cell::Cell;
 pub use contract::{
     CompiledConsumes, CompiledEmits, ConsumeSpec, ConsumesBlock, EmitsBlock, IngressBlock,
-    SettingSpec, TransferBounds, TransferPolicy, WriteSurface, validate_consumes, validate_emits,
+    PARAMS_LANE, SettingSpec, TransferBounds, TransferPolicy, WriteSurface, on_params_lane,
+    params_only_fault, validate_consumes, validate_emits,
 };
 pub use handle::ActorHandle;
 pub use headers::Headers;

@@ -548,10 +548,11 @@ mod wire {
     use meclaw_core::{Message, Uuid};
     use meclaw_testing::ColonyHandle;
     use meclaw_testing::mock_http::CapturedRequest;
+    use meclaw_testing::wait_for_mount;
     use tokio::sync::{mpsc, oneshot};
 
     use super::sealed::{Settled, barrier};
-    use super::{SCREEN, Unsettled, calls_of, fold, hang_mark, hop_of};
+    use super::{MOUNT, SCREEN, Unsettled, calls_of, fold, hang_mark, hop_of};
 
     /// The raw doors. Every field is private, so only this module touches them.
     pub(super) struct Wire {
@@ -612,6 +613,11 @@ mod wire {
                 .await
                 .expect("the colony is up");
             ack_rx.await.expect("the scan answers")
+        }
+
+        /// The screen's mount registered on the listener (GH #1590: a screen born late).
+        pub(super) async fn mounted(&self) {
+            wait_for_mount(&self.surfaces, MOUNT).await;
         }
 
         /// `ColonyMsg::Mutation` of `payload`, under a fresh trace; the outcome comes back.
@@ -1181,7 +1187,7 @@ fn canned(text: &str) -> MockResponse {
 /// run beside each other -- and beside a gate, and beside the live colonies of this host --
 /// without a port ever being a reason for a red run.
 pub async fn boot(opts: Boot) -> Colony {
-    boot_inner(opts, false, None).await
+    boot_inner(opts, false, None, true).await
 }
 
 /// [`boot`], plus a `voice` cell with the `echo` provider on the mount the screen's
@@ -1192,7 +1198,7 @@ pub async fn boot(opts: Boot) -> Colony {
 /// behind it (GH #867). Echo, because it needs no credential and sends every frame straight
 /// back -- the page then has audio to count on both sides of its own socket.
 pub async fn boot_with_voice_echo(opts: Boot) -> Colony {
-    boot_inner(opts, true, None).await
+    boot_inner(opts, true, None, true).await
 }
 
 /// [`boot`], plus whatever `grow` writes into the tree before the colony boots (GH #959:
@@ -1204,7 +1210,7 @@ pub async fn boot_with_voice_echo(opts: Boot) -> Colony {
 /// tree; a test that needs its own growth gets a verb here, never the root. It takes the
 /// fixture's [`sealed::Key`] (OR-T11-25), so it stays shut even if it were `pub`.
 async fn boot_with(_key: sealed::Key, opts: Boot, grow: impl FnOnce(&std::path::Path)) -> Colony {
-    boot_inner(opts, false, Some(Box::new(grow))).await
+    boot_inner(opts, false, Some(Box::new(grow)), true).await
 }
 
 /// The tree hook of [`boot_with`].
@@ -1245,7 +1251,38 @@ pub async fn boot_growing(opts: Boot, grow: impl FnOnce(&Tree<'_>)) -> Colony {
     boot_with(sealed::Key::new(), opts, move |root| grow(&Tree(root))).await
 }
 
-async fn boot_inner(opts: Boot, voice_echo: bool, grow: Option<Grow<'_>>) -> Colony {
+/// [`boot_growing`] with NO screen in the tree (GH #1590): `/alex/channels` stands empty and
+/// the screen is born later, by a mutation (`Colony::birth`) -- the way a member's screen
+/// comes into a real colony. `grow` writes before the boot, as in [`boot_growing`].
+///
+/// The screen's dials of [`Boot`] reach only a screen this fixture writes; a born one takes
+/// the template's, so anything but the default is refused here rather than ignored.
+pub async fn boot_unborn(opts: Boot, grow: impl FnOnce(&Tree<'_>)) -> Colony {
+    let shipped = Boot::default();
+    assert!(
+        opts.judge == shipped.judge
+            && opts.judge_min_interval_ms == shipped.judge_min_interval_ms
+            && opts.linger_ms == shipped.linger_ms
+            && opts.fade_ms == shipped.fade_ms
+            && opts.verdict == shipped.verdict,
+        "boot_unborn: a born screen takes the template's dials, so a Boot other than \
+         the default would be ignored"
+    );
+    boot_inner(
+        opts,
+        false,
+        Some(Box::new(move |root| grow(&Tree(root)))),
+        false,
+    )
+    .await
+}
+
+async fn boot_inner(
+    opts: Boot,
+    voice_echo: bool,
+    grow: Option<Grow<'_>>,
+    born_screen: bool,
+) -> Colony {
     let (judge_addr, judge_join, judge_asks) =
         start_mock_server_capturing(vec![canned(&opts.verdict.to_string())]).await;
 
@@ -1343,32 +1380,46 @@ async fn boot_inner(opts: Boot, voice_echo: bool, grow: Option<Grow<'_>>) -> Col
             }
         }),
     );
+    // Unborn (GH #1590): the container stands empty, and the mutation that grows the
+    // screen draws its edges, as the builder renders them.
+    let channel_edges = if born_screen {
+        json!([
+            {"from": ".", "to": "./display", "condition": three_lanes},
+            {"from": "./display", "to": ".", "condition": two_lanes}
+        ])
+    } else {
+        json!([])
+    };
     write_json(
         &root.join("main/alex/channels/config.json"),
         &json!({
             "cell": {"type": "hive"},
-            "params": {"graph": {"edges": [
-                {"from": ".", "to": "./display", "condition": three_lanes},
-                {"from": "./display", "to": ".", "condition": two_lanes}
-            ]}}
+            "params": {"graph": {"edges": channel_edges}}
         }),
     );
 
     // The SHIPPED screen, with four values changed and nothing else: the mount, the three
     // outputs, the curator's dials and a judge that answers on loopback.
-    copy_tree(
-        &repo("templates/display"),
-        &root.join("main/alex/channels/display"),
-    );
+    if born_screen {
+        copy_tree(
+            &repo("templates/display"),
+            &root.join("main/alex/channels/display"),
+        );
+    }
     // The display refs `web@2.3.0`, and a ref resolves against the templates table, which
     // is empty until somebody fills it (GH #424).
     copy_tree(&repo("templates/web"), &root.join("templates/web"));
     let screen = root.join("main/alex/channels/display");
-    patch_json(&screen.join("web/config.json"), |v| {
+    let patch = |rel: &str, f: &dyn Fn(&mut Value)| {
+        if born_screen {
+            patch_json(&screen.join(rel), f);
+        }
+    };
+    patch("web/config.json", &|v| {
         v["override_params"][""]["mount"] = json!(MOUNT)
     });
     let judge_word = if opts.judge { "on" } else { "off" };
-    patch_json(&screen.join("compose/config.json"), |v| {
+    patch("compose/config.json", &|v| {
         v["params"]["screens"] = screens();
         v["params"]["default_screen"] = json!("monitor");
         v["params"]["judge"] = json!(judge_word);
@@ -1376,7 +1427,7 @@ async fn boot_inner(opts: Boot, voice_echo: bool, grow: Option<Grow<'_>>) -> Col
         v["params"]["linger_ms"] = json!(opts.linger_ms);
         v["params"]["fade_ms"] = json!(opts.fade_ms);
     });
-    patch_json(&screen.join("judge/config.json"), |v| {
+    patch("judge/config.json", &|v| {
         v["params"]["model"] = json!("mock-judge");
         v["params"]["api_key"] = json!("fake-key");
         v["params"]["base_url"] = json!(format!("http://{judge_addr}"));
@@ -1465,7 +1516,9 @@ async fn boot_inner(opts: Boot, voice_echo: bool, grow: Option<Grow<'_>>) -> Col
         .await
         .expect("the colony boots");
 
-    wait_for_mount(&surfaces, MOUNT).await;
+    if born_screen {
+        wait_for_mount(&surfaces, MOUNT).await;
+    }
     if voice_echo {
         wait_for_mount(&surfaces, "voice").await;
     }
@@ -1806,6 +1859,16 @@ impl Colony {
         self.w.mutate(json!({"scope": scope, "diff": diff})).await
     }
 
+    /// Grow the screen by one mutation of `diff` under `scope` (GH #1590, [`boot_unborn`]):
+    /// the outcome, once the screen's mount answers on the listener.
+    pub async fn birth(&self, scope: &str, diff: Value) -> MutationOutcome {
+        let outcome = self.apply_diff(scope, diff).await;
+        if matches!(outcome, MutationOutcome::Committed { .. }) {
+            self.w.mounted().await;
+        }
+        outcome
+    }
+
     /// The window id of a view in the screen state (§ 2 Id).
     pub fn oid(&self, owner: &str, view_id: &str) -> String {
         format!("view.{}.{}", owner.replace('/', "~"), view_id)
@@ -1965,6 +2028,12 @@ impl Colony {
             },
         )
         .await
+    }
+
+    /// Every dead letter once the colony settled, drained (GH #1597): what a lock reads
+    /// as the absence of a misroute is read after the barrier, never after a wait.
+    pub async fn dead_letters(&self) -> Vec<meclaw_colony::DeadLetter> {
+        self.w.settled().await.take_dead_letters().await
     }
 
     /// How many times the compose cell asked `web` for its tree (`hop.route == "read"`):

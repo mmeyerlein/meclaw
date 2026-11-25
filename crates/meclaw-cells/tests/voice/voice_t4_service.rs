@@ -25,7 +25,7 @@ use meclaw_testing::{deadline, surface_listener, wait};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 /// The hang mark of the close wait in [`close_code`]: [`deadline::HANG`],
@@ -227,7 +227,8 @@ impl SttProvider for StallingStt {
 /// A synthesis provider that emits `chunks` chunks and honours cancellation.
 struct ScriptedTts {
     chunks: usize,
-    delay: Duration,
+    /// One permit lets one chunk out; `None` lets them all out as they come.
+    pace: Option<Arc<Semaphore>>,
     fail: Option<String>,
     /// Go silent after the scripted chunks instead of returning — a wedged
     /// synthesis socket.
@@ -237,20 +238,27 @@ struct ScriptedTts {
 }
 
 impl ScriptedTts {
-    fn new(chunks: usize, delay_ms: u64, cancelled: Arc<AtomicUsize>) -> Self {
+    fn new(chunks: usize, cancelled: Arc<AtomicUsize>) -> Self {
         Self {
             chunks,
-            delay: Duration::from_millis(delay_ms),
+            pace: None,
             fail: None,
             hang: false,
             cancelled,
+        }
+    }
+    /// Says no chunk the test has not let out with a permit of `pace`.
+    fn paced(chunks: usize, pace: &Arc<Semaphore>, cancelled: Arc<AtomicUsize>) -> Self {
+        Self {
+            pace: Some(pace.clone()),
+            ..Self::new(chunks, cancelled)
         }
     }
     /// One chunk, then silence for ever.
     fn wedged() -> Self {
         Self {
             chunks: 1,
-            delay: Duration::from_millis(0),
+            pace: None,
             fail: None,
             hang: true,
             cancelled: Arc::new(AtomicUsize::new(0)),
@@ -259,7 +267,7 @@ impl ScriptedTts {
     fn failing(detail: &str) -> Self {
         Self {
             chunks: 0,
-            delay: Duration::from_millis(0),
+            pace: None,
             fail: Some(detail.to_string()),
             hang: false,
             cancelled: Arc::new(AtomicUsize::new(0)),
@@ -283,7 +291,7 @@ impl TtsProvider for ScriptedTts {
         _liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), TtsError>> {
         let chunks = self.chunks;
-        let delay = self.delay;
+        let pace = self.pace.clone();
         let fail = self.fail.clone();
         let hang = self.hang;
         let cancelled = self.cancelled.clone();
@@ -296,14 +304,17 @@ impl TtsProvider for ScriptedTts {
                     cancelled.fetch_add(1, Ordering::SeqCst);
                     return Err(TtsError::Cancelled);
                 }
-                tokio::select! {
-                    _ = cancel.changed() => {
-                        cancelled.fetch_add(1, Ordering::SeqCst);
-                        return Err(TtsError::Cancelled);
+                if let Some(pace) = &pace {
+                    tokio::select! {
+                        _ = cancel.changed() => {
+                            cancelled.fetch_add(1, Ordering::SeqCst);
+                            return Err(TtsError::Cancelled);
+                        }
+                        permit = pace.acquire() => permit.expect("never closed").forget(),
                     }
-                    _ = tokio::time::sleep(delay) => {}
                 }
-                if audio.send(vec![(i % 251) as u8; 4]).await.is_err() {
+                // A whole 20 ms frame: a shorter chunk would wait for the next.
+                if audio.send(vec![(i % 251) as u8; 960]).await.is_err() {
                     return Err(TtsError::Cancelled);
                 }
             }
@@ -593,6 +604,7 @@ fn label(event: &VoiceEvent) -> &'static str {
         VoiceEvent::SeedUnheld { .. } => "SeedUnheld",
         VoiceEvent::CallMark { .. } => "CallMark",
         VoiceEvent::CallUsage { .. } => "CallUsage",
+        VoiceEvent::AudioReport { .. } => "AudioReport",
     }
 }
 
@@ -1070,7 +1082,7 @@ async fn a_speak_order_becomes_frames_and_a_verdict() {
     let cancelled = Arc::new(AtomicUsize::new(0));
     let mut live = start(
         Arc::new(ScriptedStt::draining(seen)),
-        Some(Arc::new(ScriptedTts::new(3, 1, cancelled))),
+        Some(Arc::new(ScriptedTts::new(3, cancelled))),
         Mode::Auto,
     )
     .await;
@@ -1091,7 +1103,7 @@ async fn a_speak_order_becomes_frames_and_a_verdict() {
     let start = next_text(&mut ws).await;
     assert_eq!(start, json!({"type": "speak_start", "speak_id": "s1"}));
     for i in 0..3 {
-        assert_eq!(next_binary(&mut ws).await, vec![i as u8; 4]);
+        assert_eq!(next_binary(&mut ws).await, vec![i as u8; 960]);
     }
     let end = next_text(&mut ws).await;
     assert_eq!(
@@ -1119,9 +1131,11 @@ async fn a_speak_order_becomes_frames_and_a_verdict() {
 async fn a_cancel_stops_the_synthesis_and_discards_what_is_buffered() {
     let seen = Arc::new(AtomicUsize::new(0));
     let cancelled = Arc::new(AtomicUsize::new(0));
+    // Three of the fifty: the one that is heard and two that may be buffered.
+    let pace = Arc::new(Semaphore::new(3));
     let mut live = start(
         Arc::new(ScriptedStt::draining(seen)),
-        Some(Arc::new(ScriptedTts::new(50, 20, cancelled.clone()))),
+        Some(Arc::new(ScriptedTts::paced(50, &pace, cancelled.clone()))),
         Mode::Auto,
     )
     .await;
@@ -1176,11 +1190,37 @@ async fn a_cancel_stops_the_synthesis_and_discards_what_is_buffered() {
         other => panic!("expected SpeakEnded, got {}", label(&other)),
     }
 
-    // And nothing follows it: the buffered audio was discarded, not flushed
-    // (R-V11). A semantic timing discriminator, held deliberately tight — the
-    // provider would have produced 49 more chunks at 20 ms each.
-    let after = tokio::time::timeout(Duration::from_millis(500), ws.next()).await;
-    assert!(after.is_err(), "no frame may follow the verdict: {after:?}");
+    // The provider was stopped with the rest of its chunks unsaid.
+    wait::until("the provider sees the cancel", || {
+        let cancelled = cancelled.clone();
+        async move { cancelled.load(Ordering::SeqCst) == 1 }
+    })
+    .await;
+
+    // And nothing follows the verdict: the buffered audio was discarded, not
+    // flushed (R-V11). The marker is the next synthesis on the same socket --
+    // whatever was left of the first one would go out ahead of its start.
+    pace.add_permits(50);
+    live.reconfig_tx
+        .send(VoiceReconfig::Speak {
+            session_id: "abc".to_string(),
+            speak_id: "s2".to_string(),
+            text: "the next answer".to_string(),
+        })
+        .await
+        .expect("send");
+    assert_eq!(
+        next_text(&mut ws).await,
+        json!({"type": "speak_start", "speak_id": "s2"}),
+        "no frame may follow the verdict"
+    );
+    for i in 0..50 {
+        assert_eq!(next_binary(&mut ws).await, vec![i as u8; 960]);
+    }
+    assert_eq!(
+        next_text(&mut ws).await,
+        json!({"type": "speak_end", "speak_id": "s2", "reason": "done"})
+    );
 }
 
 /// Step 4: a synthesis socket that goes quiet is a verdict too — and traffic on
@@ -1295,9 +1335,11 @@ async fn a_failing_synthesis_ends_with_a_reason() {
 async fn a_client_that_leaves_mid_synthesis_still_ends_the_speak() {
     let seen = Arc::new(AtomicUsize::new(0));
     let cancelled = Arc::new(AtomicUsize::new(0));
+    // One chunk of fifty: the client leaves with the rest unsaid.
+    let pace = Arc::new(Semaphore::new(1));
     let mut live = start(
         Arc::new(ScriptedStt::draining(seen)),
-        Some(Arc::new(ScriptedTts::new(50, 20, cancelled))),
+        Some(Arc::new(ScriptedTts::paced(50, &pace, cancelled))),
         Mode::Auto,
     )
     .await;
@@ -1522,11 +1564,12 @@ async fn wedge(live: &mut Live, ws: &mut Ws, session_id: &str, stall: &Stall) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_speak_ends_even_when_the_client_disappears() {
     let cancelled = Arc::new(AtomicUsize::new(0));
-    // Long enough that the tear-down lands INSIDE the synthesis rather than
-    // after it.
+    // One chunk of fifty, so that the tear-down lands INSIDE the synthesis
+    // rather than after it.
+    let pace = Arc::new(Semaphore::new(1));
     let mut live = start(
         Arc::new(StallingStt::default()),
-        Some(Arc::new(ScriptedTts::new(50, 20, cancelled))),
+        Some(Arc::new(ScriptedTts::paced(50, &pace, cancelled))),
         Mode::Auto,
     )
     .await;
@@ -1549,6 +1592,8 @@ async fn every_speak_ends_even_when_the_client_disappears() {
     // without a close frame — the client vanishing, not saying goodbye.
     let _ = deadline::hang("the first frame of the synthesis arrives", client.next()).await;
     drop(client);
+    // The rest is written at the dead socket.
+    pace.add_permits(49);
 
     let mut ends = 0usize;
     let mut disconnected = false;
@@ -1590,7 +1635,7 @@ async fn a_speak_to_a_wedged_client_ends_as_a_reported_failure() {
     let stall = stalling.stall();
     let mut live = start_with(
         stalling,
-        Some(Arc::new(ScriptedTts::new(1, 0, cancelled))),
+        Some(Arc::new(ScriptedTts::new(1, cancelled))),
         Mode::Auto,
         Duration::from_secs(2),
         Duration::from_secs(2),
@@ -1714,7 +1759,7 @@ async fn a_burst_past_both_buffers_is_given_up_on_without_waiting_for_the_deadli
     let stall = stalling.stall();
     let mut live = start_with(
         stalling,
-        Some(Arc::new(ScriptedTts::new(1, 0, cancelled))),
+        Some(Arc::new(ScriptedTts::new(1, cancelled))),
         Mode::Auto,
         marker(),
         marker(),

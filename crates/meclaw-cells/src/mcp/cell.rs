@@ -240,6 +240,29 @@ impl McpCell {
     }
 }
 
+/// Refuse a params update: on the params lane the shared answer (GH #1353),
+/// otherwise the tool-result error every other refusal of this cell is.
+async fn refuse_params(
+    sink: &OutputSink,
+    msg: &Message,
+    push: &crate::params_overlay::ParamsPush,
+    error_code: &str,
+    detail: &str,
+) {
+    if !push.refused(sink, error_code, detail).await {
+        crate::mcp::emit::emit_tool_result_error(
+            sink,
+            msg,
+            "__params__",
+            0,
+            "",
+            error_code,
+            detail,
+        )
+        .await;
+    }
+}
+
 impl LongRunningCell for McpCell {
     type Event = McpEvent;
     type Reconfig = McpReconfig;
@@ -300,6 +323,13 @@ impl LongRunningCell for McpCell {
         reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            // GH #1353: on the params lane an update or nothing -- no call, no
+            // box. Before the bearer below.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                refuse_params(sink, &msg, &push, "invalid_input", &detail).await;
+                return;
+            }
             // GH #1235: the sealed bearer. Never touches `cell.db`.
             if let meclaw_core::Body::Inline(ref v) = msg.body
                 && v.get("sealed").is_some()
@@ -310,19 +340,23 @@ impl LongRunningCell for McpCell {
             // β: params-update slot (config.md § Access l.20), handled FIRST.
             // Mutable: external_timeout_ms (path A, next call_tool) + query_timeout_ms
             // (path C, DbConn live). Immutable: endpoint + auth (credential/identity).
-            // A params-only message persists + returns silently.
+            // A params-only message persists + returns; answered only on the params
+            // lane (GH #1353).
             if let meclaw_core::Body::Inline(ref v) = msg.body
                 && let Some(params_val) = v.get("params")
             {
+                // GH #1353: a slot addressed to another cell moves nothing.
+                if let Some(detail) = push.foreign_detail() {
+                    refuse_params(sink, &msg, &push, "invalid_input", &detail).await;
+                    return;
+                }
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
                     None => {
-                        crate::mcp::emit::emit_tool_result_error(
+                        refuse_params(
                             sink,
                             &msg,
-                            "__params__",
-                            0,
-                            "",
+                            &push,
                             "invalid_input",
                             "params slot: not a JSON object",
                         )
@@ -345,12 +379,10 @@ impl LongRunningCell for McpCell {
                         match persist {
                             Ok(Ok(())) => {}
                             Ok(Err(e)) => {
-                                crate::mcp::emit::emit_tool_result_error(
+                                refuse_params(
                                     sink,
                                     &msg,
-                                    "__params__",
-                                    0,
-                                    "",
+                                    &push,
                                     "invalid_input",
                                     &format!("cell.db params write failed: {e}"),
                                 )
@@ -358,12 +390,10 @@ impl LongRunningCell for McpCell {
                                 return;
                             }
                             Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                                crate::mcp::emit::emit_tool_result_error(
+                                refuse_params(
                                     sink,
                                     &msg,
-                                    "__params__",
-                                    0,
-                                    "",
+                                    &push,
                                     "query_timeout",
                                     "params write exceeded query_timeout_ms",
                                 )
@@ -378,18 +408,10 @@ impl LongRunningCell for McpCell {
                         db.set_query_timeout(Some(std::time::Duration::from_millis(
                             self.query_timeout_ms,
                         )));
+                        push.applied(sink).await;
                     }
                     Err(e) => {
-                        crate::mcp::emit::emit_tool_result_error(
-                            sink,
-                            &msg,
-                            "__params__",
-                            0,
-                            "",
-                            "invalid_input",
-                            &e.detail(),
-                        )
-                        .await;
+                        refuse_params(sink, &msg, &push, "invalid_input", &e.detail()).await;
                     }
                 }
                 // Standalone params-update → done (no tool_call in this message).

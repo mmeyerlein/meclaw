@@ -9,8 +9,6 @@ pub mod curator_hive;
 pub mod curator_llm;
 #[path = "../support/curator_profiles.rs"]
 pub mod curator_profiles;
-pub mod gh1225_kr_a_refused_write_never_reissues_an_episode_id;
-pub mod gh1225_kr_a_stale_parked_payload_is_swept_once;
 pub mod gh1225_kr_an_old_ledger_heals_and_the_index_follows;
 pub mod gh1225_kr_p_a_sweep_names_only_what_went;
 pub mod gh1225_kr_p_an_unread_part_of_the_window_is_a_cut;
@@ -46,10 +44,7 @@ pub mod gh1342_the_ambient_question_asks_with_the_persons_words;
 pub mod gh1346_every_tool_the_quick_scope_allows_is_on_the_menu;
 pub mod gh1347_the_quick_window_keeps_the_running_round_whole;
 pub mod gh1352_a_quick_call_without_an_answer_goes_to_the_brain;
-pub mod gh1382_a_failed_speculation_answers_once;
-pub mod gh1398_the_quick_voice_has_siblings;
-pub mod gh1411_a_kept_speculation_streams;
-pub mod gh1432_a_shown_spec_sentence_is_not_repeated;
+pub mod gh1382_a_quick_call_whose_projection_fell_still_escalates_once;
 pub mod gh1436_a_topic_does_not_carry_into_another_session_unnamed;
 pub mod gh1436_b_a_renewed_mention_keeps_the_topic;
 pub mod gh1436_c_the_switch_off_reads_byte_identical;
@@ -61,6 +56,11 @@ pub mod gh896_a_session_starts_with_its_handover;
 pub mod gh901_a_broken_file_is_never_written;
 pub mod gh901_the_hook_register_parses_three_languages;
 pub mod gh904_the_curator_clock_keeps_one_row;
+pub mod gh916_a_pin_source_is_replaced;
+pub mod gh926_a_curator_counts_its_own_ledger;
+pub mod gh932_the_curator_pages_only_over_visible_rows;
+pub mod gh935_the_identity_budget_splits_the_pack;
+pub mod gh943_a_plan_per_round;
 #[path = "../support/history_judge.rs"]
 pub mod history_judge;
 #[path = "../mock_openai.rs"]

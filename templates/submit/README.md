@@ -1,4 +1,4 @@
-# `submit@2.5.0`
+# `submit@2.6.0`
 
 Two occupants behind one door, and the only reach onto the mutation door in the
 whole tree. It asks who may submit — and, when the diff itself asks for it, whether
@@ -405,6 +405,10 @@ be one of the four forms the builder renders, byte for byte:
   but one ([#1315](https://github.com/mmeyerlein/meclaw/issues/1315)): `<hive>/<cell>`
   under an agent the SAME manifest brings into the world and whose announcement
   names exactly that brain -- the brain of a `simple-agent@2` embedded in an app.
+  Since [#1616](https://github.com/mmeyerlein/meclaw/issues/1616) the same holds for a
+  generation whose level declares its own `in_model` door (`assistant`, R-80-5): the push
+  ends on the generation, `<rim>/<cell>` or `<rim>/curator/<cell>` under it, and only for a
+  brain the same manifest announces.
   Violation → `model_push_form`.
 - **level door** (since [#1315](https://github.com/mmeyerlein/meclaw/issues/1315)): the one
   bare `in_model` edge. `from` is `.`, `to` is an agent the SAME declaration
@@ -498,6 +502,27 @@ which drives the renderer's own output into this gate and pins the forward above
 a broker question, and in `crates/meclaw-cells/tests/misc_7/gh863_every_model_door_has_a_way_back.rs`
 for the way back.
 
+## The params road is a form too ([#1353](https://github.com/mmeyerlein/meclaw/issues/1353))
+
+A params-only update moves a cell's live params, and the container the shell hands the lane to
+(`/os/orgs` in `meclaw-os`) is a scope every submission may name under the shipped broker default.
+So an `add_edges` entry of the lane `in_params` is the one the builder draws, byte for byte:
+
+- `from` is the declaration's own scope (`.`), and that scope stands directly beside
+  `/os/operator`, the only sender of the lane;
+- `to` is a node under it whose path is a plain CEL literal;
+- the condition is exactly `has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) &&
+  hop.subscriber.startsWith('<to>/')`;
+- the modifier is exactly `{"set_hop": {"route": "'in_params'"}}`.
+
+An edge counts as one of the lane when its modifier or its `lane` names `in_params`, or its condition
+asks for it. A condition that only steps aside for the lane (`!(has(hop.route) && hop.route ==
+'in_params')`, or `!=`, as a conjunct of its own) is an ordinary edge. The way back (`params_applied`, `params_refused`) has no
+form rule: it moves no param. Violation → `params_push_form`, refused on the spot, and the broker is
+never asked.
+
+Pinned in `crates/meclaw-colony/tests/misc/params_road_out_of_the_shell.rs`.
+
 ## Where the policy lives
 
 **Not here.** Ruling R6 says who may build is an `access` policy question, and since GH #435 it is
@@ -561,6 +586,7 @@ would be a colony with no way back.
 | `model_refusal_form` | an edge naming the refusal lane `model_refused` or the registry's `in_refused` that is not the way back the builder renders: one composite under the container, to the container, on `model_refused` alone, no modifier (since 2.3.4). A form refusal, unasked |
 | `model_road_key` | an edge whose `set_hop` writes `subscriber` or `subscribe` (since 2.3.2), `refused_subscriber` or `refused_model` (since 2.3.4), or whose `delete_hop` removes one of those or `route`. A form refusal, unasked |
 | `model_route_computed` | an edge whose `set_hop.route` is computed and not closed over literals written in it (since 2.3.2). A form refusal, unasked |
+| `params_push_form` | an edge of the lane `in_params` that is not the edge the builder draws for a door hive ([#1353](https://github.com/mmeyerlein/meclaw/issues/1353)). A form refusal, unasked |
 | `subscribe_not_permitted` | the broker refused this identity its own push lane — no enabled rule grants `affinity.subscribe` |
 
 On phase B the colony's own code is passed through **verbatim** — no new string

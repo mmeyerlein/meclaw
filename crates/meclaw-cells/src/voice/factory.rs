@@ -551,9 +551,13 @@ fn make_build(
         // Read here, like the two timeouts: this life frames at the value it
         // was born with, and a moved one takes effect on the next respawn.
         io.audio_out_frame_ms = parsed.audio_out_frame_ms;
+        io.audio_out_lead_ms = parsed.audio_out_lead_ms;
         // The `first_audio` lane's switch, for the connection's half of it:
         // a cascade reports the first audio of a synthesis only where ordered.
         io.emit_first_audio = parsed.emit_first_audio;
+        // And the `audio_report` lane's: the connection collects what a duplex
+        // call reports only where ordered.
+        io.emit_audio_report = parsed.emit_audio_report;
         // The duplex half of this life, read here for the same reason the
         // frame length is: the I/O half is built from the effective params of
         // the life about to start.
@@ -845,6 +849,7 @@ mod tests {
             "emit_partials": true,
             "emit_usage": true,
             "emit_first_audio": true,
+            "emit_audio_report": true,
             "call_marks_s": [60, 120],
             "call_mark_every_s": 600
         });
@@ -866,6 +871,10 @@ mod tests {
         assert!(
             effective.emit_first_audio,
             "emit_first_audio was lost between birth and the life the cell runs"
+        );
+        assert!(
+            effective.emit_audio_report,
+            "emit_audio_report was lost between birth and the life the cell runs"
         );
 
         // Every top-level key of THIS birth is still there after the replay.

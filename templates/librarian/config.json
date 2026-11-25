@@ -36,6 +36,10 @@
         {
           "route": "in_schemas",
           "because": "a menu question: body `tools`, the names an asking collector declares (`*` = all four). Answered by `./schemas` with exactly one `tool_schemas`"
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
@@ -54,6 +58,14 @@
         {
           "route": "tool_schemas",
           "because": "the menu: `{schemas, unknown, sidecar: []}`, one declaration per asked `lib_*` name this hive serves (`tools_missing` when the request carried no list)"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -185,6 +197,41 @@
           "modifier": {
             "set_hop": {
               "route": "'tool_schemas'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/store')"
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
             },
             "delete_context": [
               "cur_origin",

@@ -648,3 +648,57 @@ fn the_declared_lane_is_the_one_the_script_writes() {
         "the cell says what it is without a block contract: {cfg}"
     );
 }
+
+/// GH #1598 -- the sections that leave on lane `sidecar`, by name, in order.
+fn gh1598_sections(out: &serde_json::Value) -> Vec<String> {
+    out.as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(std::slice::from_ref(out))
+        .iter()
+        .filter(|m| m["header"]["route"] == "sidecar")
+        .map(|m| {
+            m["header"]["section"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// GH #1598 -- an EMPTY section leaves no message. A key with nothing under it --
+/// `{}`, an object whose fields are all empty, `[]` -- left as a section until this
+/// repair, and the member carried it into its `./apps`, where no app takes it
+/// (soul2me lab, set 0.73: three `hive_no_route` dead letters from one turn of the
+/// splitter). It is dropped like the empty string of GH #799 and named in
+/// `sidecar_dropped`; a section with words leaves exactly once, as before.
+#[test]
+fn gh1598_an_empty_section_leaves_no_message_and_a_written_one_leaves_once() {
+    let block = r#"{"fact": {}, "context": {"payload": "  ", "note": null}, "correction": [],
+        "topics": {"title": "colours", "items": []}, "note": "blue it is"}"#;
+    let answer = format!("Fine.\n\n```sidecar\n{block}\n```");
+    let out = split(completion("stop", serde_json::json!([text_turn(&answer)])));
+    assert_eq!(
+        gh1598_sections(&out),
+        vec!["topics".to_string(), "note".to_string()],
+        "only the sections with words leave, each once: {out}"
+    );
+    assert_eq!(
+        out[0]["header"]["sidecar_dropped"], "fact,context,correction",
+        "the empty ones are named on the answer half: {out}"
+    );
+}
+
+/// GH #1598 -- a block of nothing but empty sections leaves the answer alone.
+#[test]
+fn gh1598_a_block_of_only_empty_sections_is_the_answer_alone() {
+    let answer = "Fine.\n\n```sidecar\n{\"fact\": {}, \"context\": {\"payload\": \"\"}}\n```";
+    let out = split(completion("stop", serde_json::json!([text_turn(answer)])));
+    assert!(
+        gh1598_sections(&out).is_empty(),
+        "no section has words, so none leaves: {out}"
+    );
+    assert!(
+        out.is_object() || out.as_array().is_some_and(|a| a.len() == 1),
+        "the answer half alone: {out}"
+    );
+}

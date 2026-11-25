@@ -12,7 +12,7 @@
 //! the `member` template: the `channels` container knows its screen only through
 //! the mutation that grows it, so the mutation is what can draw `. -> ./<screen>`.
 //! `examples/organism/grow-screen.json` is the byte truth of that edge, and this
-//! file holds the recipe and the example to the same three edges — the same
+//! file holds the recipe and the example to the same two container edges (GH #1597) — the same
 //! discipline `gh466_grow_level_renders_the_level.rs` runs every level under.
 //!
 //! Why no `channel_node` guard on the third edge: an error carries no context
@@ -88,7 +88,12 @@ fn rendered_screen(template: &Value) -> Value {
     let decls = out["manifest"]
         .as_array()
         .unwrap_or_else(|| panic!("no manifest: {out}"));
-    assert_eq!(decls.len(), 1, "a screen is one declaration: {decls:?}");
+    assert_eq!(
+        decls.len(),
+        2,
+        "a screen is its declaration in the container and the member's half behind \
+         it (GH #1597): {decls:?}"
+    );
     decls[0].clone()
 }
 
@@ -97,40 +102,42 @@ fn a_channels_failure_reaches_the_screen() {
     let Some(want) = example_screen() else {
         return; // a tree without the examples cannot make this assertion
     };
-    // The example: three edges, and the third is the error wire in.
+    // The example: two edges in the container, the second is the error wire in.
+    // What the MEMBER sends the screen -- the view and the mutation receipt -- is
+    // drawn at the member's scope since GH #1597, not in the container.
     let edges = want["diff"]["add_edges"]
         .as_array()
         .expect("the screen declaration carries add_edges");
     assert_eq!(
         edges.len(),
-        3,
-        "a screen costs three edges since builder@1.10.0 — up, down, and the \
+        2,
+        "a screen costs two edges in the container since GH #1597 — up, and the \
          channels' failures in: {edges:?}"
     );
     assert_eq!(
-        edges[2]["condition"],
+        edges[1]["condition"],
         json!("has(hop.route) && hop.route == 'error'"),
-        "the third edge carries a channel's `error` and nothing else"
+        "the second edge carries a channel's `error` and nothing else"
     );
     assert_eq!(
-        edges[2]["modifier"]["set_hop"]["route"],
+        edges[1]["modifier"]["set_hop"]["route"],
         json!("'in_notice'"),
         "the failure arrives on the screen's own notice lane"
     );
     assert_eq!(
-        &edges[2],
+        &edges[1],
         &the_error_edge(),
-        "the third edge, byte for byte"
+        "the second edge, byte for byte"
     );
     assert!(
-        edges[2]["condition"]
+        edges[1]["condition"]
             .as_str()
             .is_some_and(|c| !c.contains("channel_node")),
         "an error carries no context of the screen — every channel failure in \
          the container is a notice for the member's screen, so no guard"
     );
 
-    // The recipe renders the same three, in the same order.
+    // The recipe renders the same two, in the same order.
     let got = rendered_screen(&want["diff"]["add_nodes"][0]["template"]);
     assert_eq!(
         got["diff"]["add_edges"], want["diff"]["add_edges"],

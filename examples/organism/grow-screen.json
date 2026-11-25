@@ -6,7 +6,7 @@
         "add_nodes": [
           {
             "name": "display",
-            "template": "display@2.14.0",
+            "template": "display@2.15.0",
             "override_params": {
               "web": {
                 "mount": "alex-display"
@@ -24,16 +24,6 @@
                 "channel_node": "'display'",
                 "channel": "'display'",
                 "user_id": "has(hop.user_id) ? hop.user_id : ''"
-              }
-            }
-          },
-          {
-            "from": ".",
-            "to": "./display",
-            "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && has(context.channel_node) && context.channel_node == 'display'",
-            "modifier": {
-              "set_hop": {
-                "route": "hop.route == 'withdraw' ? 'in_withdraw' : 'in_view'"
               }
             }
           },
@@ -75,10 +65,32 @@
             "from": ".",
             "to": "./colony-view",
             "condition": "has(hop.route) && (hop.route == 'event' || hop.route == 'receipt') && has(hop.owner) && hop.owner.contains('/apps/colony-view/')"
+          }
+        ]
+      }
+    },
+    {
+      "scope": "/os/orgs/acme/members/alex",
+      "diff": {
+        "add_edges": [
+          {
+            "from": "./apps",
+            "to": "./channels/display",
+            "condition": "has(hop.route) && (hop.route == 'view' || hop.route == 'withdraw') && has(context.channel_node) && context.channel_node == 'display'",
+            "modifier": {
+              "set_hop": {
+                "route": "hop.route == 'withdraw' ? 'in_withdraw' : 'in_view'"
+              }
+            }
           },
           {
             "from": ".",
-            "to": "./colony-view",
+            "to": "./channels/display",
+            "condition": "has(hop.route) && hop.route == 'mutation_committed'"
+          },
+          {
+            "from": ".",
+            "to": "./apps/colony-view",
             "condition": "has(hop.route) && hop.route == 'mutation_committed'"
           }
         ]

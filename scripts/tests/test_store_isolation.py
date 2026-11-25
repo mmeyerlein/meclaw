@@ -95,8 +95,7 @@ class StoreIsolationGuard(unittest.TestCase):
         self.assertFalse(path.parent.exists())
 
     def test_isolate_points_the_host_file_away_from_the_machine(self):
-        # d59-2 fix round (review M3): `night.local_lane` and `wave._build_hint` read
-        # the host file; a test never reads the machine's `~/.config/meclaw/lanes`
+        # d59-2 fix round (review M3): `night.local_lane` reads the host file; a test never reads the machine's `~/.config/meclaw/lanes`
         name = "MECLAW_LANES_FILE"   # = coverage.lanes_file
         before = os.environ.get(name)
         os.environ[name] = "/nonexistent/machine-lanes"

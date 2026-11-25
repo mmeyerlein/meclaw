@@ -11,12 +11,16 @@
 //!   check (no partial apply; mirrors the W4b `llm` semantics byte-for-byte).
 //! - [`restore`] — wake/respawn replay of the `cell.db` overlay over the
 //!   birth-params.
+//! - [`ParamsPush`] — who a `params` slot is for, how it is answered and what
+//!   the params lane may carry (GH #862, GH #1353): one rule, hung into every
+//!   overlay type.
 //! - `upsert_param_overlay` / `read_params_overlay` / `persist_params_overlay`
 //!   / `merge_params_overlay` — the key/value-agnostic `cell.db` persistence,
 //!   moved 1:1 from `llm/state.rs` (the `params` table is shared substrate,
 //!   `meclaw_colony::persist::schema`).
 
 use meclaw_core::serde_json::{self, Value};
+use meclaw_core::{Body, CellOutput, Message, OutputSink, Path};
 
 /// A cell-type params struct that supports the W4b runtime params-update
 /// overlay. Generic over the concrete params type; the per-type key-sets +
@@ -64,6 +68,206 @@ impl ParamUpdateError {
                 format!("params update rejected: {msg}")
             }
         }
+    }
+}
+
+/// GH #1353: the lane a params-only update travels on from the colony's own
+/// contact (`/os/operator`) through a hive's door to the cell. Only a push on
+/// this lane is answered, and the lane carries nothing but a push. The word and
+/// the form stand in `meclaw-core`, whose ingress check reads them too.
+pub use meclaw_core::PARAMS_LANE;
+
+/// GH #1353: the hop key an answer to a params push names itself on.
+///
+/// A key of its own and not a `route` value: the shipped cells declare `route`
+/// with a closed value list (`contract.emits.hop`), while an undeclared hop key
+/// is allowed -- and the hop of the push is not inherited by the answer
+/// (ADR-0001), so nothing else tells the answer apart from a cell's work.
+pub const PARAMS_ANSWER_KEY: &str = "params_answer";
+
+/// GH #1353: [`PARAMS_ANSWER_KEY`] of an update this cell applied.
+pub const PARAMS_APPLIED: &str = "params_applied";
+
+/// GH #1353: [`PARAMS_ANSWER_KEY`] of an update this cell refused.
+pub const PARAMS_REFUSED: &str = "params_refused";
+
+/// GH #862 (R-SN-9), one rule for every overlay type since GH #1353: who a
+/// `params` slot is for. The registry and `/os/operator` address a push by
+/// `hop.subscriber`; the operator's `POST /messages`, `argus`/`steward` and a
+/// memory-hive broadcast carry none. The own address is the one the substrate
+/// stamps on the sink (`OutputSink::sender_path`, GH #132) -- never message data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushFor {
+    /// No `hop.subscriber`: the operator's message, applied as before.
+    Operator,
+    /// `hop.subscriber` is this cell's own path.
+    Me,
+    /// Any other value -- the empty string and a non-string included, so the
+    /// rule fails closed: another cell's push. Carries the address as one
+    /// line for the detail and the warning.
+    Other(String),
+}
+
+/// At most this many characters of a foreign address reach a detail or a log
+/// line: the value is message data, and a detail is no place for a document.
+const PUSH_ADDRESS_MAX_CHARS: usize = 256;
+
+/// `v` as one line of at most `max` characters: a string as it is, anything
+/// else as its JSON text; a line break or any other control character becomes a
+/// space, so a forged address cannot start a second log line.
+fn one_line(v: &Value, max: usize) -> String {
+    let raw = match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    raw.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(max)
+        .collect()
+}
+
+/// GH #1353: the address and the way back of one `params` slot.
+///
+/// A cell reads it once per message, before anything is done with it:
+///
+/// 1. [`Self::lane_refusal`] is `Some` → do nothing and refuse. The lane crosses
+///    every seal, so it carries an update or nothing: work on it is not run,
+///    whoever it names and whether or not it has a `params` slot;
+/// 2. off the lane, [`Self::foreign_detail`] is `Some` → do not apply the slot.
+///    `llm` and `store` run the work beside it without the slot; every other
+///    type treats a message with a `params` slot as an update alone and refuses;
+/// 3. a refusal goes through [`Self::refused`] first; `true` means it is answered
+///    and the type's own error emission (`invalid_input`) is left out;
+/// 4. after a params-only update is applied and persisted: [`Self::applied`].
+///
+/// Both answers are no-ops unless the push came on [`PARAMS_LANE`] addressed to
+/// this cell, so every other sender keeps exactly what it had.
+#[derive(Debug, Clone)]
+pub struct ParamsPush {
+    push_for: PushFor,
+    on_lane: bool,
+    /// Why a message on the lane is no params-only update.
+    fault: Option<&'static str>,
+    own: Path,
+    reply_target: Path,
+}
+
+impl ParamsPush {
+    /// Read the address of `msg` for the cell behind `sink`.
+    pub fn of(msg: &Message, sink: &OutputSink) -> Self {
+        let hop = &msg.headers.hop;
+        let own = sink.sender_path();
+        let on_lane = meclaw_core::on_params_lane(&msg.headers);
+        let fault = match &msg.body {
+            _ if !on_lane => None,
+            Body::Inline(body) => meclaw_core::params_only_fault(body),
+            Body::Blob(_) => Some("the body is not inline"),
+        };
+        Self {
+            push_for: match hop.get("subscriber") {
+                None => PushFor::Operator,
+                Some(Value::String(s)) if s == own.as_str() => PushFor::Me,
+                Some(v) => PushFor::Other(one_line(v, PUSH_ADDRESS_MAX_CHARS)),
+            },
+            on_lane,
+            fault,
+            own: own.clone(),
+            reply_target: msg.reply_to.clone().unwrap_or_else(|| msg.target.clone()),
+        }
+    }
+
+    /// Who the slot is for.
+    pub fn push_for(&self) -> &PushFor {
+        &self.push_for
+    }
+
+    /// The reason a slot addressed to another cell is not applied; `None` when
+    /// it may be.
+    pub fn foreign_detail(&self) -> Option<String> {
+        match &self.push_for {
+            PushFor::Other(to) => Some(format!(
+                "a params push addressed to '{to}' is not for this cell; nothing applied"
+            )),
+            PushFor::Operator | PushFor::Me => None,
+        }
+    }
+
+    /// Whether the message stands on [`PARAMS_LANE`].
+    pub fn on_lane(&self) -> bool {
+        self.on_lane
+    }
+
+    /// Why a message on the lane is refused whole, before any of it is read as
+    /// work: it is addressed to another cell, or it is no params-only update.
+    /// `None` off the lane and for an update this cell may apply.
+    pub fn lane_refusal(&self) -> Option<String> {
+        if !self.on_lane {
+            return None;
+        }
+        self.foreign_detail().or_else(|| {
+            self.fault.map(|why| {
+                format!(
+                    "the lane '{PARAMS_LANE}' carries a params-only update; nothing done: {why}"
+                )
+            })
+        })
+    }
+
+    /// Whether this push is answered: on the lane and addressed to this cell.
+    pub fn is_answered(&self) -> bool {
+        self.on_lane && self.push_for == PushFor::Me
+    }
+
+    /// Answer an applied update. Silent unless [`Self::is_answered`].
+    pub async fn applied(&self, sink: &OutputSink) {
+        if !self.is_answered() {
+            return;
+        }
+        let content = serde_json::json!({
+            "header": {
+                (PARAMS_ANSWER_KEY): PARAMS_APPLIED,
+                "applied_subscriber": self.own.as_str(),
+                // The store's contract owes `operation` on every emission (GH #331).
+                "operation": "params_update",
+            },
+            "messages": [],
+        });
+        self.answer(sink, content).await;
+    }
+
+    /// Answer a refused update with the type's own `error_code` and its detail
+    /// (which never carries a param value). `false`: not answered here, the
+    /// caller emits the refusal it always had.
+    ///
+    /// `refused_subscriber` is the GH #863 key, so the edges that keep a refused
+    /// push out of a conversation's error road keep this one out too; the
+    /// answer key tells it from a refused model package.
+    pub async fn refused(&self, sink: &OutputSink, error_code: &str, detail: &str) -> bool {
+        if !self.is_answered() {
+            return false;
+        }
+        let content = serde_json::json!({
+            "header": {
+                (PARAMS_ANSWER_KEY): PARAMS_REFUSED,
+                "refused_subscriber": self.own.as_str(),
+                "finish_reason": "error",
+                "error_code": error_code,
+                "operation": "params_update",
+            },
+            "messages": [],
+            "meta": {"detail": detail},
+        });
+        self.answer(sink, content).await;
+        true
+    }
+
+    async fn answer(&self, sink: &OutputSink, content: Value) {
+        let _ = sink
+            .push(CellOutput {
+                target: self.reply_target.clone(),
+                content,
+            })
+            .await;
     }
 }
 

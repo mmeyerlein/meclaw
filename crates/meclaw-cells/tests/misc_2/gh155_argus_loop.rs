@@ -2117,10 +2117,26 @@ fn every_declared_out_lane_has_an_emitter_and_an_edge() {
             assert!(
                 edges.iter().any(|e| e["from"] == "./judge"
                     && e["to"] == "."
-                    && e["condition"] == "has(hop.refused_subscriber)"
+                    && e["condition"] == "has(hop.refused_subscriber) && !has(hop.params_answer)"
                     && e["modifier"]["set_hop"]["route"] == "'model_refused'"),
                 "no edge stamps `model_refused` on a refusal of `./judge` off the hive path"
             );
+            continue;
+        }
+        // GH #1353: the answer of the cell an `in_params` update named is the
+        // cell type's, no script's; the exit stamps the lane, once per cell the
+        // door serves (the judge, the two stores and the clock).
+        if route == "params_applied" || route == "params_refused" {
+            let condition = format!("has(hop.params_answer) && hop.params_answer == '{route}'");
+            for cell in ["./judge", "./charter", "./receipts", "./clock"] {
+                assert!(
+                    edges.iter().any(|e| e["from"] == cell
+                        && e["to"] == "."
+                        && e["condition"] == condition.as_str()
+                        && e["modifier"]["set_hop"]["route"] == format!("'{route}'")),
+                    "no edge stamps `{route}` on the answer of `{cell}` off the hive path"
+                );
+            }
             continue;
         }
         // GH #1061 (#801): `credential_request` is the judge asking for its

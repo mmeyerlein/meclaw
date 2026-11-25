@@ -1,26 +1,16 @@
-"""GH #1149: an ASK of the pipeline gate prints the owner's question block.
+"""No station asks: the owner-question frame is gone (d54s kit F1, R-54-8).
 
-Since W3 the question text lived only in `scripts/gate_legacy.sh`; the
-pipeline answered ASK with the summary and nothing to do next.
+GH #1593 (ADR-0054) removed `persona-receipt`, the one station that asked;
+with no asking station the frame (verdict ASK, exit 4, `--decide`, the
+question block of `questions.py`) was dead code and is gone too.
 """
-import io
-import types
+import importlib.util
+import inspect
 import unittest
-from unittest import mock
 
-from scripts.pipeline import gate, questions
+from scripts.pipeline import cache, executor, gate
 from scripts.tests import store_isolation
 
-
-def _finish(verdict, stations, mode="integration"):
-    o = types.SimpleNamespace(mode=mode, archive=None, cache="on")
-    out = io.StringIO()
-    p = gate._Pass(o, "/nonexistent-repo", {"stations": [], "rev": "abc"}, out, io.StringIO())
-    p.pass_ended = {"data": {"verdict": verdict}}
-    v2 = {"mode": mode, "rev": "abc1234", "secs": 1, "verdict": verdict, "stations": stations}
-    with mock.patch.object(gate._Pass, "write_legacy"):
-        rc = p.finish(v2, "/nonexistent-dest", "local", 1)
-    return rc, out.getvalue()
 
 def setUpModule():  # noqa: N802 -- unittest's name
     store_isolation.isolate()
@@ -30,22 +20,33 @@ def tearDownModule():  # noqa: N802 -- unittest's name
     store_isolation.restore()
 
 
-class TestOwnerQuestion(unittest.TestCase):
-    def test_ask_prints_the_three_answers_with_the_mode(self):
-        rc, text = _finish("ASK", [{"name": "persona-receipt", "secs": 1, "verdict": "ASK",
-                                    "reason": "sources moved"}])
-        self.assertEqual(rc, 4)
-        self.assertIn("--engine local --budget-eur <EUR>", text)
-        self.assertIn("--engine paid --budget-eur <EUR>", text)
-        self.assertIn('scripts/gate.sh integration --decide persona-receipt=without:"OR-<id>: <reason>"', text)
+class TestNoOwnerQuestion(unittest.TestCase):
+    def test_the_question_module_is_gone(self):
+        self.assertIsNone(importlib.util.find_spec("scripts.pipeline.questions"))
 
-    def test_green_and_red_print_no_question(self):
-        for verdict in ("GREEN", "RED"):
-            _, text = _finish(verdict, [{"name": "persona-receipt", "secs": 1, "verdict": "NOTE"}])
-            self.assertNotIn("Three answers", text)
+    def test_no_verdict_asks(self):
+        self.assertFalse(hasattr(gate, "ASKING_STATIONS"))
+        self.assertNotIn("ASK", gate.EXIT_BY_VERDICT)
+        self.assertNotIn("ASK", executor.EXIT)
+        self.assertEqual("GREEN", executor.pass_verdict([{"verdict": "GREEN"}]))
 
-    def test_every_asking_station_has_a_question(self):
-        self.assertEqual(set(gate.ASKING_STATIONS), set(questions.BY_STATION))
+    def test_the_executor_reads_no_owner_answer(self):
+        src = inspect.getsource(executor)
+        self.assertNotIn("_decision_for", src)
+        self.assertNotIn('get("decide")', src)
+
+
+class TestNoPersonaReceipt(unittest.TestCase):
+    """GH #1593: the executor has no arm for the station, the cache no entry."""
+
+    def test_the_executor_has_no_persona_arm(self):
+        src = inspect.getsource(executor)
+        self.assertNotIn("persona-receipt", src)
+        self.assertNotIn("PERSONA-RECEIPT", src)
+
+    def test_the_cache_names_no_persona_receipt(self):
+        self.assertNotIn("persona-receipt", cache.NEVER)
+        self.assertIn("persona-cases", cache.INPUTS)
 
 
 if __name__ == "__main__":

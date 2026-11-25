@@ -637,7 +637,7 @@ fn has_text(message: &Value) -> bool {
 /// |---|---|
 /// | `off` | nothing -- the request of before, byte for byte |
 /// | `implicit` | root `prompt_cache_key` ([`prompt_cache_key`]) |
-/// | `breakpoints` | two marks ([`cache_control`]): the end of the system message, and the end of the stable history |
+/// | `breakpoints` | two marks ([`cache_control`]): the end of the system message, and the end of the stable history; a third on the end of an open tool round |
 ///
 /// The stable history ends before the YOUNGEST user message (wire role
 /// `user`, which is also how a `peer` turn travels): everything behind it is
@@ -646,6 +646,14 @@ fn has_text(message: &Value) -> bool {
 /// system mark alone (OR-KX-C3: two marks cover the prefix the curator
 /// freezes, OR-KX-G4). Only the marked messages change form -- `map_turn`
 /// keeps building strings, and every other message stays byte-identical.
+///
+/// OR-58-63: a request that ends on a round result (the last message behind
+/// the youngest user turn is a `tool` message, system notes not counted)
+/// carries a third mark on the last message of that round that has text (blank
+/// text does not count). Both
+/// marks of before sit in front of the round, so without it every call of a
+/// tool round paid the whole round again. A request that ends on anything
+/// else is the request of before, byte for byte.
 ///
 /// Runs AFTER `build_openai_request`, so a `prompt_cache_key` in
 /// `provider_extra` is kept: the overlay wins there as everywhere.
@@ -664,6 +672,12 @@ pub(crate) fn apply_cache_wire(
             }
         }
         CacheMode::Breakpoints => {
+            // The provider takes at most FOUR marks per request: "You can
+            // define up to 4 cache breakpoints" (Anthropic, prompt caching
+            // guide, platform.claude.com/docs/en/build-with-claude/prompt-caching,
+            // read 2026-11-24); the OpenRouter guide says the same for
+            // Anthropic models ("a limit of four explicit breakpoints"). At
+            // most three are set here.
             let mark = cache_control(params.cache_ttl_s);
             let Some(messages) = request.get_mut("messages").and_then(|m| m.as_array_mut()) else {
                 return;
@@ -678,19 +692,35 @@ pub(crate) fn apply_cache_wire(
             // the end of the stable history -- both marks stay on the bytes
             // before it, so a changed note keeps the cached prefix.
             let is_note = |m: &Value| text_of(m).is_some_and(is_system_note);
-            let Some(youngest_user) = messages
+            let talk = usize::from(has_system);
+            let youngest_user = messages
                 .iter()
-                .rposition(|m| role_is(m, "user") && !is_note(m))
-            else {
-                return;
-            };
+                .rposition(|m| role_is(m, "user") && !is_note(m));
             // The system message sits at 0 and a user message never does when
             // it is there, so the history is never an inverted range.
-            let history = &mut messages[usize::from(has_system)..youngest_user];
+            let history = &mut messages[talk..youngest_user.unwrap_or(talk)];
             if let Some(last_with_text) = history
                 .iter_mut()
                 .rev()
                 .find(|m| has_text(m) && !is_note(m))
+            {
+                mark_message_end(last_with_text, &mark);
+            }
+            // OR-58-63: the open round. Behind the youngest user turn every
+            // `user` message is a note (GH #1579): it neither ends the round
+            // nor carries the mark.
+            let round = &mut messages[youngest_user.map_or(talk, |i| i + 1)..];
+            let no_note = |m: &Value| !role_is(m, "user");
+            let ends_on_result = round
+                .iter()
+                .rfind(|m| no_note(m))
+                .is_some_and(|m| role_is(m, "tool"));
+            // Blank text takes no mark here, as on the Messages wire ("Empty
+            // text blocks cannot be cached", cited there); the two marks of
+            // before keep their form.
+            let no_blank = |m: &Value| text_of(m).is_some_and(|t| !t.trim().is_empty());
+            if ends_on_result
+                && let Some(last_with_text) = round.iter_mut().rfind(|m| no_note(m) && no_blank(m))
             {
                 mark_message_end(last_with_text, &mark);
             }
@@ -831,6 +861,147 @@ mod gh890_tests {
         assert_eq!(bare["messages"][0]["content"], "x");
     }
 
+    fn call(id: &str) -> Value {
+        json!({"origin": "assistant", "type": "tool_call", "id": id,
+               "text": "{\"name\":\"f\",\"arguments\":\"{}\"}"})
+    }
+
+    fn result(id: &str, text: &str) -> Value {
+        json!({"origin": "tool", "type": "tool_result", "id": id, "text": text})
+    }
+
+    /// The history of [`history`], then `tail` behind the person's `c` (wire
+    /// index 3 under a system message).
+    fn round(tail: &[Value]) -> Value {
+        let mut turns = history();
+        turns.extend_from_slice(tail);
+        wired(json!({"cache_mode": "breakpoints"}), "S", &turns, "/a")
+    }
+
+    /// OR-58-63: a request that ends on a round result marks that result too,
+    /// so the next call of the round reads what this one sent. Only the last
+    /// result changes form, and each call keeps the bytes of the one before
+    /// up to its mark.
+    #[test]
+    fn or_58_63_a_tool_round_ends_on_a_third_mark() {
+        let first = [call("t1"), result("t1", "r1")];
+        let second = [
+            call("t1"),
+            result("t1", "r1"),
+            call("t2"),
+            result("t2", "r2"),
+        ];
+        let one = round(&first);
+        let two = round(&second);
+        // messages: 0 system, 1 a, 2 b, 3 c, 4 tool_calls, 5 r1, 6 tool_calls, 7 r2
+        assert_eq!(marked(&one), vec![0, 2, 5], "{one}");
+        assert_eq!(marked(&two), vec![0, 2, 7], "{two}");
+        assert_eq!(
+            two["messages"][7],
+            json!({"role": "tool", "tool_call_id": "t2", "content": [
+                {"type": "text", "text": "r2", "cache_control": {"type": "ephemeral"}}]})
+        );
+        assert_eq!(
+            two["messages"][5]["content"], "r1",
+            "a result inside the round stays a string"
+        );
+        assert_eq!(
+            one["messages"].as_array().unwrap()[..5],
+            two["messages"].as_array().unwrap()[..5]
+        );
+        assert_eq!(two.to_string().matches("cache_control").count(), 3);
+
+        // Parallel calls: only the last of the results.
+        let parallel = round(&[
+            call("t1"),
+            call("t2"),
+            result("t1", "r1"),
+            result("t2", "r2"),
+        ]);
+        // messages: ... 3 c, 4 tool_calls (two), 5 r1, 6 r2
+        assert_eq!(marked(&parallel), vec![0, 2, 6], "{parallel}");
+
+        // GH #1579: a note behind the result never carries the mark; the
+        // result before it does.
+        let mut noted = first.to_vec();
+        noted.push(turn("system", "time 10:00"));
+        let noted = round(&noted);
+        assert_eq!(marked(&noted), vec![0, 2, 5], "{noted}");
+        assert!(noted["messages"][6]["content"].is_string(), "{noted}");
+
+        // A result without text cannot carry a mark: the last one that can.
+        let empty = round(&[call("t1"), result("t1", "r1"), call("t2"), result("t2", "")]);
+        assert_eq!(marked(&empty), vec![0, 2, 5], "{empty}");
+        assert_eq!(empty["messages"][7]["content"], "", "{empty}");
+        // ... and with none in the round, the person's turn gets no mark.
+        let none = round(&[call("t1"), result("t1", "")]);
+        assert_eq!(marked(&none), vec![0, 2], "{none}");
+        // Blank text counts as none, as on the Messages wire.
+        let blank = round(&[
+            call("t1"),
+            result("t1", "r1"),
+            call("t2"),
+            result("t2", "\n"),
+        ]);
+        assert_eq!(marked(&blank), vec![0, 2, 5], "{blank}");
+        assert_eq!(blank["messages"][7]["content"], "\n", "{blank}");
+
+        // A round without a person's turn (no history) is marked all the same.
+        let alone = wired(json!({"cache_mode": "breakpoints"}), "S", &first, "/a");
+        assert_eq!(marked(&alone), vec![0, 2], "{alone}");
+
+        // The mark carries the cell's TTL like the other two.
+        let mut turns = history();
+        turns.extend_from_slice(&first);
+        let hour = wired(
+            json!({"cache_mode": "breakpoints", "cache_ttl_s": 3600}),
+            "S",
+            &turns,
+            "/a",
+        );
+        assert_eq!(
+            hour["messages"][5]["content"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"})
+        );
+    }
+
+    /// OR-58-63, the counter case: a window that ends on the person's text
+    /// carries the two marks of before and nothing else moves -- a finished
+    /// round in the history included, and a trailing note does not count as
+    /// an end of its own.
+    #[test]
+    fn or_58_63_a_window_ending_on_user_text_keeps_two_marks() {
+        let mark = json!({"type": "ephemeral"});
+        let turns = [
+            turn("user", "a"),
+            call("t1"),
+            result("t1", "r1"),
+            turn("user", "c"),
+        ];
+        let body = wired(json!({"cache_mode": "breakpoints"}), "S", &turns, "/a");
+        let wire_call = json!({"id": "t1", "type": "function",
+                               "function": {"name": "f", "arguments": "{}"}});
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "system", "content": [
+                    {"type": "text", "text": "S", "cache_control": mark}]},
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": null, "tool_calls": [wire_call]},
+                {"role": "tool", "tool_call_id": "t1", "content": [
+                    {"type": "text", "text": "r1", "cache_control": mark}]},
+                {"role": "user", "content": "c"}
+            ])
+        );
+        let mut noted = turns.to_vec();
+        noted.push(turn("system", "time 10:00"));
+        let noted = wired(json!({"cache_mode": "breakpoints"}), "S", &noted, "/a");
+        assert_eq!(marked(&noted), vec![0, 3], "{noted}");
+        // An answer behind the round ends the round: no result at the end.
+        let said = round(&[call("t1"), result("t1", "r1"), turn("assistant", "x")]);
+        assert_eq!(marked(&said), vec![0, 2], "{said}");
+    }
+
     /// A tool round after the youngest user turn is not history, and an
     /// assistant message without text cannot carry a mark: the walk goes back
     /// to the last message that has text.
@@ -849,7 +1020,8 @@ mod gh890_tests {
         ];
         let body = wired(json!({"cache_mode": "breakpoints"}), "S", &turns, "/a");
         // messages: 0 system, 1 a, 2 b, 3 tool_calls, 4 tool r, 5 c, 6 tool_calls, 7 tool r2
-        assert_eq!(marked(&body), vec![0, 4], "{body}");
+        // The history mark stays at 4; 7 is the mark of the open round (OR-58-63).
+        assert_eq!(marked(&body), vec![0, 4, 7], "{body}");
         let only_calls = vec![
             turn("user", "a"),
             json!({"origin": "assistant", "type": "tool_call", "id": "t1",

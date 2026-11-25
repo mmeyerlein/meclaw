@@ -8,7 +8,10 @@
 
 #![allow(dead_code)]
 
-use meclaw_testing::mock_http::{CapturedRequest, MockResponse, start_mock_server_capturing};
+use super::mock_openai::provider_validator;
+use meclaw_testing::mock_http::{
+    CapturedRequest, MockResponse, start_mock_server_capturing_with_validator,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -26,8 +29,11 @@ pub struct MockResponses {
 
 impl MockResponses {
     /// Start with a queue of canned responses, one per expected request.
+    /// Every request meets the same provider validator as `MockOpenAI`
+    /// (GH #1283).
     pub async fn start(responses: Vec<MockResponse>) -> Self {
-        let (addr, join, captured) = start_mock_server_capturing(responses).await;
+        let (addr, join, captured) =
+            start_mock_server_capturing_with_validator(responses, Some(provider_validator())).await;
         Self {
             base_url: format!("http://{addr}"),
             captured,
@@ -147,5 +153,41 @@ pub fn canned_overloaded() -> MockResponse {
             .into_bytes(),
         content_type: "application/json".into(),
         delay: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GH #1283: `MockResponses` judges with the one provider validator -- a
+    /// Messages prefill sent to it is refused like at `MockOpenAI`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mock_responses_runs_the_provider_validator() {
+        let mock = MockResponses::start(vec![canned_sse_text("hi", "m")]).await;
+        let client = reqwest::Client::new();
+        let body = serde_json::json!({"model": "claude-test-b", "messages": [
+            {"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]});
+        let resp = meclaw_testing::deadline::hang(
+            "the mock answers",
+            client
+                .post(format!("{}/v1/messages", mock.base_url))
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send(),
+        )
+        .await
+        .expect("the mock answers");
+        assert_eq!(resp.status().as_u16(), 400);
+        let err: serde_json::Value = resp.json().await.expect("JSON");
+        assert_eq!(
+            err["error"]["message"],
+            super::super::mock_openai::PREFILL_REFUSAL
+        );
+        assert_eq!(
+            mock.call_count().await,
+            1,
+            "the refused request is captured"
+        );
     }
 }

@@ -93,7 +93,9 @@ fn gh_d58_lead_every_shipped_composition_with_a_lead_has_its_five_lanes() {
     // a composite conditions on it -- and since D58 moveout (GH #1476) its
     // orders on `in_feed`.
     let hive = lead_hive();
-    let emits = contract_routes(&hive, "emits");
+    let mut emits = contract_routes(&hive, "emits");
+    // GH #1353: the answers of the params door are the store's, not the lead's.
+    emits.retain(|r| r != "params_applied" && r != "params_refused");
     assert_eq!(
         emits.len(),
         2,
@@ -178,7 +180,9 @@ fn gh_d58_lead_every_shipped_composition_with_a_lead_has_its_five_lanes() {
             "the lead hive's contract accepts `{lane}`: {accepts:?}"
         );
     }
-    let emits = contract_routes(&hive, "emits");
+    let mut emits = contract_routes(&hive, "emits");
+    // GH #1353: the answers of the params door are the store's, not the lead's.
+    emits.retain(|r| r != "params_applied" && r != "params_refused");
     assert_eq!(
         emits.len(),
         2,

@@ -161,7 +161,9 @@ const REFERENCED_SUB_UNITS: [(&str, &str); 5] = [
 /// D54g (GH #1564): the collector's clock (`collector/clock`), the one-shot
 /// that ends the wait for the route stamp -- forty-eight. MEASURED (48 against
 /// 47 in the strand's gate).
-const CELLS_AFTER_GROW: usize = 48;
+/// GH #1584: the speculation's cell (`quick_spec`) leaves talky --
+/// forty-seven.
+const CELLS_AFTER_GROW: usize = 47;
 
 /// Plus five from `cogny`: the brain, the cell that declares the core's own
 /// errand (`cogny@4.4.0`, GH #528), the two collector cells and the split. The
@@ -214,7 +216,9 @@ const CELLS_AFTER_GROW: usize = 48;
 /// collector -- talky's in [`CELLS_AFTER_GROW`], cogny's one more: +2 = the
 /// clock cell of the talky and the cogny collector -- sixty-nine (70 with the
 /// probe).
-const CELLS_AFTER_COGNY: usize = 69;
+/// GH #1584: talky's `quick_spec` leaves, in [`CELLS_AFTER_GROW`] and so in
+/// this total too -- sixty-eight.
+const CELLS_AFTER_COGNY: usize = 68;
 
 fn read_json(p: &std::path::Path) -> Value {
     let raw = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));

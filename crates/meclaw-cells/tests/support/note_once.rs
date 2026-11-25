@@ -73,25 +73,6 @@ pub fn once_hive(extra: &[(&str, &str, Value)]) -> Hive {
     h
 }
 
-/// The same with the speculation of the quick voice on, in talky's
-/// composite as `gh1382` runs it (every model cell reports its shipped
-/// profile); the quick targets ship no share of notes, so their profiles get
-/// [`notes_profile`] -- the speculation's window and the quick fallback held
-/// behind it must be able to show the note (contract point 3).
-pub fn once_spec_hive() -> Hive {
-    let over = knob_on(&[
-        ("lead", "spec_ahead", json!("1")),
-        ("lead", "spec_tools", json!("")),
-    ]);
-    let share: Vec<(&str, Value)> = ["quick", "quick_spec", "quick_bridge"]
-        .into_iter()
-        .map(|cell| (cell, notes_profile()))
-        .collect();
-    let mut h = Hive::with(&over).reporting_composite_with("talky", &share);
-    h.check_emits = true;
-    h
-}
-
 /// A note of scope `once` from the source `probe`, with a receipt or none.
 pub fn once(id: &str, text: &str, receipt: Option<&str>) -> Value {
     let mut n = json!({"id": id, "source": "probe", "text": text, "scope": "once"});
@@ -183,43 +164,6 @@ pub fn seam_in(h: &mut Hive, session: &str, turn: &str, path: &str, needs: &str,
 /// The same in session `s1`.
 pub fn seam(h: &mut Hive, turn: &str, path: &str, text: &str) {
     seam_in(h, "s1", turn, path, "", text);
-}
-
-/// The collector's early curate of a turn (`hop.spec` "1", no path);
-/// returns the spec call that left for the quick voice.
-pub fn spec_call(h: &mut Hive, turn: &str, text: &str) -> Msg {
-    h.out.clear();
-    let hop = json!({"session_id": "s1", "turn_id": turn, "iter": "0", "phase": "",
-                     "path": "", "spec": "1"});
-    let ctx = json!({"session_id": "s1", "turn_id": turn, "iter": "0",
-                     "channel": "test", "audience_set": ROUND_E, "path": ""});
-    h.lane("in_curate", ctx, hop, json!({"messages": [user(text)]}));
-    let quick = h.routed("quick");
-    assert_eq!(quick.len(), 1, "one spec call: {:?} {:?}", h.out, h.stderr);
-    assert_eq!(quick[0].hop["spec"], json!("1"));
-    quick[0].clone()
-}
-
-/// The spec call's end as talky's `./quick -> ./curator in_spec_llm` edge
-/// hands it in (`context.spec` "1").
-pub fn spec_end(h: &mut Hive, call: &Msg, finish: &str, extra: Value, messages: Value) {
-    h.out.clear();
-    let mut ctx = call.context.clone();
-    for k in ["curator_call", "turn_id", "session_id", "iter"] {
-        ctx.insert(k.into(), call.hop[k].clone());
-    }
-    ctx.insert("spec".into(), json!("1"));
-    let mut hop = obj(json!({"finish_reason": finish, "model": "test-model",
-                             "tokens_prompt": 10}));
-    for (k, v) in obj(extra) {
-        hop.insert(k, v);
-    }
-    h.lane(
-        "in_spec_llm",
-        Value::Object(ctx),
-        Value::Object(hop),
-        json!({"messages": messages}),
-    );
 }
 
 /// The `seed` of the running session `call` (its handle `live`, D58 live

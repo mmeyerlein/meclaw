@@ -12,6 +12,7 @@ Questions belong in [Discussions](https://github.com/mmeyerlein/meclaw/discussio
 - [meclaw](meclaw.md) puts the primitives on one page: colony, cell, hive, edge, hop, mutation, template and instance.
 - [Cells](cells.md) goes through every cell type in a few lines each, with a snippet for `llm`, `store` and `code`.
 - [meclaw-os](meclaw-os.md) describes the reference implementation: the four levels, who lives on each, and what each level owns.
+- [Colony architecture](colony-architecture.md) fixes the base form every colony is built on, and what a derived kind of colony must keep.
 - [Security](security.md) covers the sandbox around every cell, the hive boundary, the vault, access and the firewall.
 - [Templates and apps](templates-and-apps.md) tells a template, a subtree that gets copied, apart from an app, a sealed hive at the rim of a member.
 - [Why it is built this way](why/README.md) holds the architecture decisions, one question per page.

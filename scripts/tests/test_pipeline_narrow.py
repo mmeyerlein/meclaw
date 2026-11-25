@@ -133,11 +133,38 @@ class NarrowTest(Base):
         self.assertTrue(any(n.startswith("narrowing: on, map %s" % self.map_rev[:9]) for n in notes),
                         notes)
 
+    def test_a_narrowed_plan_names_k_of_n_and_the_count_without_map(self):
+        """OR-W1-P-22: every narrowed plan says how many test binaries it runs, of
+        how many, and how many it would run without the map -- in the selection
+        (plan.json) and in the NOTE line the summary carries."""
+        sel, notes = self.run_narrow()
+        counts = sel["narrow"]["binaries"]
+        self.assertEqual(sorted(counts), ["selected", "total", "without_map"])
+        self.assertLessEqual(counts["selected"], counts["without_map"])
+        self.assertLessEqual(counts["without_map"], counts["total"])
+        line = [n for n in notes if n.startswith("narrowing: on, map")][0]
+        self.assertIn("%d of %d test binaries, without map %d"
+                      % (counts["selected"], counts["total"], counts["without_map"]), line)
+
+    def test_a_missing_or_red_map_plans_wider_in_one_line(self):
+        """OR-W1-P-22 (3): no map, or a red/incomplete one, refuses nothing; the plan
+        is wider and one line says why."""
+        floor = self.floor()
+        red = dict(self.cov, run_ok=False, complete=False)
+        for cov, why in ((None, "no coverage map"), (red, None)):
+            with self.subTest(cov=bool(cov)):
+                sel, notes = narrow.narrow(floor, CHANGED, self.root, self.doc, cov, why,
+                                           now=NOW, metadata=self.meta)
+                self.assertIn("alpha", sel["rdeps"])
+                self.assertEqual(1, len([n for n in notes if "rdeps kept" in n
+                                         and "coverage map" in n]), notes)
+
     def test_the_selection_carries_the_narrowing_state(self):
         """Review Z-I gap C-A: the cache key reads the narrowing state (on or
         off, map rev) from the selection."""
         sel, _notes = self.run_narrow()
-        self.assertEqual({"on": True, "map": self.map_rev}, sel["narrow"])
+        self.assertEqual({"on": True, "map": self.map_rev},
+                         {k: sel["narrow"][k] for k in ("on", "map")})
         off, _notes = self.run_narrow(cov=False, why="no coverage map in /x")
         self.assertEqual({"on": False, "map": ""}, off["narrow"])
 
@@ -1172,6 +1199,18 @@ class MergeNarrowTest(StageBase):
         self.merge("welle/s")
         doc, tests = self.build("merge", moved, strand_run=run)
         self.assertNotIn("alpha", tests["select"]["rdeps"], doc.get("notes"))
+
+    def test_merge_from_the_covered_tip_names_its_stage(self):
+        """w1 stapelmerge (#1603): planned from the strand (or stack) tip, the
+        merge stays unnarrowed and the plan names the decision as `stage:`."""
+        gated = self.strand()
+        run = self.gate_run(gated)
+        self.merge("welle/s")
+        doc, tests = self.build("merge", gated, strand_run=run)
+        self.assertFalse((tests["select"].get("narrow") or {}).get("on"), tests["select"])
+        self.assertTrue(any("stage:merge from the tip %s" % gated[:9] in n
+                            for n in doc.get("notes") or []), doc.get("notes"))
+        self.assertIn("stage:merge from the tip", doc["narrowing"]["why"])
 
     def test_merge_judges_the_maps_age_by_the_plans_clock(self):
         """GH #1199 B-3: the merge leg hands `build_plan(now=...)` to the narrowing."""

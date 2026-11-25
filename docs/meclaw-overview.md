@@ -644,6 +644,56 @@ both halves; it used to run (2) and (3) alone, so a rim edge the mutation path r
 in silence. No validator can check requirement
 2, since `writer` is as valid a string as `in_episode`; that is where the rule depends on a reader.
 
+### Params into a sealed hive (GH #1353)
+
+A running cell takes a params-only update by message (`config.md` § `params`), and a sealed hive
+keeps messages out. The road between the two is a lane of its own, `in_params`, and it opens no
+seal: every edge of it ends on a hive path, and the inner edge alone knows the cell.
+
+1. The update carries `hop.subscriber`, the absolute path of the target cell, and a `params` body
+   slot alone; beside it stands at most an empty `system` or an empty `messages`. The lane crosses
+   every seal, so it carries nothing else: the cell runs no work on it and refuses any other body
+   (`params_refused` with `invalid_input`), with `params` beside it or without. The substrate answers
+   no `transfer` slot on the lane either. A body that is no update owes the `consumes` of the cell
+   first: one without the `messages` a store requires ends as `consumes_violation`, with no receipt.
+2. `/os/operator` takes `in_params` and hands it on unchanged. It checks no key and keeps no table:
+   what a cell takes is the cell's own rule (known keys minus immutable ones).
+3. The shell's own edges take it to the hive beside the contact that holds the target. In the
+   container of the levels (`/os/orgs` in `meclaw-os`) one edge per door hive carries what is
+   addressed under that hive, with a way back beside it. The builder draws both when it grows a level. The submission
+   gate lets an edge of the lane through in that form alone, and refuses any other with
+   `params_push_form` (`templates/submit/README.md`).
+4. A door hive declares `accepts in_params` at its hive path, without `at`, so no inner cell becomes
+   a connect point. Its inner edges pick the cell or the next door hive by `hop.subscriber`. Like
+   `in_model`, the hive path itself takes the lane from whoever may address that path.
+5. The cell applies the update only when `hop.subscriber` is its own path, and answers it
+   (`cell-types.md` § `llm`, Params by the shared lane). The answer comes back through the doors as
+   `params_applied` or `params_refused`, and `/os/operator` gives it to the asker as
+   `params_receipt`.
+
+A cell's store stays as it is: nothing is replaced and nothing is parked. From outside the colony
+the update goes to the shell:
+
+```json
+{"target": "/os", "hop": {"route": "in_params",
+                          "subscriber": "/os/orgs/acme/members/alex/assistants/scribe/talky/quick"},
+ "body": {"system": {}, "params": {"tool_call_limit": 24}}}
+```
+
+Four limits belong to the road.
+
+- A target without a door ends as a dead letter with `hive_no_route`, at the hive path where no
+  edge took the update, and nobody answers. A `code` cell has no overlay and therefore no door.
+- A path under a door hive where no cell stands may end on the name of another one. That cell applies
+  nothing, and its refusal has the type's own shape (`invalid_input`, without `params_answer`): it
+  takes that cell's error road and does not reach the asker.
+- A store with `write_surface: "internal"` refuses the update, because its sender stands outside
+  the owning hive: `params_refused` with `write_denied`.
+- A timer whose `accept_ops` does not list `params` refuses it: `params_refused` with
+  `op_not_accepted`.
+- A store whose `cell.db` did not open on wake applies nothing and answers `store_degraded`
+  without `params_answer`, so there is no receipt.
+
 ### Where the library stands
 
 Topologies built before this rule wire almost exclusively into internals: in a real colony
@@ -1183,7 +1233,7 @@ never operations configuration: paths and logging stay CLI flags, nginx-style.
 | `idle_timeout_default_ms` | Default idle duration per stateful cell with `cell.timeout: 0`; after this time without a new message the cell despawns itself (Awake to Asleep). Overridable per cell via `cell.idle_timeout_ms`. A cell type may set its own default that comes before this one as long as it is longer: `llm` 30 minutes (`cell-types.md` § `llm`, GH #1260). Takes effect from phase 13. |
 | `message_default_ttl` | Default TTL for source messages, a protective limit against routing loops. Colony decrements per routing hop; at `0` the message goes directly into the dead-letter queue as `ttl_expired`, with no step-1 `reply_to` attempt. Builders can set the value per initial message. Recommendation: 64. |
 | `ttl_notice` | GH #119, ruling 2026-08-14. Opt-in (default `false`): when `true`, a TTL death whose message carries a reply anchor (`reply_to`) additionally sends one terminal notice to that anchor, a substrate error reply in the canonical shape (`hop.finish_reason: "error"`, `hop.error_code: "ttl_expired"`, `hop.dead_target`, `hop.dead_message_id`; `context` travels unchanged). The notice is itself terminal (no `reply_to` of its own) and can therefore never produce a second notice. Without an anchor nothing changes (DLQ only). It is opt-in because the notice carries a fresh `message_default_ttl`, so a colony that turns it on has taken its loops out of the TTL guard and bounds them with the iteration counter instead, exactly the trade `modifier.restore_ttl` makes visible on an edge. Default `false` keeps the sharp, silent guard. |
-| `mutation_receipts` | GH #553, ruling R-0904-1. Opt-in (default: the key is absent): `{"to": "<path>"}` says where the mutation door leaves its receipt. With it set, the colony emits exactly one terminal message per committed knock at `/colony/mutations` to that path: sender `/colony`, the mutation's `trace_id`, `parent_message_id` the knocking message, a fresh `message_default_ttl`, body `{"messages": []}`, and everything it says in the `hop`: `route: "mutation_committed"`, `mutation_id` (single form) or `mutation_ids` (manifest), `outcome: "committed"`, `scope`, `form: "single" \| "manifest" \| "boot"`, since GH #682 `changes`, and since GH #1312 `scopes` and `paths` (every knock but the boot): `scopes` names the `scope` of every declaration (the single form: its one, a manifest: each entry in order, absent `/`), `paths` the absolute path of every node a diff adds, removes, replaces, swaps in or moves, each path once, read off the knocking body and never off the tree. A manifest still says `/` in `scope`; the two lists say where it wrote, so a listener can tell a knock above, at or below it from one elsewhere (the enrolment of `simple-agent@2`). `changes` names every child of a replaced node: kept, replaced, added or left, with the version it came from and the one it went to, and is `[]` for every other knock; a replaced entry also carries `parked_path` and `parked_store` (GH #773). Eight keys and no more (the boot carries six), because what the tree looks like now is a question `/colony/graph` answers and a receipt that tried to answer it too would be a second, staler truth. It is the second place the substrate seeds a `hop` itself; the first is the HTTP ingress with the `hop` field of `POST /messages` (GH #175), and for the same reason: a message that arrives at a hive path without asserting a lane matches no door. `to` is a hive path by intent, so the receipt enters as a hive transit and the hive's own `{"from": "."}` edges decide who hears it, and the substrate never learns a single listener's address. A refusal, a manifest that stopped part-way included, leaves no receipt, and none is emitted during the shutdown drain. The receipt is terminal and is not a mutation itself, so it can neither start a round nor produce a second receipt. **And the boot is the first one** (ruling O-0904-2): right after `InitialApply` has put the edge table up, exactly one receipt with `form: "boot"` and a nil `mutation_id` goes out, so a restart fills a menu and a screen instead of answering `503` until the first mutation of the day. It is the only one that carries no `parent_message_id`, so it stands in the message log as `@external`, the booking of every source emission; a mutation's receipt carries the knocking message as its parent and stands under `/colony`. A receipt is an event and not a guaranteed delivery: it goes back into the colony's inbox as its own work, and when that inbox is full it is dropped with a `mutation_receipt_undeliverable` warning instead of blocking the loop. A listener therefore has to tolerate a missed receipt; it is healed by the next receipt, or at the latest by the next start's boot receipt. In the shipped library the chain is drawn one level at a time: `meclaw-os` accepts `mutation_committed` and carries it into `./orgs`, `org` into `./members`, `member` into `./assistants` and `./apps`, `assistant` into `./talky` and `./cogny`, and each of those into `./collector`. The lane keeps one name the whole way; only the collector turns it into its internal `in_menu_tick`, and `colony-view` turns it into its own `in_refresh`. Every level that declares the lane is a mandatory hop for it (ADR-0020). The two poll timers that used to ask the same questions every few minutes are gone with no replacement. It is opt-in because a receipt is traffic in a topology that did not have it before, and who hears it is the colony's decision. A `to` that does not start with `/` is a hard parse error. |
+| `mutation_receipts` | GH #553, ruling R-0904-1. Opt-in (default: the key is absent): `{"to": "<path>"}` says where the mutation door leaves its receipt. With it set, the colony emits exactly one terminal message per committed knock at `/colony/mutations` to that path: sender `/colony`, the mutation's `trace_id`, `parent_message_id` the knocking message, a fresh `message_default_ttl`, body `{"messages": []}`, and everything it says in the `hop`: `route: "mutation_committed"`, `mutation_id` (single form) or `mutation_ids` (manifest), `outcome: "committed"`, `scope`, `form: "single" \| "manifest" \| "boot"`, since GH #682 `changes`, and since GH #1312 `scopes` and `paths` (every knock but the boot): `scopes` names the `scope` of every declaration (the single form: its one, a manifest: each entry in order, absent `/`), `paths` the absolute path of every node a diff adds, removes, replaces, swaps in or moves, each path once, read off the knocking body and never off the tree. A manifest still says `/` in `scope`; the two lists say where it wrote, so a listener can tell a knock above, at or below it from one elsewhere (the enrolment of `simple-agent@2`). `changes` names every child of a replaced node: kept, replaced, added or left, with the version it came from and the one it went to, and is `[]` for every other knock; a replaced entry also carries `parked_path` and `parked_store` (GH #773). Eight keys and no more (the boot carries six), because what the tree looks like now is a question `/colony/graph` answers and a receipt that tried to answer it too would be a second, staler truth. It is the second place the substrate seeds a `hop` itself; the first is the HTTP ingress with the `hop` field of `POST /messages` (GH #175), and for the same reason: a message that arrives at a hive path without asserting a lane matches no door. `to` is a hive path by intent, so the receipt enters as a hive transit and the hive's own `{"from": "."}` edges decide who hears it, and the substrate never learns a single listener's address. A refusal, a manifest that stopped part-way included, leaves no receipt, and none is emitted during the shutdown drain. The receipt is terminal and is not a mutation itself, so it can neither start a round nor produce a second receipt. **And the boot is the first one** (ruling O-0904-2): right after `InitialApply` has put the edge table up, exactly one receipt with `form: "boot"` and a nil `mutation_id` goes out, so a restart fills a menu and a screen instead of answering `503` until the first mutation of the day. It is the only one that carries no `parent_message_id`, so it stands in the message log as `@external`, the booking of every source emission; a mutation's receipt carries the knocking message as its parent and stands under `/colony`. A receipt is an event and not a guaranteed delivery: it goes back into the colony's inbox as its own work, and when that inbox is full it is dropped with a `mutation_receipt_undeliverable` warning instead of blocking the loop. A listener therefore has to tolerate a missed receipt; it is healed by the next receipt, or at the latest by the next start's boot receipt. In the shipped library the chain is drawn one level at a time: `meclaw-os` accepts `mutation_committed` and carries it into `./orgs`, `org` into `./members`, `member` into `./assistants` and, on an edge the installation of each app or the growth of each screen draws, straight into that app (`. -> ./apps/<app>`, GH #1598) or that screen (`. -> ./channels/<screen>`, GH #1590, GH #1597): never into the `./apps` and `./channels` containers themselves, which ship empty, so a member without an app or a screen leaves no dead letter there, `assistant` into `./talky` and `./cogny`, and each of those into `./collector`. The lane keeps one name the whole way; only the collector turns it into its internal `in_menu_tick`, and `colony-view` turns it into its own `in_refresh`. Every level that declares the lane is a mandatory hop for it (ADR-0020). The two poll timers that used to ask the same questions every few minutes are gone with no replacement. It is opt-in because a receipt is traffic in a topology that did not have it before, and who hears it is the colony's decision. A `to` that does not start with `/` is a hard parse error. |
 | `restart_max_retries` | Maximum number of `one_for_one` restarts per cell before `failed` status (default 5). Read at every spawn path (boot, mutation, manifest) since GH #1099; overridable per cell via `config.json` `cell.restart_limit`. |
 | `blob_inline_max_bytes` | Threshold above which a body is offloaded as a blob; smaller bodies stay inline in the message. |
 | `blob_max_recursion_depth` | Hard limit for recursive in-message pointer resolution. Wired since GH #19: the value rides on the blob store and is read at the delivery boundary. `0` is a valid kill switch, expanding no pointer. On exceedance: `blob_recursion_too_deep`. |
@@ -2571,7 +2621,8 @@ direct child of the scope and is not deep at all. The manifest deliberately draw
 assistant a second time.
 
 Writing is unchanged. The app emits `view` and `error` at its rim, the binding edge stamps the
-screen it writes to, and the member's guarded `./apps -> ./channels` edge delivers it as `in_view`.
+screen it writes to, and the guarded `./apps -> ./channels/<screen>` edge the growth of that screen
+draws at the member (GH #1597) delivers it as `in_view`.
 
 A required lane lets a hive insist on being wired at birth. An `accepts` entry may carry `required:
 true`, meaning whoever instantiates me must wire this lane to me. It is checked in the post-state

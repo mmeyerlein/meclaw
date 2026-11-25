@@ -158,9 +158,10 @@ fn a_member_wish_renders_the_member_and_then_its_screen() {
     );
     assert_eq!(
         out[0]["header"]["declaration_count"],
-        json!(3),
+        json!(4),
         "the person, the screen and the app: three containers, three storeys, \
-         three declarations that cannot share a mutation (GH #503)"
+         three declarations that cannot share a mutation (GH #503) -- and a fourth, \
+         the member's edges to its screen, at the member (GH #1597)"
     );
     assert_eq!(
         out[0]["manifest"][0]["scope"],
@@ -177,6 +178,11 @@ fn a_member_wish_renders_the_member_and_then_its_screen() {
         out[0]["manifest"][2]["scope"],
         json!("/os/orgs/acme/members/alex/apps"),
         "the app stands in the member's own apps"
+    );
+    assert_eq!(
+        out[0]["manifest"][3]["scope"],
+        json!("/os/orgs/acme/members/alex"),
+        "the member's edges to its screen stand at the member, last (GH #1597)"
     );
     assert!(
         out[0]["header"]["manifest_sha256"]
@@ -268,14 +274,14 @@ fn the_screen_manifest_is_the_shipped_example() {
     // The mount the example carries names the member rather than a position in
     // a band, so there is nothing to read off the tree for it.
     let want = read_json(&repo("examples/organism/grow-screen.json"));
-    let decls = want["manifest"].as_array().expect("a manifest of two");
+    let decls = want["manifest"].as_array().expect("a manifest of three");
     assert_eq!(
         decls.len(),
-        2,
-        "grow-screen.json carries the screen and the app and nothing else: the \
-         third declaration — the way back into a generation — moved into the \
-         assistant level, which is the one place that knows the generation's \
-         name"
+        3,
+        "grow-screen.json carries the screen, the app and the member's edges to the \
+         screen (GH #1597) and nothing else: the way back into a generation moved \
+         into the assistant level, which is the one place that knows the \
+         generation's name"
     );
     assert!(
         decls[0]["diff"]["add_nodes"][0]["override_params"]["web"]["mount"]
@@ -858,9 +864,10 @@ async fn the_screen_lands_after_the_member_in_that_order() {
     let whole_outcome = knock(&h, whole).await;
     assert_eq!(
         applied(&whole_outcome),
-        3,
-        "the wish did not commit as ONE submission of three declarations — the \
-         person, the screen, the app (GH #585): {whole_outcome:?}"
+        4,
+        "the wish did not commit as ONE submission of four declarations — the \
+         person, the screen, the app (GH #585) and the member's edges to the \
+         screen (GH #1597): {whole_outcome:?}"
     );
 
     let grown = graph_nodes(&h, "/os/orgs/acme/members/alex").await;

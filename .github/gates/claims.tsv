@@ -435,8 +435,8 @@ PIN-voice-duplex-exclusive-de	docs/cell-types.md	Ein `duplex`-Block schließt `s
 PIN-voice-duplex-exclusive-en	docs/cell-types.en.md	A `duplex` block excludes `stt` and `tts`	pinned	a_duplex_block_beside_a_recogniser_is_refused
 PIN-voice-duplex-hello-de	docs/cell-types.md	in diesem Modus nennen `stt` und `tts` denselben Provider-Namen	pinned	a_duplex_cell_answers_as_a_duplex_cell
 PIN-voice-duplex-hello-en	docs/cell-types.en.md	in that mode `stt` and `tts` both name the same provider	pinned	a_duplex_cell_answers_as_a_duplex_cell
-PIN-voice-duplex-one-to-one-de	docs/cell-types.md	ein Client-Frame wird ein Frame an den Provider, ungepuffert und ohne Pacing	pinned	fifty_frames_come_back_as_fifty_frames
-PIN-voice-duplex-one-to-one-en	docs/cell-types.en.md	one client frame becomes one frame to the provider, unbuffered and unpaced	pinned	fifty_frames_come_back_as_fifty_frames
+PIN-voice-duplex-one-to-one-de	docs/cell-types.md	ein Client-Frame wird ein Frame an den Provider, ohne Pacing und gepuffert nur, solange der Socket des Anbieters nichts annimmt	pinned	fifty_frames_come_back_as_fifty_frames
+PIN-voice-duplex-one-to-one-en	docs/cell-types.en.md	one client frame becomes one frame to the provider, unpaced and buffered only while the provider's socket accepts nothing	pinned	fifty_frames_come_back_as_fifty_frames
 PIN-voice-duplex-provider-gone-de	docs/cell-types.md	Ist der Provider weg, ist der Anruf vorbei.	pinned	a_provider_that_gives_up_ends_the_call_once
 PIN-voice-duplex-provider-gone-en	docs/cell-types.en.md	When the provider is gone, so is the call.	pinned	a_provider_that_gives_up_ends_the_call_once
 PIN-voice-duplex-section-fact-de	docs/cell-types.md	`fact` wird ein Kommentar, den das Modell in eigenen Worten spricht	pinned	a_fact_is_commentary_the_client_is_told_about
@@ -449,8 +449,16 @@ PIN-voice-duplex-backchannel-de	docs/cell-types.md	hängt als Backchannel am lau
 PIN-voice-duplex-backchannel-en	docs/cell-types.en.md	hangs on the running turn as a backchannel as long as it stays under `backchannel_max_ms`	pinned	a_hum_inside_an_answer_joins_the_open_turn
 PIN-voice-duplex-speak-end-quiet-de	docs/cell-types.md	er endet, wenn `spoken_quiet_ms` ohne ein Assistenten-Fragment vergehen oder `spoken_cap_ms` erreicht ist	pinned	the_quiet_after_the_last_fragment_ends_the_section
 PIN-voice-duplex-speak-end-quiet-en	docs/cell-types.en.md	it ends when `spoken_quiet_ms` pass without an assistant fragment or `spoken_cap_ms` is reached	pinned	the_quiet_after_the_last_fragment_ends_the_section
-PIN-voice-duplex-greeting-once-de	docs/cell-types.md	geht sie einmal nach dem Start der Sitzung raus, über den Kommentar-Kanal und ohne Delegation	pinned	voice_duplex_gpt_live_sends_the_greeting_once
-PIN-voice-duplex-greeting-once-en	docs/cell-types.en.md	it goes out once after the session started, over the commentary channel and without a delegation	pinned	voice_duplex_gpt_live_sends_the_greeting_once
+PIN-voice-duplex-greeting-once-de	docs/cell-types.md	steht sie als genau eine `developer`-Nachricht am Ende von `session.input` im `session.start`	pinned	the_greeting_is_the_last_developer_message_of_the_start_frame
+PIN-voice-duplex-greeting-once-en	docs/cell-types.en.md	it stands as exactly one `developer` message at the end of `session.input` in the `session.start`	pinned	the_greeting_is_the_last_developer_message_of_the_start_frame
+PIN-voice-duplex-greeting-fold-de	docs/cell-types.md	die Strecke vom ersten bis zum letzten Turn wird an der Stelle des ersten zu einer `developer`-Nachricht	pinned	a_greeted_start_carries_no_turn_of_an_earlier_call
+PIN-voice-duplex-greeting-fold-en	docs/cell-types.en.md	the stretch from the first to the last turn becomes one `developer` message at the place of the first	pinned	a_greeted_start_carries_no_turn_of_an_earlier_call
+PIN-voice-duplex-greeting-fold-cut-de	docs/cell-types.md	Kopfzeile und Rollen zählen in den Schnitt des Seeds	pinned	the_folded_turns_count_against_the_input_limit
+PIN-voice-duplex-greeting-fold-cut-en	docs/cell-types.en.md	head line and roles count in the cut of the seed	pinned	the_folded_turns_count_against_the_input_limit
+PIN-voice-duplex-greeting-fold-order-de	docs/cell-types.md	eine `developer`-Nachricht zwischen zwei Turns mit dem Turn vor ihr	pinned	what_stands_between_two_folded_turns_leaves_with_the_first
+PIN-voice-duplex-greeting-fold-order-en	docs/cell-types.en.md	a `developer` message between two turns with the turn in front of it	pinned	what_stands_between_two_folded_turns_leaves_with_the_first
+PIN-voice-duplex-greeting-fold-context-de	docs/cell-types.md	die Nachrichten davor und dahinter erst, wenn kein Turn mehr da ist	pinned	the_folded_turns_leave_before_the_context_around_them
+PIN-voice-duplex-greeting-fold-context-en	docs/cell-types.en.md	the messages in front of and behind them only when no turn is left	pinned	the_folded_turns_leave_before_the_context_around_them
 PIN-voice-duplex-immutable-de	docs/cell-types.md	`duplex` steht daneben und ist aus demselben Grund unveränderlich	pinned	an_update_may_not_move_the_engine
 PIN-voice-duplex-immutable-en	docs/cell-types.en.md	`duplex` stands beside them and is immutable for the same reason	pinned	an_update_may_not_move_the_engine
 PIN-voice-duplex-spoken-frame-de	docs/voice-wire-protocol.md	Kumulativ wie `partial`: jedes ersetzt das vorige. Nur hinter einem Duplex-Provider.	pinned	a_spoken_frame_names_the_turn_it_is_filling

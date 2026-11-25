@@ -419,7 +419,7 @@ fn no_stamp_comes(root: &std::path::Path, wait_ms: u64) {
     let talky = root.join("main/m/assistants/scribe/talky");
     override_params_on_disk(
         &talky.join("collector/assemble"),
-        &json!({"route_wait_ms": wait_ms, "spec_ahead": "0"}),
+        &json!({"route_wait_ms": wait_ms}),
     );
     let path = talky.join("config.json");
     let mut cfg = read_json(&path);

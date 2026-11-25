@@ -21,6 +21,12 @@ harness = "display"
 match = "^gh_d58_bank_"
 harness = "curator_walls"
 
+# w2 judgeround (GH #1640): the pins of the hive harnesses' python child sit
+# beside a hive that runs on it; in `misc` they would open a part further.
+[[rule]]
+match = "^gh1640_a_silent_python_child"
+harness = "file_space"
+
 # D58 plant (GH #1490): the two pins of the planted kinds of the wall
 # `over_aim` sit beside the bank's pins in the same binary.
 [[rule]]
@@ -44,6 +50,11 @@ harness = "curator_errands"
 # d54g b3err: the pins of a failed backend call (quick_bridge) that must reach ./errors sit beside the errand pins; in `curator` they would shift every later file one part further.
 [[rule]]
 match = "^gh_d54g_b3err_"
+harness = "curator_errands"
+
+# w1 fehlerwort (GH #1619): the sentence of a failed model call sits beside the b3err pins of the same drain.
+[[rule]]
+match = "^gh1619_a_failed_model_call"
 harness = "curator_errands"
 
 # D58 target (GH #1483): the four pins of the llm cell's profile go to `llm`,
@@ -72,6 +83,13 @@ harness = "curator_targets"
 [[rule]]
 match = "^gh1573_a_menu_answer"
 harness = "misc_5"
+
+# d54s specaus (GH #1584): the birth pin of the 0.72 form boots the shipped
+# talky like its sibling gh1352 in `round_1`; in `misc` it would open a
+# ninth part and move files of other strands.
+[[rule]]
+match = "^gh_d54s_specaus_a_simple_and_a_talk_turn"
+harness = "round_1"
 
 # D58 judge (GH #1480): the route's two pins go to a binary of their own
 # beside `assemble` (`assemble` holds 60 files; two more would split it into
@@ -119,10 +137,22 @@ harness = "curator_notes"
 match = "^gh1512_"
 harness = "curator_notes"
 
+# d54s wohlfilter (GH #1599): the pin of a wellbeing fact the state line leaves
+# out sits beside the note pins; in `curator` it would move one file of each
+# later part.
+[[rule]]
+match = "^gh_d54s_wohlfilter_"
+harness = "curator_notes"
+
 # D58 lead (GH #1474): the pins of the switch as a hive of its own, one
 # binary of their own, so no curator part moves.
 [[rule]]
 match = "^gh_d58_lead_"
+harness = "curator_lead"
+
+# d54s bruecke (GH #1586): the pins of the bridge's fallback, beside the lead's.
+[[rule]]
+match = "^gh_d54s_bruecke_"
 harness = "curator_lead"
 
 # D58 frame (GH #1478): the ten pins of the frame slot and the note per stamp
@@ -190,6 +220,11 @@ harness = "assemble_judge"
 match = "^gh1564_"
 harness = "assemble_judge"
 
+# d54s nachlauf (GH #1596): the bound of the memory leg sits beside the wake of the route bound.
+[[rule]]
+match = "^gh1596_"
+harness = "assemble_judge"
+
 # d54g listennote: the pin of the collector seam sits beside the stamp-route pins; in `assemble` it would shift every later file one part further.
 [[rule]]
 match = "^gh_d54g_listennote_seam"
@@ -203,6 +238,11 @@ harness = "curator_live"
 # d54g curwall (GH #1567): the spoken line and the end of a closed session, beside the live pins.
 [[rule]]
 match = "^gh_d54g_curwall"
+harness = "curator_live"
+
+# d54s abbruch (GH #1587): the receiver of delegation_cancel, beside the live pins.
+[[rule]]
+match = "^gh_d54s_cancel"
 harness = "curator_live"
 
 [[rule]]
@@ -279,6 +319,12 @@ harness = "assemble_judge"
 match = "^gh1556_the_route_"
 harness = "assemble_judge"
 
+# GH #1585 (wave d54s, strand richter): the second judge's three points beside
+# the route's judge pins.
+[[rule]]
+match = "^gh1585_the_second_judge_"
+harness = "assemble_judge"
+
 # GH #1558 (wave jevr, strand kalib): the route's pin of the uncalibrated
 # decider beside the route's judge pins; the cell's and the registry's pins of
 # the calibration beside the other llm pins (in `misc` they would open a ninth
@@ -334,6 +380,15 @@ harness = "curator_feed"
 [[rule]]
 match = "^gh1436_[f-k]_"
 harness = "curator_3"
+
+# GH #1353: the guard and the answer of a params push over every overlay type,
+# and its whole road through the shipped shell, sit in the small timer binary.
+# The rule stands in front of the hive helpers: by the curator's helper the road
+# would move a file of every later curator part, and in `misc` the one new file
+# would open a tenth part and move 336 files of other strands.
+[[rule]]
+match = "^gh1353_"
+harness = "timer"
 
 [[rule]]
 uses = "^support/curator_hive\\.rs$"

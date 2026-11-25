@@ -16,7 +16,11 @@ use meclaw_cells::{LlmParams, sealed};
 use meclaw_colony::StatefulCell;
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, Headers, Message, MessageBuilder, OutputSink, Path, Uuid};
-use meclaw_testing::mock_http::{MockResponse, start_mock_server_capturing};
+use meclaw_testing::mock_http::MockResponse;
+// harness_fold: #[path = "mock_openai.rs"]
+#[allow(unused_imports)]
+use crate::mock_openai; // harness_fold: mod mock_openai;
+use mock_openai::MockOpenAI;
 use tokio::sync::mpsc;
 
 const GRANT: &str = "grant:1273";
@@ -129,9 +133,16 @@ fn refused_with(seen: &[Value], detail: &str) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gh1273_a_push_moves_the_cell_onto_another_provider_and_back() {
     let log = meclaw_testing::log_recorder::global();
-    let (chat, _c, chat_seen) =
-        start_mock_server_capturing(vec![chat_answer(), chat_answer()]).await;
-    let (anth, _a, anth_seen) = start_mock_server_capturing(vec![messages_answer()]).await;
+    let MockOpenAI {
+        addr: chat,
+        captured: chat_seen,
+        ..
+    } = MockOpenAI::start(vec![chat_answer(), chat_answer()]).await;
+    let MockOpenAI {
+        addr: anth,
+        captured: anth_seen,
+        ..
+    } = MockOpenAI::start(vec![messages_answer()]).await;
     let td = tempfile::TempDir::new().unwrap();
     let mut db = cell_db(&td);
     let mut c = LlmCell::new(

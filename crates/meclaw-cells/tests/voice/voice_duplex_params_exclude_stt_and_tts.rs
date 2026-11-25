@@ -32,7 +32,7 @@ fn a_gpt_live_block_defaults_to_the_documented_table() {
         );
     };
     assert_eq!(g.base_url, "wss://api.openai.com");
-    assert_eq!(g.model, "gpt-live-1");
+    assert_eq!(g.model, "gpt-live-1.1");
     assert_eq!(g.voice, "marin");
     assert_eq!(g.sample_rate, 16000);
     assert_eq!(g.instructions, "be Egon");

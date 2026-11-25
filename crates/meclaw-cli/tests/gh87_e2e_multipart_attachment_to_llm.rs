@@ -19,7 +19,10 @@
 //! `multipart_upload_reaches_the_llm_cell_as_an_image_content_part` red.
 
 use meclaw_cli::{Cli, StdioFormat, run_with_hooks};
-use meclaw_testing::mock_http::{MockResponse, start_mock_server_capturing};
+use meclaw_testing::mock_http::MockResponse;
+#[path = "../../meclaw-cells/tests/mock_openai.rs"]
+mod mock_openai;
+use mock_openai::MockOpenAI;
 use std::net::SocketAddr;
 
 /// A short PNG-ish payload; the cell forwards bytes, it does not decode them.
@@ -128,8 +131,11 @@ fn multipart_body(boundary: &str, target: &str, content: &[u8]) -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multipart_upload_reaches_the_llm_cell_as_an_image_content_part() {
-    let (mock_addr, _mock_join, captured) =
-        start_mock_server_capturing(vec![canned_chat_completion("I see a fox")]).await;
+    let MockOpenAI {
+        addr: mock_addr,
+        captured,
+        ..
+    } = MockOpenAI::start(vec![canned_chat_completion("I see a fox")]).await;
 
     let td = tempfile::TempDir::new().unwrap();
     let root_dir = td.path().join("root");

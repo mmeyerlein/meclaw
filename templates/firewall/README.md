@@ -1,4 +1,4 @@
-# `firewall@2.5.4`
+# `firewall@2.5.5`
 
 Deterministic screening on an ingress channel, drawn as topology. One `code` cell
 (`screen`) plus one `store` (`rules`) sit between the surface and the agent: every
@@ -641,7 +641,10 @@ red the moment a column is added to the store and not to the walk.
   `import_write_failed`. Neither is a transaction — re-applying the document is the
   repair, and it is safe by construction.
 - **`arrivals` is append-only** and grows with traffic. Trimming it is an operator's
-  `delete` with `recorded_at lt <cutoff>`, not a rule and not a background job.
+  `delete` with `recorded_at lt <cutoff>`, not a rule and not a background job. The
+  rate read does not grow with it: it searches the index `arrivals_window`
+  (`channel`, `recorded_at`). `indexes` is an immutable param of the store, so a
+  firewall that already stands gets the index when it is born again.
 - **The rate bucket is the channel**, not the user. A surface that reports no channel
   runs on one shared bucket.
 - **Three store hops per passed turn** (rules, rate window, arrival mark). That is the

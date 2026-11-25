@@ -271,8 +271,8 @@
     ]
   },
   "description": {
-    "purpose": "The bridging twin of talky's quick voice (GH #1398, #1248): the same model cell as `./quick` with the same params, born on the same start value. A speculating curator (`spec_ahead` on) sends it the bridge of a complex or research turn and of a tool round (`hop.target` \"quick_bridge\", `curator_call` ending in `-bridge`), so the bridge's sentence never waits behind a spec call and the tool round's call on `./quick` never waits behind the bridge. It answers like `./quick`: splitter, tap, errors. The model registry moves it to the row of the tier `quick` once it is subscribed there.",
-    "use_when": "Inside the talky composite only. The curator edges (`./curator` -> here on `quick` with `hop.target` \"quick_bridge\") carry restore_ttl; the answer edge (here -> `./splitter`) carries stop, tool_calls and length, the tap (here -> `./curator` on `in_llm`) every answer. Without `spec_ahead` on the curator every bridge goes to `./quick` and this cell receives nothing.",
+    "purpose": "The second model cell beside talky's quick voice (GH #1398, #1248): the same model cell as `./quick` with the same params, born on the same start value. It takes every call whose target is `quick_bridge` (`hop.target` \"quick_bridge\"): a lead's `bridge_target` or `event_routes` that names it, so such a call never waits behind the tool round's call on `./quick`. It answers like `./quick`: splitter, tap, errors. The model registry moves it to the row of the tier `quick` once it is subscribed there.",
+    "use_when": "Inside the talky composite only. The curator edges (`./curator` -> here on `model_call` with `hop.target` \"quick_bridge\") carry restore_ttl; the answer edge (here -> `./splitter`) carries stop, tool_calls and length, the tap (here -> `./curator` on `in_llm`) every answer. A composition whose lead names no `quick_bridge` target (talky ships `bridge_target` `*:quick`) sends this cell nothing.",
     "not_in_scope": "No window of its own, no recall, no sidecar: what it sees is the curator's choice."
   }
 }

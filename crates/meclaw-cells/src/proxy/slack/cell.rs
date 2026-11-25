@@ -562,6 +562,20 @@ impl LongRunningCell for SlackCell {
         reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            // GH #1353: on the params lane an update or nothing, and this
+            // platform has no param a message may change: every update is
+            // refused. Before the send path, whose `missing_chat_id` and
+            // `credential_pending` answer nobody who sent an update.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if push.on_lane() {
+                let detail = push.lane_refusal().unwrap_or_else(|| {
+                    "every key of a slack proxy is immutable; change the cell, not the message"
+                        .to_string()
+                });
+                crate::proxy::cell::refuse_params(sink, &msg, &push, "invalid_input", &detail)
+                    .await;
+                return;
+            }
             let body_val = match &msg.body {
                 meclaw_core::Body::Inline(v) => v.clone(),
                 _ => {

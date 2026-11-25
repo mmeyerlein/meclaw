@@ -942,8 +942,10 @@ fn rim_emits(template: &str) -> Vec<String> {
 
 /// The member's own edges this road needs, verbatim off `templates/member`:
 /// everything between its generations and its memory (the recall door, the
-/// memory section, the episodes, the close pass, the menu), and the one edge
-/// that hands a section to its apps.
+/// memory section, the episodes, the close pass, the menu). Since GH #1598 no member
+/// edge hands a section to the apps container: `install_app` draws it per app,
+/// from `./assistants` straight to the app; the filter keeps an old one should it
+/// come back.
 fn member_edges() -> Vec<Value> {
     let member = read_json(&repo("templates/member/config.json"));
     member["params"]["graph"]["edges"]

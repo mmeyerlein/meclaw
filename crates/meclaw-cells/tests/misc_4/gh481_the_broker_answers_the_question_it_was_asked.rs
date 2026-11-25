@@ -578,7 +578,9 @@ fn every_exit_edge_clears_the_hive_s_own_markers() {
         }
     }
     assert_eq!(
-        checked, 3,
+        // GH #1353: and the answer of the clock and of the store, two lanes each.
+        checked,
+        7,
         "three lanes leave this hive (policy, invoke, sweep); the count is part of the \
          assertion, because an exit added without the cleanup is exactly the leak"
     );

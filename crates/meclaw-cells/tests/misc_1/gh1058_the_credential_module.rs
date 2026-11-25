@@ -20,6 +20,7 @@
 //! | T6 the secret never prints | [`gh1058_the_secret_never_prints`] |
 //! | a late box of a superseded round leaves the new round alone | [`gh1058_a_late_box_of_a_superseded_round_does_not_refuse_the_new_one`] |
 //! | the bound is a bound | [`gh1058_the_overflow_is_refused_at_once`] |
+//! | a bound past the channel ceiling parks | [`gh1627_an_oversized_wait_room_parks_instead_of_panicking`] |
 //! | OR-VG-4 bearer precedence | [`gh1058_bearer_precedence`] |
 
 use meclaw_cells::credential::{
@@ -300,6 +301,24 @@ async fn gh1058_the_overflow_is_refused_at_once() {
     match s.park("g1", 2) {
         ParkOutcome::Refused(item) => assert_eq!(*item, 2),
         _ => panic!("the third item does not fit a bound of two"),
+    }
+}
+
+/// GH #1627: `credential_wait_max` is a plain param, and the channel of a round
+/// panics above `Semaphore::MAX_PERMITS`. Past that the number means "as many as
+/// there are": the item parks and the box releases it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gh1627_an_oversized_wait_room_parks_instead_of_panicking() {
+    for wait_max in [usize::MAX, tokio::sync::Semaphore::MAX_PERMITS + 1] {
+        let (mut s, _) = slots(meclaw_testing::deadline::product_wait_ms(), wait_max);
+        assert!(matches!(s.park("g1", 1), ParkOutcome::Asked), "{wait_max}");
+        assert!(matches!(s.park("g1", 2), ParkOutcome::Parked), "{wait_max}");
+        let req = s.request("g1").unwrap();
+        let d = delivery("g1", &call_id_of(&req), &recipient_of(&req), "stub-secret");
+        let Ok(got) = s.accept_sealed(&d).await else {
+            panic!("{wait_max}: the box opens");
+        };
+        assert_eq!(got.released, vec![1, 2], "{wait_max}");
     }
 }
 

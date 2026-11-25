@@ -38,13 +38,8 @@ behind that sentence. In order:
    naming ``strang:``/``strand:``) names at least one ``E-DT-<n>`` that exists as
    a line in ``plans/<wave>/orga-eingaben.md``, or says there is none
    (``E-DT: none``; the German reports write ``keine``). Missing -> refused.
-   **Coverage on the end tip** (welle-tb S1 C-Beleg, KR-TB-1 a). The map build
-   (``pipeline coverage build --lane <lane>``) on the end tip -- ``master`` of the
-   tree -- is the full suite of the wave. Its map ``coverage-<tip>.json`` in the
-   coverage directory (``narrow.coverage_dir()``) must be GREEN
-   (``coverage.verdict_of``); RED (with the red tests by name), INCOMPLETE, a
-   map of an older rev only (MISSING) or an unknown tip refuses the close before
-   anything is written. The line: ``COVERAGE end-tip=<sha> verdict=<v> ...``.
+   No coverage map (OR-W1-P-22, owner ruling R-W1-5): the close asks for none
+   and judges none -- a map is built on demand by the night, never per close.
 3. **Retro.** ``scripts/wave_retro.py <wave>`` writes ``retro.md`` and the line
    in ``plans/retro/RETRO.md``; the Q14..Q17 numbers of ``retro.quarter`` (part A)
    are printed when ``scripts/pipeline/retro.py`` exists.
@@ -60,7 +55,10 @@ required (re-check M-N1: a late first start without one would take the tip
 after merges of the wave as its base); it must be a commit and an ancestor of
 ``master`` (no free SHA). A narrowed integration (``MECLAW_GATE_WAVE=<wave>``)
 plans its tests from ``<start>..HEAD`` (welle-tb S1 part C, KR-TB-1); a measuring
-wave with start T is ``wave start <name> --rev T``.
+wave with start T is ``wave start <name> --rev T``. ``pipeline wave open <wave>`` records the
+start itself (#1520): master's tip before its own commit, through the same rule (the first
+start stands); no master, a refused start or a store that does not open leaves the open committed, says
+``WAVE-START-MISSING`` with the ``wave start`` call that records it, and exits 1.
 
 The last line of ``close`` is ``WAVE <wave> issues=<ok>/<n> retro=<v> bump=<v> export=<v>``
 where a value is ``ok``, ``dry`` (``--dry-run``), ``skipped`` (refused before),
@@ -401,74 +399,6 @@ def _git_clean_env():
     return env
 
 
-def _build_hint(db_path):
-    """The command that builds the end-tip map: on a build lane that is on, else
-    on the local lane of the host file (d59-2 V7, the night's order)."""
-    from . import night  # noqa: PLC0415
-    lane = None
-    try:
-        db = store.open_ro(db_path)
-    except Exception:  # noqa: BLE001 -- no store: the local lane, or a placeholder
-        db = None
-    if db is not None:
-        try:
-            lane = night.lane_name(db)
-        except Exception:  # noqa: BLE001
-            lane = None
-        finally:
-            store.close(db)
-    return "pipeline coverage build --lane %s --rev master" % (
-        lane or night.local_lane() or "<lane>")
-
-
-def check_end_tip_coverage(root, out, map_dir=None, db_path=None, dry_run=False):
-    """`(ok, verdict)` of the coverage map on the end tip (`master` of `root`).
-    Fail-closed: only a GREEN map of exactly that rev passes.
-
-    No map on the end tip: the close tries `coverage.carry` once (d59-2 V7,
-    #1487) -- every plans-only commit after the map start left the close
-    without one (kit trap d53-2 K3 (2)). Carried, the check goes on with that
-    map; `dry_run` only judges ("would carry", nothing written). Not carried,
-    the verdict stays MISSING and the line names why and the command that
-    builds. The carry writes into `map_dir` and journals into `db_path`, the
-    close's own -- never into the tree."""
-    from . import coverage, narrow  # noqa: PLC0415
-    res = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet",
-                          "master^{commit}"], capture_output=True, text=True,
-                         env=_git_clean_env())
-    tip = res.stdout.strip()
-    if res.returncode != 0 or not tip:
-        out("COVERAGE end-tip=unknown verdict=MISSING -- no master in %s" % root)
-        return False, "MISSING"
-    path = pathlib.Path(map_dir or narrow.coverage_dir()) / ("coverage-%s.json" % tip)
-    cov, why = coverage.load_map(path)
-    carried = None
-    if cov is None:
-        try:
-            cov, carried = coverage.carry(str(root), map_dir=map_dir, db_path=db_path,
-                                          branch="master", write=not dry_run)
-        except Exception as exc:  # noqa: BLE001 -- a broken carry is a reason, never a stop
-            cov, carried = None, "carry failed: %s" % exc
-        if cov is None:
-            out("COVERAGE end-tip=%s verdict=MISSING -- %s; not carried: %s; build it: %s"
-                % (tip[:9], why, carried, _build_hint(db_path)))
-            return False, "MISSING"
-    verdict = coverage.verdict_of(cov) if cov.get("rev") == tip else "MISSING"
-    detail = "; ".join(cov.get("incomplete") or []) or "complete"
-    if carried and dry_run:
-        detail += "; %s" % carried
-    origin = cov.get("carried_from")
-    # d59-2 fix round: a dry run carried nothing yet -- it says "would carry" only
-    if isinstance(origin, dict) and not (carried and dry_run):  # GH #1461 review M4
-        detail += "; carried from %s (measured %s on %s)" % (
-            str(origin.get("rev"))[:9], origin.get("built_at"), origin.get("runner"))
-    out("COVERAGE end-tip=%s verdict=%s map=%s -- %s" % (tip[:9], verdict, path, detail))
-    reds = list(cov.get("red_tests") or [])
-    for name in reds[:50]:
-        out("COVERAGE red %s" % name)
-    return verdict == "GREEN", verdict
-
-
 def close(wave, root=None, db_path=None, issues=(), dry_run=False, bump=False,
           runner=None, confirm=None, out=None, now=None):
     """Close a wave; returns the exit code. See the module docstring."""
@@ -491,12 +421,6 @@ def close(wave, root=None, db_path=None, issues=(), dry_run=False, bump=False,
         out("wave close: refused -- " + ("open issues without a mark" if not issues_ok
                                          else "strand reports without Orga inputs"
                                          if edt_ok != edt_total else balance_refused))
-        out(f"{head} retro=skipped bump=skipped export=skipped")
-        return 1
-    cov_ok, verdict = check_end_tip_coverage(root, out, db_path=db_path, dry_run=dry_run)
-    if not cov_ok:
-        out(f"wave close: refused -- the coverage build on the end tip is {verdict}"
-            " (the full suite of the wave; red is a finding, not a closed wave)")
         out(f"{head} retro=skipped bump=skipped export=skipped")
         return 1
 
@@ -658,9 +582,16 @@ def _live_close_step(root, wave, date, dry_run, out):
         f"result in that row and commit it")
 
 
-def open_wave(wave, title, root=None, out=None, today=None):
+def open_wave(wave, title, root=None, out=None, today=None, db_path=None):
     """`pipeline wave open <wave> --title <sentence>`: the Running row on top of
-    section Live, committed on the current branch. 0, or 2 when refused."""
+    section Live, committed on the current branch, and the wave start recorded
+    (#1520): master's tip before that commit (on master: HEAD; on a branch with
+    commits of its own: still master, as `start` defines the rev), through
+    `start` and its rule -- the first start stands, an earlier one is kept. 0;
+    1 when the row is committed but no start is recorded (no master, refused,
+    or a store that does not open: the line `WAVE-START-MISSING` says why and
+    names the `wave start` call that records it); 2 when refused, nothing
+    written."""
     import datetime  # noqa: PLC0415
     root = pathlib.Path(root) if root else orga_export.repo_root()
     out = out or print
@@ -670,6 +601,10 @@ def open_wave(wave, title, root=None, out=None, today=None):
         out(f"wave open: no wave folder plans/{wave} -- refused")
         return 2
     rel = "plans/README.md"
+    # review argvpre I-1: master, not HEAD -- a branch's own commits are no
+    # ancestor of master, `start` would refuse them
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet",
+                           "master^{commit}"], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", rel],
                            capture_output=True, text=True)
     if dirty.returncode != 0 or dirty.stdout.strip():
@@ -693,6 +628,39 @@ def open_wave(wave, title, root=None, out=None, today=None):
         out(f"wave open: git commit failed: {(res.stderr or res.stdout).strip()[-300:]}")
         return 2
     out(f"WAVE-OPEN {wave} running since {date}")
+    return _open_start(wave, root, head, db_path, out)
+
+
+def _open_start(wave, root, head, db_path, out):
+    """The start `open_wave` records after its commit: 0, or 1 with the line
+    `WAVE-START-MISSING` -- the open stays committed either way. The hint
+    names master's tip, never a rev `start` refused (`<sha>` without one)."""
+    from . import narrow  # noqa: PLC0415
+    said = []
+    try:
+        db = store.open(db_path)
+    except Exception as exc:  # noqa: BLE001 -- a store that does not open records no start
+        db, said = None, [f"store does not open ({exc})"]
+    rc = 1
+    if db is not None:
+        try:
+            had = narrow.wave_starts(db, wave)
+            if had:
+                out(f"WAVE-START {wave} {had[0]} (recorded before, the first start stands)")
+                return 0
+            rc = start(wave, root=root, db=db, rev=head, out=said.append)
+        except Exception as exc:  # noqa: BLE001 -- the open is committed: said, not raised
+            said.append(f"store error ({exc})")
+            rc = 1
+        finally:
+            store.close(db)
+    refused = rc != 0 and bool(head) and any(head[:9] in ln for ln in said)
+    fix = f"pipeline wave start {wave} --rev {'<sha>' if refused or not head else head}"
+    for line in said:
+        out(line)
+    if rc != 0:
+        out(f"WAVE-START-MISSING {wave}: {(said or ['refused'])[-1]} -- record it: {fix}")
+        return 1
     return 0
 
 
@@ -746,7 +714,7 @@ def _cmd_start(args):
 
 
 def _cmd_open(args):
-    return open_wave(args.wave, args.title, root=args.root)
+    return open_wave(args.wave, args.title, root=args.root, db_path=args.db)
 
 
 def _cmd_running(args):
@@ -782,6 +750,7 @@ def register(sub):
     o.add_argument("wave", help="wave directory name under plans/")
     o.add_argument("--title", required=True, help="one English sentence for the row")
     o.add_argument("--root", default=None, help="tree to write and commit in (default: the kit's)")
+    o.add_argument("--db", default=None, help="store path (default $MECLAW_PIPELINE_DB)")
     o.set_defaults(func=_cmd_open)
     r = wsub.add_parser("running", help="the Running waves plans/README.md section Live names")
     r.add_argument("readme", help="the plans/README.md to read")

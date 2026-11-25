@@ -32,8 +32,9 @@ pub struct WebSearchCell {
     /// Explicit byte cap on the outgoing `text` (GH #83). `None` (the default
     /// since GH #1085, R-IG-1): the text is cut to the tool-result share of the
     /// window the call names (`content_budget::input_soft_of`) and delivered
-    /// whole when it names none -- up to the carrier ceiling, above which it
-    /// is refused (`too_long`). Every cut carries the mark
+    /// whole when it names none. A provider response over the carrier ceiling
+    /// is refused while it is read (`too_long`), whatever this cap or the
+    /// window would have cut it to. Every cut carries the mark
     /// `...[cut: <k> of <n> bytes shown; <hint>]`.
     pub max_bytes: Option<usize>,
     /// GH #1060: the credential slot when `params.credential_grant_id` is set.
@@ -92,6 +93,40 @@ use crate::tool::{
 };
 use meclaw_core::serde_json::{self, Map, Value};
 use meclaw_core::{CellOutput, Message, OutputSink, Path};
+
+/// The provider's answer to one search request, as far as the cell reads it.
+enum ProviderAnswer {
+    /// A 2xx status and its whole body, at most the carrier ceiling.
+    Body(Vec<u8>),
+    /// Any other status; the body of an error page is not read.
+    Status(reqwest::StatusCode),
+    /// More bytes than the carrier ceiling, announced or sent.
+    OverCarrier,
+}
+
+/// Reads the answer up to `content_budget::CARRIER_MAX_BYTES`.
+///
+/// GH #1289: the status was never looked at, so an error page went out as a
+/// successful result with `result_count` 0 for the model to read; and the
+/// body was read to its end before any bound applied, so one answer could take
+/// as much memory as arrives within `external_timeout_ms`.
+async fn read_answer(mut resp: reqwest::Response) -> Result<ProviderAnswer, reqwest::Error> {
+    const MAX: usize = crate::content_budget::CARRIER_MAX_BYTES;
+    if !resp.status().is_success() {
+        return Ok(ProviderAnswer::Status(resp.status()));
+    }
+    if resp.content_length().is_some_and(|n| n > MAX as u64) {
+        return Ok(ProviderAnswer::OverCarrier);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if body.len() + chunk.len() > MAX {
+            return Ok(ProviderAnswer::OverCarrier);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(ProviderAnswer::Body(body))
+}
 
 #[allow(clippy::manual_async_fn)]
 impl meclaw_colony::StatelessCell for WebSearchCell {
@@ -179,19 +214,19 @@ impl meclaw_colony::StatelessCell for WebSearchCell {
                 ) {
                     req = req.bearer_auth(k);
                 }
-                let resp = req.send().await?;
-                let bytes = resp.bytes().await?;
-                Ok::<_, reqwest::Error>(bytes.to_vec())
+                read_answer(req.send().await?).await
             })
             .await;
 
             let duration_ms = started.elapsed().as_millis() as u64;
             match result {
-                Ok(Ok(body)) => {
-                    let text = String::from_utf8_lossy(&body).into_owned();
+                Ok(Ok(ProviderAnswer::Body(body))) => {
                     // GH #83: `bytes` reports what the provider sent, so a
                     // trimmed reply still says how big the response really was.
-                    let bytes_len = text.len() as u64;
+                    // Counted before the lossy decode, which turns one invalid
+                    // byte into the three of U+FFFD (GH #1289).
+                    let bytes_len = body.len() as u64;
+                    let text = String::from_utf8_lossy(&body).into_owned();
                     // Graceful: derive result_count from the results array,
                     // otherwise 0. `result_count` is the FULL provider count —
                     // GH #83 trims the delivered list, not the bookkeeping.
@@ -274,6 +309,20 @@ impl meclaw_colony::StatelessCell for WebSearchCell {
                             target: reply_target,
                             content: body_json,
                         })
+                        .await;
+                }
+                Ok(Ok(ProviderAnswer::Status(status))) => {
+                    let text = format!("http {status} from the search endpoint");
+                    self.emit_error(sink, reply_target, ERR_IO_ERROR, text, id, started)
+                        .await;
+                }
+                Ok(Ok(ProviderAnswer::OverCarrier)) => {
+                    let text = format!(
+                        "too_long: the search response is over the carrier ceiling of {} bytes \
+                         and was refused while it was read",
+                        crate::content_budget::CARRIER_MAX_BYTES
+                    );
+                    self.emit_error(sink, reply_target, ERR_TOO_LONG, text, id, started)
                         .await;
                 }
                 Ok(Err(e)) => {
@@ -1330,5 +1379,180 @@ mod tests {
             hook.is_some(),
             "stateless web_search factory MUST offer a real boot-inactive respawn (eager reconnect)"
         );
+    }
+
+    // ───── GH #1289: status, byte count and read cap of the provider answer ─────
+
+    /// One call with the query "x" against `endpoint`; hands back the body of
+    /// the cell's one emission. The A-timeout is the hang mark: no test below
+    /// waits for it, it only bounds a run that went wrong.
+    async fn gh1289_search(endpoint: String, max_bytes: Option<usize>) -> Value {
+        use meclaw_colony::StatelessCell;
+        use meclaw_core::{Body, CellEmission, MessageBuilder, Uuid};
+
+        let cell = WebSearchCell {
+            client: reqwest::Client::builder().build().unwrap(),
+            endpoint,
+            api_key: None,
+            external_timeout: meclaw_testing::deadline::scaled(meclaw_testing::deadline::HANG),
+            max_concurrency: 4,
+            max_results: DEFAULT_WEB_SEARCH_MAX_RESULTS,
+            max_bytes,
+            grant: None,
+        };
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<CellEmission>(8);
+        let sink = OutputSink::new(
+            out_tx,
+            Path::new("/search"),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            10,
+            meclaw_core::Headers::new(),
+            None,
+        );
+        let msg = MessageBuilder::new(Path::new("/search"))
+            .reply_to(Path::new("/caller"))
+            .body(Body::Inline(json!({
+                "messages": [{
+                    "origin": "assistant", "type": "tool_call",
+                    "text": r#"{"query":"x"}"#, "id": "call-1289"
+                }]
+            })))
+            .build();
+        cell.handle(msg, &sink).await;
+        out_rx.recv().await.unwrap().content
+    }
+
+    /// An error page is no search result, even when its body has the shape of
+    /// one: 4xx and 5xx are the documented `io_error` and name the status.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh1289_a_failed_search_response_is_an_error_not_an_empty_result() {
+        use meclaw_testing::mock_http::{MockResponse, start_mock_server};
+
+        for status in [401u16, 404, 429, 500, 503] {
+            let mut answer = MockResponse::ok_json(
+                br#"{"results":[{"title":"an error page","url":"u","snippet":"s"}]}"#,
+            );
+            answer.status = status;
+            let (addr, _join) = start_mock_server(answer).await;
+            let out = gh1289_search(format!("http://{addr}/search"), None).await;
+            assert_eq!(out["header"]["error_code"], "io_error", "{status}: {out}");
+            assert_eq!(out["header"]["finish_reason"], "error", "{status}: {out}");
+            assert_eq!(out["messages"][0]["id"], "call-1289", "{status}: {out}");
+            let text = out["messages"][0]["text"].as_str().unwrap();
+            assert!(text.contains(&status.to_string()), "{status}: {text}");
+            assert!(!text.contains("an error page"), "{status}: {text}");
+        }
+    }
+
+    /// `header.bytes` is what the provider sent: ten invalid bytes are ten,
+    /// not the thirty their replacement characters take.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh1289_the_byte_count_is_taken_before_the_lossy_decode() {
+        use meclaw_testing::mock_http::{MockResponse, start_mock_server};
+
+        let (addr, _join) = start_mock_server(MockResponse::ok(&[0xff; 10])).await;
+        let out = gh1289_search(format!("http://{addr}/search"), None).await;
+        assert_eq!(
+            out["messages"][0]["text"].as_str().unwrap(),
+            "\u{fffd}".repeat(10)
+        );
+        assert_eq!(out["header"]["bytes"], 10, "{}", out["header"]);
+    }
+
+    /// A body that announces more than the carrier is refused, whatever the
+    /// text would have been cut to afterwards; one at the ceiling is read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh1289_a_body_over_the_carrier_is_refused_by_its_announced_length() {
+        use crate::content_budget::CARRIER_MAX_BYTES;
+        use meclaw_testing::mock_http::{MockResponse, start_mock_server};
+
+        let over = vec![b'z'; CARRIER_MAX_BYTES + 1];
+        let (addr, _join) = start_mock_server(MockResponse::ok(&over)).await;
+        let out = gh1289_search(format!("http://{addr}/search"), Some(1000)).await;
+        assert_eq!(out["header"]["error_code"], "too_long", "{}", out["header"]);
+
+        let (addr, _join) = start_mock_server(MockResponse::ok(&over[1..])).await;
+        let out = gh1289_search(format!("http://{addr}/search"), Some(1000)).await;
+        assert_eq!(
+            out["header"]["bytes"], CARRIER_MAX_BYTES,
+            "{}",
+            out["header"]
+        );
+    }
+
+    /// A body with no announced length that never ends is refused as soon as
+    /// it passes the carrier: the server holds the connection open after one
+    /// byte too many, so a cell that reads to the end never gets an answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh1289_an_unannounced_body_is_refused_while_it_is_read() {
+        use crate::content_budget::CARRIER_MAX_BYTES;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(stream.read_u8().await.unwrap());
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            // The cell may hang up before the last byte; that is the point.
+            let _ = stream.write_all(&vec![b'z'; CARRIER_MAX_BYTES + 1]).await;
+            std::future::pending::<()>().await;
+        });
+        let out = gh1289_search(format!("http://{addr}/search"), Some(1000)).await;
+        server.abort();
+        assert_eq!(out["header"]["error_code"], "too_long", "{}", out["header"]);
+    }
+
+    /// GH #1627: the dispatcher bounds its own semaphore and the credential slot
+    /// its own channel, so a `max_concurrency` or a `credential_wait_max` over
+    /// tokio's ceiling starts and ends like any other; no second bound here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh1289_an_oversized_max_concurrency_or_wait_room_starts() {
+        let ceiling = tokio::sync::Semaphore::MAX_PERMITS;
+        for params in [
+            json!({"endpoint": "http://x/s", "max_concurrency": u64::MAX}),
+            json!({"endpoint": "http://x/s", "max_concurrency": ceiling + 1}),
+            json!({"endpoint": "http://x/s", "max_concurrency": ceiling,
+                   "credential_grant_id": "g"}),
+            json!({"endpoint": "http://x/s", "credential_grant_id": "g",
+                   "credential_wait_max": ceiling + 1}),
+            json!({"endpoint": "http://x/s", "credential_grant_id": "g",
+                   "credential_wait_max": u64::MAX}),
+        ] {
+            let (out_tx, _out_rx) = tokio::sync::mpsc::channel(8);
+            let (inbox_tx, _inbox_rx) = tokio::sync::mpsc::channel(8);
+            let spawned = Arc::new(WebSearchCellFactory).spawn_cell(
+                meclaw_core::Path::new("/search"),
+                params.clone(),
+                out_tx,
+                std::path::PathBuf::new(),
+                meclaw_colony::ContractView::default(),
+                inbox_tx,
+                None,
+                0,
+                None,
+                None,
+                1000,
+            );
+            match spawned {
+                Err(e) => panic!("{params} was refused: {e}"),
+                Ok(SpawnedCellKind::Active { sender, join, .. }) => {
+                    drop(sender);
+                    let ended = meclaw_testing::deadline::hang("the cell task ends", join).await;
+                    assert!(
+                        ended.is_ok(),
+                        "{params}: the cell task ended with {ended:?}"
+                    );
+                }
+                Ok(SpawnedCellKind::Dormant { .. }) => unreachable!("only Active"),
+            }
+        }
     }
 }

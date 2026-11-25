@@ -165,9 +165,15 @@ class TestTheRealPrecheckIsNoScenario(unittest.TestCase):
         for mode in ("strand", "integration"):
             stations = {s.name: s for s in gate_plan.plan(self.CHANGED, mode, repo=None)}
             with self.subTest(mode=mode):
+                # #1520: the runners ride beside the argv now, in its list file
                 pre = stations["precheck"].cmds[0]
-                self.assertTrue(any(flakes._SCENARIO_RUNNER.search(a) for a in pre), pre)
+                self.assertTrue(any(flakes._SCENARIO_RUNNER.search(p)
+                                    for p in stations["precheck"].paths))
                 self.assertIsNone(flakes.station_kind({}, pre))
+                # ... and a command that names a runner among its arguments
+                # still is no scenario (the reader's rule, M7q M2)
+                named = pre[:2] + ["--files"] + list(stations["precheck"].paths)
+                self.assertIsNone(flakes.station_kind({}, named))
                 for name in ("scenarios:builder", "scenarios:display", "scenarios:memory"):
                     runner = [c for c in stations[name].cmds
                               if any(flakes._SCENARIO_RUNNER.search(a) for a in c)][0]

@@ -27,13 +27,18 @@
 #          at the merge point; exit 3 = queued behind another merge;
 #          --wait blocks in the queue until the lease is released instead,
 #          holding no lane: a lane lease of the strand goes back while it waits,
-#          the candidate gate takes a lane under the lease -- no token take first)
+#          the candidate gate takes a lane under the lease -- no token take first;
+#          its queue place goes with its process, an offer to it moves on)
 #     scripts/strand.sh revert <merge-sha|name> --reason <text> [--wave <dir>] [--host <lane>]
 #     scripts/strand.sh token take|release|who|check|init|off|lane [options]
 #     scripts/strand.sh candidate <rev> [--lanes a,b,...] [--wave <W>] [--wait-admission]
-#         (build <rev> on every lane under a lease <wave>/candidate:<n> each, in its
-#          own kb-target, sha256 equal -> ~/kb/bin/meclaw-<rev12>; exit 0 EQUAL,
-#          7 UNEQUAL, 6 copy/--version wrong, 5 aborted, 3 queued; GH #1389)
+#         (build <rev> on every lane under a lease <wave>/candidate:<rev12>-<n> each,
+#          back once its lane has built, in its own kb-target, sha256 equal
+#          -> ~/kb/bin/meclaw-<rev12>; no build when a candidate there
+#          differs in no build input: REUSED, #1606; --prune instead of <rev>:
+#          drop candidates no set names, older than 14 days, here and on
+#          the lanes; exit 0 EQUAL, 7 UNEQUAL, 6 copy/--version wrong, 5 aborted,
+#          3 queued; GH #1389)
 #     scripts/strand.sh lanes status [<lane>]
 #     scripts/strand.sh lanes idle-off [--after <h>] [--lane <name>]
 #     scripts/strand.sh lanes release <lane> --run <run> [--by <who>]
@@ -92,11 +97,8 @@
 #     (`befund/04-struktur.md` section 9.2 / 9.5). So the run is archived next
 #     to the wave and `report` fills the header block from the archive.
 #
-# THE VERDICT has three words: GREEN, RED and ASK. ASK (exit 4 of the
-# runner, passed through unchanged) is a question for the owner that the
-# passes raise instead of a silent red; `gate` prints the asking stations,
-# the summary and the runner's question block. `report` and `close` take
-# GREEN only -- answer the question or measure, then report.
+# THE VERDICT: `report` and `close` take GREEN only -- any other summary
+# word (RED, ABORTED, an old receipt's ASK) is fixed and gated again first.
 #
 # THE CARGO TOKEN (`token`) limits how many strands of a wave are in their
 # cargo phase at once. The cargo lock serialises builds, but it does not say
@@ -117,7 +119,8 @@
 #     token init --lanes a,b,c [--ttl MIN]         arm one named token per build lane
 #     token take [--strand S] [--lane NAME]        hold a token (that lane) or join the queue
 #     token take ... --wait                         block until taken (start it in the background;
-#                                                   the queue line says it blocks, it never returns queued)
+#                                                   the queue line says it blocks, it never returns queued;
+#                                                   its place goes with its process: the next take drops it)
 #     token release [--strand S] [--force]         give it back, name the next (a lease of a live
 #                                                   run, a process in the lane tree or a lane that
 #                                                   does not answer stays, exit 3: its end frees it;
@@ -136,7 +139,9 @@
 # TTL and no live process holds it -- a running gate keeps its token as long
 # as it runs. A waiter in its own worktree keeps its place as long as the
 # tree stands (`who` marks it once it waits beyond the TTL); one queued from
-# outside leaves after the TTL. A token or lane free for a waiter is OFFERED
+# outside leaves after the TTL. A waiter that blocks (`take --wait`, `gate
+# --wait-admission`, `merge --wait`) keeps it only as long as a process that
+# blocks on it lives (#1639); one of another host is judged by tree and TTL. A token or lane free for a waiter is OFFERED
 # to it (`who`: `offered <lane> at <time>`); a waiter beyond the TTL that
 # leaves an offer untaken for one poll period (10 min) drops out at the next
 # `take` of another strand, and the offer moves on (GH #1053). `init` and
@@ -295,7 +300,7 @@
 # worktree, whichever tree it was started from.
 #
 # Exit 0 = the step succeeded. `gate` passes the engine's codes through:
-# GREEN 0, RED 1, ABORTED or a refused argument 2, queued 3, ASK 4, a lane
+# GREEN 0, RED 1, ABORTED or a refused argument 2, queued 3, a lane
 # that refuses this tree 5, a store error at the admission 6.
 
 # One group, parsed whole before its first command runs: an in-place edit of this file under a running shell changes nothing that runs (GH #1223).
@@ -1021,9 +1026,7 @@ cmd_gate_legacy() {
     # no refusal (the check stays silent then).
     ! store_armed || cmd_token_store check --pid 0 >/dev/null 2>&1 || true
 
-    # Red and asking stations first, then the summary -- the two things a
-    # report needs. ASK is the runner's third summary word (exit 4): a
-    # question for the owner is open, and it is never green.
+    # Red stations first, then the summary -- the two things a report needs.
     red_lines "$runlog"
     summary=$(grep -E '^GATE-SUMMARY ' "$runlog" | tail -1)
     if [ -z "$summary" ]; then
@@ -1034,14 +1037,8 @@ cmd_gate_legacy() {
     printf '%s\n' "$summary" >"$archive/summary.txt"
     printf '%s\n' "$summary"
     [ "$no_pre" = 0 ] || record_pre_skipped "$archive" "$pre_reason"
-    # The question itself, as the runner printed it after the summary: the
-    # three answers and the `--decide` line. Without it the caller holds an
-    # ASK and has to open the run log to learn what was asked. Printed
-    # whenever the run asked -- a RED run that ALSO asked ("gate: ASK as
-    # well") carries the question too, so one run shows every finding.
-    sed -n '/^gate: ASK/,$p' "$runlog"
-    # The exit goes on unchanged: 4 is the open question, and it must stay
-    # apart from 3 (no cargo token) and from 1 (a station is RED).
+    # The exit goes on unchanged: 3 (no cargo token) stays apart from 1
+    # (a station is RED).
     return "$rc"
 }
 
@@ -1409,6 +1406,25 @@ for k in FIELDS + order:
 open(report, "w").write(
     "---\n" + "\n".join("%s: %s" % (k, head[k]) for k in keys) + "\n---\n" + body)
 
+# w1 antrag (#1602): the merge point's title and review checks, named here
+# instead of at the merge request (OR-54s-16, -35: a title, a verdict line, a
+# heading level each cost a refused request). Notes only -- the review comes
+# after the report, and the report is written either way.
+name = os.path.basename(report)[:-3]
+sfile = os.path.join(os.path.dirname(os.path.dirname(report)), "straenge", name + ".json")
+try:
+    with open(sfile, encoding="utf-8") as fh:
+        sdoc = json.load(fh)
+except (OSError, ValueError):
+    sdoc = {}
+probe = type("Probe", (), {"doc": sdoc if isinstance(sdoc, dict) else {}, "name": name})()
+if not merge.title_ok(probe):
+    print("strand: NOTE %s has no title (empty, or only the strand name) -- the merge "
+          "refuses strand_title_missing" % sfile, file=sys.stderr)
+if not merge.review_approved(body):
+    print("strand: NOTE the merge refuses until the review says yes: %s"
+          % merge.review_problem(body), file=sys.stderr)
+
 if no_strand_run:
     sys.exit("strand: no strand gate in %s -- its runs are of other modes (ci, integration, "
              "release) or name none; run `strand.sh gate` on the head, then report" % no_strand_run)
@@ -1432,14 +1448,10 @@ missing = [f for f in FIELDS
            if not head[f].strip() or head[f].strip() in ('""', "[]")]
 if missing:
     sys.exit("strand: the header block is incomplete: %s" % ", ".join(missing))
-# Only GREEN is green. RED is a finding, ASK an open question for the owner,
-# and any other word is one this reader does not know -- none of them is a
-# gate a report may stand on.
+# Only GREEN is green. RED is a finding, and any other word is one this
+# reader does not know -- none of them is a gate a report may stand on.
 word = head["gate"].strip('"').split()[-1] if head["gate"].strip('"').split() else ""
 if word != "GREEN":
-    if word == "ASK":
-        sys.exit("strand: the gate is ASK, not GREEN -- answer the question "
-                 "or measure, then report")
     sys.exit("strand: the gate is %s, not GREEN -- fix it, run it again, "
              "then report" % (word or "empty"))
 print("strand: %s -- header block complete, gate green" % report)
@@ -1634,7 +1646,7 @@ cmd_gate() {
             # value is never read as one (`--reason --mode`)
             --mode)      need_value "$1" "$#"; modes+=("$2"); shift 2 ;;
             --mode=*)    modes+=("${1#--mode=}"); shift ;;
-            --base|--only|--decide|--host|--reason|--repo|--slots|--holder|--cache)
+            --base|--only|--host|--reason|--repo|--slots|--holder|--cache)
                          need_value "$1" "$#"; args+=("$1" "$2"); shift 2 ;;
             --strand)    need_value "$1" "$#"; strand_in="$2"; shift 2 ;;
             --wave)      need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
@@ -1713,8 +1725,15 @@ cmd_gate() {
     fi
     printf '%s\n' "$summary"
     grep -E '^GATE-LANE ' "$log" | tail -1
-    sed -n '/^gate: ASK/,$p' "$log"
     rm -f "$log"
+    # w1 antrag (#1602): a GREEN gate on a stack (a branch that carries other
+    # strands of the wave) ends with the merge request's verdict, the line
+    # `merge request: ready` or the list of its gaps (`merge --check --if-stack`,
+    # read-only, no lease); the gate's exit stays the gate's.
+    if [ "$mode" = strand ] && [ "${summary##* }" = GREEN ]; then
+        "${KIT_PY[@]}" "$(kit_dir)/pipeline.py" merge --check --if-stack \
+            --strand "$name" --wave "$wdir" || true
+    fi
     return "$rc"
 }
 
@@ -1867,21 +1886,28 @@ cmd_token_store() {
 # worktree changes its tree hash and voids its pre stamp -- d53-1 c2 fix round 1);
 # it comes from `--wave`, the branch or section Live, as for `gate`.
 cmd_candidate() {
-    local args=() wave_in="" rev="" root wave top
+    local args=() wave_in="" rev="" root wave top prune=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --wave)  need_value "$1" "$#"; wave_in="$2"; shift 2 ;;
             --lanes) need_value "$1" "$#"; args+=(--lanes "$2"); shift 2 ;;
             --wait-admission) args+=(--wait-admission); shift ;;
+            --prune) prune=1; shift ;;
             -h|--help) sed -n '/^#     scripts\/strand.sh candidate/,/GH #1389)/p' "$0"; return 0 ;;
             -*) die "candidate: unknown option $1" ;;
             *)  [ -z "$rev" ] || die "candidate: one <rev>, got '$rev' and '$1'"
                 rev="$1"; shift ;;
         esac
     done
-    [ -n "$rev" ] || die "candidate: name the commit (strand.sh candidate <rev>)"
     root=$(main_root) || exit 2
     top=$(git rev-parse --show-toplevel 2>/dev/null) || top="$root"
+    if [ -n "$prune" ]; then
+        [ -z "$rev" ] || die "candidate: --prune takes no <rev>"
+        MECLAW_LANES_CALLER="$$" "${KIT_PY[@]}" "$(pipeline_py)" candidate --prune --repo "$top" \
+            ${args[@]+"${args[@]}"}
+        return
+    fi
+    [ -n "$rev" ] || die "candidate: name the commit (strand.sh candidate <rev>)"
     wave=$(wave_dir "$root/plans" "$wave_in") || exit 2
     MECLAW_LANES_CALLER="$$" "${KIT_PY[@]}" "$(pipeline_py)" candidate "$rev" --wave "$wave" \
         --receipts "$root/plans/$wave/receipts" --repo "$top" ${args[@]+"${args[@]}"}

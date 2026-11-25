@@ -81,6 +81,7 @@ async fn speak_as(
     chunks: usize,
     make: fn() -> Vec<u8>,
 ) -> usize {
+    let len = make().len();
     let mut bytes = 0;
     for n in 0..chunks {
         session
@@ -88,18 +89,12 @@ async fn speak_as(
             .send(make())
             .await
             .expect("the model's audio goes out");
-        let heard = client
-            .collect_until(|f| f.as_audio().is_some(), marker())
-            .await;
-        assert!(
-            heard.iter().any(|(_, f)| f.as_audio().is_some()),
-            "HANG: the caller never heard chunk {n} within {} s",
-            marker().as_secs()
-        );
-        bytes += heard
-            .iter()
-            .filter_map(|(_, f)| f.as_audio().map(<[u8]>::len))
-            .sum::<usize>();
+        // Every byte of chunk n, not its first frame (GH #1588, leser-37b): a
+        // 200-ms chunk leaves as ten 20-ms frames, and a wait on one frame let
+        // the next event overtake the chunks still queued in the connection --
+        // under a 15 % CPU quota 3 of 20 R1 runs hung up with only the first
+        // chunk sent (200 ms heard, "Tomorrow" over the 6-character budget).
+        bytes = hear_all_of(client, bytes, (n + 1) * len).await;
     }
     bytes
 }
@@ -111,8 +106,8 @@ async fn hear_all(client: &mut VoiceClient, heard: usize, chunks: usize) {
     hear_all_of(client, heard, chunk().len() * chunks).await;
 }
 
-/// [`hear_all`] of `all` bytes.
-async fn hear_all_of(client: &mut VoiceClient, mut heard: usize, all: usize) {
+/// [`hear_all`] of `all` bytes; the bytes heard then.
+async fn hear_all_of(client: &mut VoiceClient, mut heard: usize, all: usize) -> usize {
     while heard < all {
         let frames = client
             .collect_until(|f| f.as_audio().is_some(), marker())
@@ -128,6 +123,7 @@ async fn hear_all_of(client: &mut VoiceClient, mut heard: usize, all: usize) {
         );
         heard += got;
     }
+    heard
 }
 
 /// A line whose turns close on the end, a barge-in or the caller's next

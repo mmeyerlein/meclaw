@@ -2186,6 +2186,7 @@ class Classify(unittest.TestCase):
             "scripts.tests.test_precheck_fixed_caps",
             "scripts.tests.test_pipeline_locks",
             "scripts.tests.test_harness_fold",
+            "scripts.tests.test_hive_doors",
             "scripts.tests.test_pipeline_pre",
             "scripts.tests.test_pipeline_cascade_dry",
             "scripts.tests.test_display_sync",
@@ -2315,7 +2316,7 @@ class Classify(unittest.TestCase):
                     st = by_name(gp.plan([path], mode, repo=None))
                     self.assertNotIn("gate-selftest", st)
                     self.assertIn("precheck", st)
-                    self.assertIn(path, st["precheck"].cmds[0])
+                    self.assertIn(path, st["precheck"].paths)
 
     def test_the_pre_run_and_its_locks_are_gate_infrastructure(self):
         """`pre.py` and `locks.py` are what `precheck` and `strand.sh pre`
@@ -2736,36 +2737,47 @@ class Classify(unittest.TestCase):
 
 
 class PersonaStations(unittest.TestCase):
-    """The persona gate (ADR-0029, GH #882): two FREE stations over a committed
-    measurement. The paid or long run is an artefact, never a station."""
+    """The persona suite: ONE free station over the committed suite. The
+    `persona-receipt` station and its question are gone (ADR-0054, GH #1593):
+    no committed report ever existed, so every pass asked."""
 
     PERSONA = "workshop/evals/persona"
 
-    def test_a_prompt_literal_plans_the_receipt_station(self):
-        """A prompt edit re-plans the receipt, not the offline cases."""
-        for p in ("templates/memory-hive/close-glue/config.json",   # INSTRUCTIONS
-                  "templates/memory-hive/schemas/config.json",      # MEMORY_RULES
-                  "templates/collector/assemble/config.json"):      # SIDECAR_PREAMBLE
+    def test_no_mode_plans_a_persona_receipt(self):
+        """ADR-0054 anchor: no diff and no mode plans the receipt station."""
+        paths = ["templates/memory-hive/close-glue/config.json",   # INSTRUCTIONS
+                 "templates/collector/assemble/config.json",       # SIDECAR_PREAMBLE
+                 self.PERSONA + "/scenarios/memory/B6.json",
+                 self.PERSONA + "/last_run.json", "docs/x.md"]
+        for mode in ("strand", "integration", "release", "ci"):
+            for p in paths:
+                with self.subTest(mode=mode, path=p):
+                    self.assertNotIn("persona-receipt", by_name(gp.plan([p], mode, repo=None)))
+        self.assertNotIn("persona-receipt", gp.STATION_ORDER)
+        self.assertNotIn("persona-receipt", gp.STATION_TRIGGERS)
+        self.assertNotIn("persona-receipt", gp.CI_EXCLUDED)
+        self.assertNotIn("persona-receipt", gp.__doc__)
+
+    def test_a_prompt_literal_is_still_a_persona_source(self):
+        """The class stays: `persona-cases` keys its cache on it."""
+        for p in ("templates/memory-hive/close-glue/config.json",
+                  "templates/memory-hive/schemas/config.json",
+                  "templates/collector/assemble/config.json"):
             with self.subTest(path=p):
                 self.assertIn("persona_source", gp.classify([p]))
-                st = by_name(gp.plan([p], "strand", repo=None))
-                self.assertIn("persona-receipt", st)
-                self.assertNotIn("persona-cases", st)
+                self.assertNotIn("persona-cases", by_name(gp.plan([p], "strand", repo=None)))
 
-    def test_an_eval_file_plans_both_stations(self):
+    def test_an_eval_file_plans_the_cases(self):
         p = self.PERSONA + "/scenarios/memory/B6.json"
         self.assertIn("evals_persona", gp.classify([p]))
-        st = by_name(gp.plan([p], "strand", repo=None))
-        self.assertIn("persona-cases", st)
-        self.assertIn("persona-receipt", st)
+        self.assertIn("persona-cases", by_name(gp.plan([p], "strand", repo=None)))
 
-    def test_the_passes_plan_both_for_any_diff(self):
+    def test_the_passes_plan_the_cases_for_any_diff(self):
         for mode in ("integration", "release"):
             with self.subTest(mode=mode):
                 st = by_name(gp.plan(["docs/x.md"], mode, repo=None))
-                for name in ("persona-cases", "persona-receipt"):
-                    self.assertIn(name, st)
-                    self.assertFalse(st[name].cargo)
+                self.assertIn("persona-cases", st)
+                self.assertFalse(st["persona-cases"].cargo)
 
     def test_ci_plans_neither(self):
         """workshop/ does not travel; ci runs on the published tree."""
@@ -2773,9 +2785,8 @@ class PersonaStations(unittest.TestCase):
                  self.PERSONA + "/last_run.json",
                  "templates/memory-hive/close-glue/config.json"]
         names = {s.name for s in gp.plan(paths, "ci", repo=None)}
-        for name in ("persona-cases", "persona-receipt"):
-            self.assertNotIn(name, names)
-            self.assertIn(name, gp.CI_EXCLUDED)
+        self.assertNotIn("persona-cases", names)
+        self.assertIn("persona-cases", gp.CI_EXCLUDED)
 
     def test_neither_persona_station_builds(self):
         paths = [self.PERSONA + "/fingerprint.py", "templates/talky/config.json"]
@@ -2789,7 +2800,7 @@ class PersonaStations(unittest.TestCase):
         p = self.PERSONA + "/last_run.json"
         self.assertNotIn(p, gp.IGNORED)
         self.assertIn("evals_persona", gp.classify([p]))
-        self.assertIn("persona-receipt", by_name(gp.plan([p], "strand", repo=None)))
+        self.assertIn("persona-cases", by_name(gp.plan([p], "strand", repo=None)))
 
     def test_the_hive_is_matched_whole(self):
         for cell in ("extract-glue", "embed", "writer", "tool", "recall", "dream-glue"):
@@ -2857,19 +2868,16 @@ class PersonaStations(unittest.TestCase):
 
     def test_the_stations_run_their_scripts_from_the_suite(self):
         st = by_name(gp.plan(["docs/x.md"], "integration", repo=None))
-        self.assertEqual([["python3", "fingerprint.py", "--check"]],
-                         st["persona-receipt"].cmds)
         self.assertEqual([["python3", "persona_cases.py", "--self-test"],
                           ["python3", "persona_cases.py"]],
                          st["persona-cases"].cmds)
-        for name in ("persona-cases", "persona-receipt"):
-            for cwd in st[name].cwds:
-                self.assertEqual(self.PERSONA, cwd, name)
+        for cwd in st["persona-cases"].cwds:
+            self.assertEqual(self.PERSONA, cwd)
 
     def test_the_persona_stations_run_before_the_export_stations(self):
         names = [s.name for s in gp.plan(["docs/x.md"], "release", repo=None)]
         order = ["recall-harness", "deny-advisories", "persona-cases",
-                 "persona-receipt", "export-selftest", "export-audit"]
+                 "export-selftest", "export-audit"]
         idx = [names.index(n) for n in order]
         self.assertEqual(sorted(idx), idx, names)
 
@@ -2878,7 +2886,6 @@ class PersonaStations(unittest.TestCase):
         self.assertIn("    persona_source ", register)
         self.assertIn("    evals_persona ", register)
         self.assertIn("    persona-cases ", stations)
-        self.assertIn("    persona-receipt ", stations)
 
     def test_nested_scenarios_are_counted(self):
         """N may put the scenarios in block sub-folders."""
@@ -2910,12 +2917,33 @@ class Precheck(unittest.TestCase):
             self.assertFalse(st[0].cargo, mode)
         self.assertEqual("precheck", gp.STATION_ORDER[0])
 
-    def test_it_carries_the_diff_on_its_argv(self):
-        """The runner runs every station with stdin closed, so `--files` it is."""
+    def test_it_carries_the_diff_beside_its_argv(self):
+        """The runner runs every station with stdin closed, and the argv has a
+        ceiling: the paths ride on the station, the argv names the list file
+        the executor writes for them (`{paths}`)."""
         paths = ["crates/meclaw-core/src/lib.rs", "docs/x.md"]
         st = by_name(gp.plan(paths, "strand", repo=None))
-        self.assertEqual([["python3", "scripts/precheck.py", "--files"] + sorted(paths)],
+        self.assertEqual([["python3", "scripts/precheck.py", "--files-from", gp.PATHS_FILE]],
                          st["precheck"].cmds)
+        self.assertEqual(sorted(paths), list(st["precheck"].paths))
+
+    def test_an_export_sized_diff_never_reaches_the_argv(self):
+        """#1520, finding 2 of the d54s integration pass: the diff against the
+        export base held tens of thousands of paths, and `precheck.py --files
+        <paths>` died at exec (E2BIG, "Argument list too long"). The JSON row
+        keeps the command short and hands every path on beside it."""
+        paths = ["docs/gen/f%05d.md" % i for i in range(60000)]
+        st = gp.precheck_station(paths)
+        self.assertEqual([["python3", "scripts/precheck.py", "--files-from", gp.PATHS_FILE]],
+                         st.cmds)
+        self.assertLess(len(" ".join(st.cmds[0])), 200)
+        self.assertEqual(paths, list(st.paths))
+        # the JSON row the pipeline plans from carries them beside the command
+        small = ["crates/meclaw-core/src/lib.rs", "docs/x.md"]
+        row = next(r for r in gp.to_json(small, "integration")["stations"]
+                   if r["name"] == "precheck")
+        self.assertEqual(st.cmds[0], row["cmd"])
+        self.assertEqual(small, row["paths"])
 
     def test_an_empty_diff_plans_no_precheck(self):
         self.assertNotIn("precheck", {s.name for s in gp.plan([], "strand", repo=None)})
@@ -5092,8 +5120,9 @@ class Explain(unittest.TestCase):
 
     # `parallel` is a plan key (V0 section 4, rendered since W7), not an explain key:
     # `browser:display` is the first station to carry it (GH #1161).
+    # `paths`: the list beside a command that names `gp.PATHS_FILE` (#1520)
     LEGACY_KEYS = {"name", "scope", "cargo", "cmd", "cwd", "cmds", "cwds", "run", "env",
-                   "parallel"}
+                   "parallel", "paths"}
 
     def test_json_without_explain_keeps_the_legacy_keys(self):
         repo = mini_repo(self)

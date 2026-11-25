@@ -363,6 +363,132 @@ class TestToken(TokenTestCase):
         self.assertEqual([], self.waiting())
         self.assertIn("\tstale-wait\twelle-x/w", self.log())
 
+    # --- w2 batchgolden (#1639): the place of a blocking waiter whose process ended ---
+
+    def blocked_then_dead(self, *args, cwd=None, minutes=0):
+        """One round of `take --wait` in a process of its own, which then ends:
+        what a killed waiter leaves behind. Returns its pid."""
+        code = ("import json, os, sys; sys.path.insert(0, sys.argv[1]); "
+                "from scripts.pipeline import schedule; "
+                "code, out, err = schedule._run_once(json.loads(sys.argv[2]), "
+                "json.loads(sys.argv[3]), sys.argv[4]); sys.stdout.write(str(os.getpid())); "
+                "sys.stderr.write(err); sys.exit(code)")
+        res = subprocess.run(
+            [sys.executable, "-c", code, str(REPO), json.dumps(["take"] + list(args) + ["--wait"]),
+             json.dumps(self.env(minutes)), str(cwd or self.main)],
+            capture_output=True, text=True, timeout=2 * kit_time.HANG)
+        self.assertEqual(3, res.returncode, res.stderr)
+        return int(res.stdout)
+
+    def test_the_place_of_a_waiter_whose_process_ended_goes_with_the_next_take(self):
+        """24.11., build03: the queue row of an ended process (`w2/candidate:2`)
+        held the lane as an offer from 16:05 to 16:35 and was released by hand.
+        Its tree stood (a tree never counts as gone while it stands), so no
+        rule took the place away."""
+        self.lanes_file.write_text(LANES_FILE)
+        self.arm("--lanes", "north,south")
+        self.take_lane("welle-x/a", "north")
+        self.take_lane("welle-x/b", "south")
+        pid = self.blocked_then_dead("--lane", "north", cwd=self.tree, minutes=1)
+        self.assertEqual(["%s/kit" % WAVE], self.waiting())
+        self.assertEqual(3, self.take_lane("welle-x/c", "south", minutes=2).returncode)
+        res = self.take_lane("welle-x/d", "south", minutes=2)
+        self.assertEqual(["welle-x/c", "welle-x/d"], self.waiting(), res.stderr)
+        self.assertIn("\tstale-wait\t%s/kit\tmaster\tits waiting process (pid %d) is gone"
+                      % (WAVE, pid), self.log())
+
+    def test_an_offer_to_a_waiter_whose_process_ended_moves_on(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.blocked_then_dead(cwd=self.tree, minutes=1)
+        self.token("release", "--strand", "welle-x/a", minutes=2)
+        offered = [e["holder"] for e in self.events("lease_offered")]
+        self.assertEqual(["%s/kit" % WAVE], offered, "the release offers to the oldest place")
+        self.assertIn("STALE: its waiting process (pid", self.token("who", minutes=3).stdout)
+        res = self.take("welle-x/c", minutes=3)
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual(["welle-x/c"], self.holders())
+        self.assertEqual([], self.waiting())
+
+    def test_a_blocking_waiter_that_lives_keeps_its_place(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        code, _, err = schedule._run_once(["take", "--wait"], self.env(1), str(self.tree))
+        self.assertEqual(3, code, err)
+        self.assertEqual(3, self.take("welle-x/c", minutes=2).returncode)
+        self.token("release", "--strand", "welle-x/a", minutes=3)
+        self.assertEqual(3, self.take("welle-x/c", minutes=4).returncode)
+        self.assertEqual(["%s/kit" % WAVE, "welle-x/c"], self.waiting())
+
+    def test_a_second_waiter_that_ends_leaves_the_place_to_the_one_that_lives(self):
+        # Review I1: two `take --wait` of one strand (a double start), one ends.
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        code, _, err = schedule._run_once(["take", "--wait"], self.env(1), str(self.tree))
+        self.assertEqual(3, code, err)
+        self.blocked_then_dead(cwd=self.tree, minutes=2)
+        self.assertEqual(3, self.take("welle-x/c", minutes=3).returncode)
+        self.assertEqual(["%s/kit" % WAVE, "welle-x/c"], self.waiting())
+
+    def test_a_waiter_of_another_host_is_judged_as_one_without_a_process(self):
+        # Review M3: a pid of another host or PID namespace says nothing here.
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.blocked_then_dead(cwd=self.tree, minutes=1)
+        with self._db() as db:
+            self.assertEqual(1, db.execute(
+                "UPDATE lease_waiters SET host = 'elsewhere pid:[1]'").rowcount)
+            db.commit()
+        self.assertEqual(3, self.take("welle-x/c", minutes=2).returncode)
+        self.assertEqual(["%s/kit" % WAVE, "welle-x/c"], self.waiting())
+
+    def test_a_place_without_a_process_stays_as_it_was(self):
+        """Fail-closed: `take` without `--wait` ends at once and another process
+        of the strand comes back for the offer -- its place carries no pid, also
+        where a blocking waiter of the strand stood before it."""
+        for before in (False, True):
+            with self.subTest(a_blocking_waiter_before=before):
+                self.arm("--max", "1", "--force")
+                self.take("welle-x/a")
+                if before:
+                    self.blocked_then_dead(cwd=self.tree, minutes=1)
+                self.assertEqual(3, self.take(None, cwd=self.tree, minutes=2).returncode)
+                self.assertEqual(3, self.take("welle-x/c", minutes=3).returncode)
+                self.token("release", "--strand", "welle-x/a", minutes=4)
+                self.assertEqual(3, self.take("welle-x/c", minutes=5).returncode)
+                self.assertEqual(["%s/kit" % WAVE, "welle-x/c"], self.waiting())
+
+    def test_a_pid_that_belongs_to_another_process_now_is_a_gone_waiter(self):
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        code, _, err = schedule._run_once(["take", "--wait"], self.env(1), str(self.tree))
+        self.assertEqual(3, code, err)
+        with self._db() as db:    # the kernel gave the pid (this process) out again
+            n = db.execute("UPDATE lease_waiters SET start = start || '0' WHERE pid = ?",
+                           (os.getpid(),)).rowcount
+            db.commit()
+        self.assertEqual(1, n)
+        self.assertEqual(3, self.take("welle-x/c", minutes=2).returncode)
+        self.assertEqual(["welle-x/c"], self.waiting())
+
+    def test_an_older_core_that_rewrites_the_queue_keeps_the_waiters_process(self):
+        """Several core versions share the store: an older `_save` rewrites
+        `lease_entries` whole -- the process stands in a table it never touches."""
+        self.arm("--max", "1")
+        self.take("welle-x/a")
+        self.blocked_then_dead(cwd=self.tree, minutes=1)
+        with self._db() as db:
+            rows = [tuple(r) for r in db.execute(
+                "SELECT pool, holder, resource, want, since, seen, '[]', tree, offered, offered_at, "
+                "ttl_min, run FROM lease_entries ORDER BY seq")]
+            db.execute("DELETE FROM lease_entries")
+            db.executemany("INSERT INTO lease_entries (pool, holder, resource, want, since, seen, "
+                           "pids, tree, offered, offered_at, ttl_min, run) VALUES "
+                           "(?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            db.commit()
+        self.assertEqual(3, self.take("welle-x/c", minutes=2).returncode)
+        self.assertEqual(["welle-x/c"], self.waiting())
+
     def test_a_waiter_with_a_live_worktree_never_expires(self):
         self.arm("--max", "1")
         self.take("welle-x/a")
@@ -1232,6 +1358,80 @@ class TestTokenLanes(TokenTestCase):
         res = self.token("offer", minutes=5)
         self.assertEqual(0, res.returncode, res.stderr)
         self.assertEqual("welle-x/d  lane south  offered at %s\n" % self.utc(4), res.stdout)
+
+
+
+class TestLeaseKeyCarriesTheRepo(TokenTestCase):
+    """w1 leaseklar (#1620, OR-W1-93): the lease key names the repository. A soul2me
+    strand on branch `w1-fix/fehlerwort` (key `w1/fehlerwort` by `--strand`) and the
+    core strand `w1/fehlerwort` shared one lease: the satellite's lane lease blocked
+    the core strand 104 min. The core's key stays as it was; a satellite's is
+    `<repo>@<key>` (the rule of `schedule.lane_tree_name`)."""
+
+    def setUp(self):
+        super().setUp()
+        self.lanes_file.write_text(LANES_FILE)
+        # a FakeLane host does not exist: its lane tree holds no process
+        self.addCleanup(setattr, schedule, "_lane_tree_probe", schedule._lane_tree_probe)
+        schedule._lane_tree_probe = lambda ln: []
+        self.core = git_repo(self.tmp / "core", "w1/fehlerwort")
+        self.sat = git_repo(self.tmp / "sat", "w1/fehlerwort")
+        (self.sat / "pipeline").mkdir()
+        (self.sat / "pipeline" / "stations.json").write_text(json.dumps({"repo": "soul2me"}))
+
+    def test_two_repositories_with_one_strand_name_hold_two_leases(self):
+        self.arm("--lanes", "north,south")
+        res = self.token("take", "--lane", "north", cwd=self.sat)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        res = self.token("take", "--lane", "south", cwd=self.core)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual(["soul2me@w1/fehlerwort", "w1/fehlerwort"], self.holders())
+        self.assertEqual(["lane:north", "lane:south"], self.holder_lanes())
+
+    def test_the_key_rule_names_a_satellite_and_keeps_the_core(self):
+        from scripts.pipeline import gate
+        self.assertEqual("w1/fehlerwort", schedule.repo_key(schedule.CORE_REPO, "w1/fehlerwort"))
+        self.assertEqual("soul2me@w1/fehlerwort", schedule.repo_key("soul2me", "w1/fehlerwort"))
+        self.assertEqual("soul2me@w1/a:2", schedule.repo_key("soul2me", "w1/a:2"))
+        self.assertEqual("soul2me@w1/a", schedule.repo_key("soul2me", "soul2me@w1/a"))
+        self.assertEqual("", schedule.repo_key("soul2me", ""))
+        self.assertEqual("soul2me@w1/fehlerwort", gate.holder_key(str(self.sat), None, None))
+        self.assertEqual("w1/fehlerwort", gate.holder_key(str(self.core), None, None))
+        self.assertEqual("soul2me@w1/fehlerwort:2", gate.holder_key(str(self.sat), None, None, "2"))
+
+    def test_a_lease_without_the_repo_stays_releasable_from_its_tree(self):
+        # several kit versions share the store: a satellite lease taken by an
+        # older kit carries the bare key and the satellite's tree
+        self.arm("--lanes", "north,south")
+        db = schedule.store.open(str(self.db_path))
+        try:
+            res = schedule.lease_take(db, "w1/fehlerwort", lane="north", tree=str(self.sat),
+                                      now=self.T0)
+        finally:
+            db.close()
+        self.assertEqual(0, res.code, res.err)
+        # fix round 1: gate/test/pre find that lease as the token verbs do
+        from scripts.pipeline import gate
+        db = schedule.store.open(str(self.db_path))
+        try:
+            self.assertEqual("w1/fehlerwort", gate.holder_key(str(self.sat), None, None, db=db))
+            self.assertEqual("w1/fehlerwort", gate.holder_key(str(self.core), None, None, db=db))
+        finally:
+            db.close()
+        res = self.token("who")
+        self.assertIn("w1/fehlerwort  lane north", res.stdout)
+        res = self.token("release", cwd=self.sat)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertEqual([], self.holders())
+
+    def test_a_core_lease_of_the_same_name_is_not_the_satellites(self):
+        self.arm("--lanes", "north,south")
+        res = self.token("take", "--lane", "north", cwd=self.core)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        res = self.token("release", cwd=self.sat)
+        self.assertEqual(0, res.returncode, res.stdout + res.stderr)
+        self.assertIn("nothing to release", res.stderr)
+        self.assertEqual(["w1/fehlerwort"], self.holders())
 
 
 class FakeLane:

@@ -32,7 +32,7 @@ fn head() -> Value {
 }
 
 fn no_state() -> Value {
-    json!({"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}})
+    json!({"escalated": "", "ask_pending": {}})
 }
 
 fn verdict(knobs: Value, path: &str) -> (Value, String) {

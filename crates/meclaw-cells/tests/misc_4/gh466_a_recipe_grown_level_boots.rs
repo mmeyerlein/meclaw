@@ -476,9 +476,10 @@ fn rendered_levels() -> Vec<Value> {
                 "the fast lane refused a level it is supposed to render: {out}"
             );
             let decls = out["manifest"].as_array().expect("a manifest").clone();
+            // GH #1597: a member wish carries the screen's member half as a fourth.
             assert_eq!(
                 decls.len(),
-                if member { 3 } else { 1 },
+                if member { 4 } else { 1 },
                 "the level is not the declaration this manifest leads with: {decls:?}"
             );
             decls[0].clone()

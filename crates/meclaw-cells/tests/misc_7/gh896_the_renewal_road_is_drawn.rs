@@ -326,6 +326,41 @@ fn gh1534_first_audio_crosses_the_freeswitch_rim() {
     );
 }
 
+/// #1637: the `audio_report` of a phone call (templates/voice,
+/// `emit_audio_report`) crosses the rim of the freeswitch hive on the same edge
+/// and declared the same way as `first_audio` (#1534); the leg beyond it is the
+/// set's that orders the report.
+#[test]
+fn gh1637_audio_report_crosses_the_freeswitch_rim() {
+    if !shipped() {
+        eprintln!("the templates of this road did not travel into this tree -- skipped (GH #49)");
+        return;
+    }
+    let ctx = obj(json!({"session_id": "call-9", "call_id": "call-9",
+                         "phone_call": "call-9", "phone_origin": "signal"}));
+    let of = |route: &str| {
+        obj(
+            json!({"route": route, "session_id": "call-9", "call_id": "call-9",
+                   "platform": "voice", "mode": "auto", "engine": "duplex"}),
+        )
+    };
+    let reference = one("freeswitch", "./voice", ".", &ctx, &of("first_audio"));
+    let h = one("freeswitch", "./voice", ".", &ctx, &of("audio_report"));
+    assert_eq!(
+        h.hop,
+        of("audio_report"),
+        "the hop crosses the rim untouched"
+    );
+    assert_eq!(
+        h.context, reference.context,
+        "the rim strips the hive's own keys exactly as on `first_audio`"
+    );
+    assert!(
+        emits_of("freeswitch").contains(&"audio_report".to_string()),
+        "the freeswitch contract declares the lane it lets out"
+    );
+}
+
 /// live-2 fx-call (#1369): the end of a call reaches the curator and its
 /// facts come back out of the generation. Up: the member hands the final
 /// `usage` to the generation as `in_call_end` (the satz's edge) -> the

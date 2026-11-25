@@ -641,7 +641,7 @@ fn the_talky_lifts_the_refusal_onto_every_model_call() {
     seen.dedup();
     assert_eq!(
         seen,
-        vec!["./brain", "./quick", "./quick_bridge", "./quick_spec"],
+        vec!["./brain", "./quick", "./quick_bridge"],
         "every speaking cell's call edge"
     );
 }

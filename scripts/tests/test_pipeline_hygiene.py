@@ -584,6 +584,47 @@ class TestEvictCollect(HygieneTestBase):
         self.assertEqual(n, 1)
         self.assertFalse(os.path.exists(cov))
 
+    def test_check_clears_its_own_target_last_when_that_reaches_the_need(self):
+        # w1 leaseklar (#1620): with --own-last the run's own target goes after
+        # every other one, only when free + its size reach reserve + expected.
+        tree = os.path.join(self.root, "tree")
+        tgt = self.make_target("target", 40, 9000)
+        other = self.make_target("slot/1/target", 5, 100)
+        self.disk.cap_g = 130.0  # free 85 < 60 + 35; without the own target 90, with it 130
+        argv = ["check", "--root", self.root, "--reserve-g", "60", "--expected-g", "35",
+                "--own-tree", tree, "--own-target", tgt, "--own-last", "35"]
+        self.assertEqual(0, hygiene.main(argv, ctx=self.ctx))
+        self.assertFalse(os.path.exists(tgt))
+        self.assertFalse(os.path.exists(other))
+        self.assertIn("own-target-evicted", self.err.getvalue() + self.out.getvalue())
+
+    def test_check_keeps_its_own_target_when_even_that_falls_short(self):
+        tree = os.path.join(self.root, "tree")
+        tgt = self.make_target("target", 10, 9000)
+        self.disk.cap_g = 90.0  # free 80; with the own target 90 < 60 + 35
+        argv = ["check", "--root", self.root, "--reserve-g", "60", "--expected-g", "35",
+                "--own-tree", tree, "--own-target", tgt, "--own-last", "35"]
+        self.assertEqual(2, hygiene.main(argv, ctx=self.ctx))
+        self.assertTrue(os.path.exists(tgt))
+
+    def test_check_clears_its_own_warm_target_only_against_the_cold_need(self):
+        # w1 leaseklar (#1620, fix round 1): a warm target books its growth (15 G);
+        # cleared, the run builds cold (35 G). free + it reaching the warm need
+        # (60 + 15) but not the cold one (60 + 35) keeps it -- the run aborts as
+        # before instead of tearing the reserve; reaching the cold one clears it.
+        tree = os.path.join(self.root, "tree")
+        argv = ["check", "--root", self.root, "--reserve-g", "60", "--expected-g", "15",
+                "--own-tree", tree, "--own-target", None, "--own-last", "35"]
+        for rel, size, gone, rc in (("target", 10, False, 2), ("slot/1/target", 30, True, 0)):
+            with self.subTest(size=size):
+                tgt = self.make_target(rel, size, 9000)
+                self.disk.cap_g = 70.0 + size  # free 70 < 75; with it 80 (warm only) / 100
+                argv[argv.index("--own-target") + 1] = tgt
+                self.assertEqual(rc, hygiene.main(argv, ctx=self.ctx))
+                self.assertEqual(gone, not os.path.exists(tgt))
+                if os.path.exists(tgt):
+                    shutil.rmtree(tgt)
+
     def test_check_keeps_the_lane_target_it_is_told_to_keep(self):
         # W2 review C1: since W1 the build path is root/tree, the run's
         # target is root/target -- a check short on room must not wipe it.
@@ -1748,6 +1789,112 @@ class KitCpuSource(unittest.TestCase):
                               "scripts/pipeline/wide.py:6 topology path joined outside cpus.py",
                               "scripts/tests/test_x.py:5 cpu_count() outside cpus.threads"],
                              sorted(cpu_source_findings(tmp)))
+
+
+
+class TestEvictRankAndWtPrune(HygieneTestBase):
+    """GH #1520 / d54s lanekit: evict ranks before age (the warm main target/
+    goes last, worktree copies of merged strands first), and `wt-prune`
+    removes the `wt/<name>` copy and `lane/<name>` ref of merged or closed
+    strands only."""
+
+    def git(self, *args):
+        return subprocess.run(["git"] + list(args), check=True, capture_output=True,
+                              text=True, env=dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull,
+                                                  GIT_CONFIG_NOSYSTEM="1")).stdout.strip()
+
+    def make_bare(self):
+        """A bare repo with master and three lane refs: `merged` and `leased`
+        are ancestors of master, `open` is a commit master does not hold."""
+        work = os.path.join(self.tmp, "work")
+        os.makedirs(work)
+        self.git("-C", work, "init", "-q", "-b", "master")
+        ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        self.git("-C", work, *ident, "commit", "-q", "--allow-empty", "-m", "base")
+        base = self.git("-C", work, "rev-parse", "HEAD")
+        self.git("-C", work, *ident, "commit", "-q", "--allow-empty", "-m", "on master")
+        self.git("-C", work, "checkout", "-q", "-b", "side", base)
+        self.git("-C", work, *ident, "commit", "-q", "--allow-empty", "-m", "open work")
+        side = self.git("-C", work, "rev-parse", "HEAD")
+        bare = os.path.join(self.root, "meclaw.git")
+        self.git("clone", "-q", "--bare", work, bare)
+        for name, sha in (("merged", base), ("leased", base), ("open", side)):
+            self.git("--git-dir=" + bare, "update-ref", "refs/heads/lane/" + name, sha)
+        return bare
+
+    def lane_refs(self, bare):
+        out = self.git("--git-dir=" + bare, "for-each-ref", "--format=%(refname)",
+                       "refs/heads/lane/")
+        return sorted(out.split())
+
+    def test_evict_takes_the_warm_main_target_last(self):
+        main = self.make_target("target", 30, 9000)       # the oldest by far
+        slot = self.make_target("slot/1/target", 30, 5000)
+        cov = self.make_target("coverage/target", 30, 100)
+        self.disk.cap_g = 60 + 35 + 90 - 30               # free 65 < 95, one removal suffices
+        n = hygiene.evict(self.ctx, need_g=35)
+        self.assertEqual(1, n)
+        self.assertTrue(os.path.exists(main), "the warm main target/ goes last")
+        self.assertFalse(os.path.exists(slot))
+        self.assertTrue(os.path.exists(cov))
+
+    def test_evict_prunes_worktree_copies_of_merged_strands_first(self):
+        bare = self.make_bare()
+        main = self.make_target("target", 30, 9000)
+        merged = os.path.join(self.root, "wt", "merged")
+        self.disk.add(merged, 30)
+        self.disk.cap_g = 60 + 35 + 60 - 20               # free 75 < 95; the wt copy suffices
+        hygiene.evict(self.ctx, need_g=35)
+        self.assertFalse(os.path.exists(merged))
+        self.assertTrue(os.path.exists(main))
+        self.assertNotIn("refs/heads/lane/merged", self.lane_refs(bare))
+
+    def test_wt_prune_removes_only_the_merged_strand_and_its_ref(self):
+        bare = self.make_bare()
+        for name in ("open", "merged", "leased"):
+            os.makedirs(os.path.join(self.root, "wt", name))
+        tgt = self.make_target("target", 10, 100)
+        lock = os.path.join(self.root, "wt", "leased.lock")
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        self.addCleanup(os.close, fd)
+        dry = hygiene.wt_prune(self.make_ctx(dry_run=True))
+        self.assertEqual(["merged"], [r["name"] for r in dry])
+        self.assertIn("bytes", dry[0])
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "wt", "merged")))
+        done = hygiene.wt_prune(self.ctx)
+        self.assertEqual(["merged"], [r["name"] for r in done])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "wt"))),
+                         ["leased", "leased.lock", "open"])
+        self.assertEqual(["refs/heads/lane/leased", "refs/heads/lane/open"], self.lane_refs(bare))
+        self.assertTrue(os.path.exists(tgt), "never a target")
+        # a closed strand the caller names goes too; a kept (leased) one never
+        closed = hygiene.wt_prune(self.ctx, done=["open", "leased"], keep=["leased"])
+        self.assertEqual(["open"], [r["name"] for r in closed])
+        self.assertEqual([], hygiene.wt_prune(self.ctx, done=["open"]), "the second run removes nothing")
+
+    def test_wt_prune_keeps_a_strand_at_the_master_tip(self):
+        """A lane ref at master's own commit has nothing of its own: a fresh strand,
+        not a merged one (`strand.sh merge` merges --no-ff, a merged strand is a
+        strict ancestor). The d54s stack pruned every tree of a fresh strand under
+        disk pressure -- the GH #1199 pin lost orga's tree to coding's gate."""
+        bare = self.make_bare()
+        tip = self.git("--git-dir=" + bare, "rev-parse", "refs/heads/master")
+        self.git("--git-dir=" + bare, "update-ref", "refs/heads/lane/fresh", tip)
+        os.makedirs(os.path.join(self.root, "wt", "fresh"))
+        done = hygiene.wt_prune(self.ctx)
+        self.assertNotIn("fresh", [r["name"] for r in done])
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "wt", "fresh")))
+        self.assertIn("refs/heads/lane/fresh", self.lane_refs(bare))
+
+    def test_wt_prune_is_a_verb(self):
+        self.make_bare()
+        os.makedirs(os.path.join(self.root, "wt", "merged"))
+        self.assertEqual(0, hygiene.main(["wt-prune", "--root", self.root, "--dry-run"], ctx=self.make_ctx(dry_run=True)))
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "wt", "merged")))
+        self.assertIn('"name": "merged"', self.out.getvalue())
+        self.assertEqual(0, hygiene.main(["wt-prune", "--root", self.root], ctx=self.ctx))
+        self.assertFalse(os.path.isdir(os.path.join(self.root, "wt", "merged")))
 
 
 if __name__ == "__main__":

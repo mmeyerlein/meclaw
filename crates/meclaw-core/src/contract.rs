@@ -4,6 +4,7 @@
 //! with the `jsonschema` crate (already a dependency; same engine as the UBF
 //! validator in `schema.rs`). The `jsonschema` dependency is encapsulated here.
 
+use jsonschema::error::ValidationErrorKind;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -376,18 +377,92 @@ fn split_content(content: &Value) -> (Value, Value) {
     (header, Value::Object(body))
 }
 
+/// GH #1353 (OR-w2.tuer.1): whether an emission is the shared answer to a params
+/// push (`meclaw_cells::params_overlay::ParamsPush`).
+///
+/// Both words count, each against a closed value: `operation` alone is what a
+/// cell names its work with, and an unknown `params_answer` is nobody's answer.
+/// So does the body: the answer says nothing but its detail, so an emission that
+/// names itself an answer and carries work beside it owes what its work owes --
+/// a `code` script writes its own hop and has no overlay to answer for.
+fn is_params_answer(hop: &Value, body: &Value) -> bool {
+    let word = |key: &str| hop.get(key).and_then(Value::as_str);
+    matches!(
+        word("params_answer"),
+        Some("params_applied" | "params_refused")
+    ) && word("operation") == Some("params_update")
+        && body.as_object().is_some_and(|slots| {
+            slots.iter().all(|(slot, v)| match slot.as_str() {
+                "messages" => v.as_array().is_some_and(Vec::is_empty),
+                "meta" => v
+                    .as_object()
+                    .is_some_and(|m| m.keys().all(|k| k == "detail")),
+                _ => false,
+            })
+        })
+}
+
+/// GH #1353: the lane a params-only update travels on.
+pub const PARAMS_LANE: &str = "in_params";
+
+/// GH #1353: whether a message stands on [`PARAMS_LANE`].
+pub fn on_params_lane(headers: &crate::Headers) -> bool {
+    headers.hop.get("route").and_then(Value::as_str) == Some(PARAMS_LANE)
+}
+
+/// GH #1353: why a body is no params-only update; `None` when it is one.
+///
+/// One rule for the ingress check below and for the cells that take an update:
+/// `params` is an object, beside it stand at most an empty `messages` and an
+/// empty `system`. The lane crosses every seal by its door, so whatever else it
+/// carried would be work nobody behind the seal agreed to take. The reason names
+/// slots, never a value.
+pub fn params_only_fault(body: &Value) -> Option<&'static str> {
+    let Some(slots) = body.as_object() else {
+        return Some("the body is not a JSON object");
+    };
+    for (slot, v) in slots {
+        let empty = v.as_array().is_some_and(Vec::is_empty)
+            || (slot == "system" && v.as_object().is_some_and(|o| o.is_empty()));
+        match slot.as_str() {
+            "params" if v.is_object() => {}
+            "params" => return Some("params slot: not a JSON object"),
+            "messages" if empty => {}
+            "messages" => return Some("`messages` is not empty"),
+            "system" if empty => {}
+            "system" => return Some("`system` is not empty"),
+            _ => return Some("a body slot beside `params`"),
+        }
+    }
+    (!slots.contains_key("params")).then_some("no `params` slot")
+}
+
 /// Validate a cell emission `content` against its compiled `emits` contract.
 /// Checks BOTH the body slots and the hop section (config.md l.78). The wire
 /// section key stays `header`; the contract compartment it maps to is `hop`
 /// (cells only emit hop).
 /// Returns `Err` with a `body:`/`hop:`-prefixed, semicolon-joined message.
+///
+/// GH #1353 (OR-w2.tuer.1): on the shared answer to a params push the
+/// **presence** of required keys is not checked. A template's `emits` describes
+/// the cell's work -- a timer's `event_id`, an llm's `finish_reason` -- and the
+/// answer is none: it is written by the overlay module in one form for all nine
+/// types, so every contract would have to mark its own keys optional and stop
+/// guarding the work. Dropped as a `contract_violation`, the answer would leave
+/// the sender without one. Types and value lists of declared keys still hold.
 pub fn validate_emits(content: &Value, compiled: &CompiledEmits) -> Result<(), String> {
     let (hop_val, body_val) = split_content(content);
+    let exempt = is_params_answer(&hop_val, &body_val);
+    // The schemas are flat, so a `Required` error is always a missing key of
+    // the section itself (`optional_on_route`'s `else` included).
+    let counts = |e: &jsonschema::ValidationError<'_>| {
+        !(exempt && matches!(e.kind, ValidationErrorKind::Required { .. }))
+    };
     let mut errs: Vec<String> = Vec::new();
-    for e in compiled.body.iter_errors(&body_val) {
+    for e in compiled.body.iter_errors(&body_val).filter(counts) {
         errs.push(format!("body: {e}"));
     }
-    for e in compiled.hop.iter_errors(&hop_val) {
+    for e in compiled.hop.iter_errors(&hop_val).filter(counts) {
         errs.push(format!("hop: {e}"));
     }
     if errs.is_empty() {
@@ -482,6 +557,13 @@ impl CompiledConsumes {
     }
 }
 
+/// GH #1353 (OR-w2.tuer.3): whether a message is a params-only update -- on
+/// [`PARAMS_LANE`], in the form [`params_only_fault`] holds. Both count: the lane
+/// alone names no update, and a `params` slot beside work owes what the work owes.
+fn is_params_update(body: &Value, headers: &crate::Headers) -> bool {
+    on_params_lane(headers) && params_only_fault(body).is_none()
+}
+
 /// Substrate-side ingress check (config.md § consumes, l.135-138): every
 /// `required: true` key must be present with the declared type — `body` keys
 /// against the inline body's top-level slots, `context`/`hop` against the
@@ -489,12 +571,19 @@ impl CompiledConsumes {
 /// compartment + key on the FIRST violation. Type tokens:
 /// string|number|boolean|object|array|blob_uuid (blob_uuid = string parsing
 /// as UUID).
+///
+/// GH #1353 (OR-w2.tuer.3): the mirror of [`validate_emits`] -- a params-only
+/// update owes no required `body` key. `consumes` describes the cell's work (a
+/// store's `messages`), and the update is none: refused here it would end as a
+/// dead letter before the cell could answer it. The type of a key that is there
+/// still holds, and so do `context` and `hop`.
 pub fn validate_consumes(
     body: &serde_json::Value,
     headers: &crate::Headers,
     compiled: &CompiledConsumes,
 ) -> Result<(), String> {
     let body_map = body.as_object();
+    let exempt = is_params_update(body, headers);
     for (key, ty) in &compiled.body {
         match body_map.and_then(|m| m.get(key)) {
             Some(v) if type_matches(v, ty) => {}
@@ -503,6 +592,7 @@ pub fn validate_consumes(
                     "consumes.body '{key}' has wrong type (expected {ty})"
                 ));
             }
+            None if exempt => {}
             None => return Err(format!("required consumes.body '{key}' missing")),
         }
     }
@@ -743,6 +833,112 @@ mod tests {
         );
     }
 
+    /// What a shipped `timer` owes on every emission, plus a body slot.
+    fn timer_compiled() -> CompiledEmits {
+        let emits: EmitsBlock = serde_json::from_str(
+            r#"{"body": {"messages": {"type":"array"}, "fired": {"type":"object"}},
+                "hop": {"event_id": {"type":"string"}, "schedule_id": {"type":"string"},
+                        "error_code": {"type":"string","required":false,
+                                       "values":["invalid_input"]}}}"#,
+        )
+        .unwrap();
+        CompiledEmits::compile(&emits).unwrap()
+    }
+
+    /// GH #1353 (OR-w2.tuer.1): the shared answer to a params push owes none of
+    /// the keys the cell owes on its WORK -- hop and body alike.
+    #[test]
+    fn gh1353_a_params_answer_owes_no_required_key() {
+        let timer = timer_compiled();
+        // An llm's applied answer has no `finish_reason`: nothing was called.
+        let llm: EmitsBlock = serde_json::from_str(
+            r#"{"body": {}, "hop": {"finish_reason": {"type":"string","values":["stop","error"],
+                                    "optional_on_route":["credential_request"]},
+                                    "model": {"type":"string"}}}"#,
+        )
+        .unwrap();
+        let llm = CompiledEmits::compile(&llm).unwrap();
+        for (what, c) in [("timer", &timer), ("llm", &llm)] {
+            for answer in ["params_applied", "params_refused"] {
+                let content = serde_json::json!({
+                    "header": {"params_answer": answer, "operation": "params_update"},
+                    "messages": []
+                });
+                assert_eq!(validate_emits(&content, c), Ok(()), "{what} {answer}");
+            }
+        }
+    }
+
+    /// ...and only that: the mark is two words of a closed set, and what the
+    /// answer does carry still has the declared type and value.
+    #[test]
+    fn gh1353_only_the_params_answer_is_exempt_and_only_from_presence() {
+        let c = timer_compiled();
+        for (what, header) in [
+            (
+                "no answer key",
+                serde_json::json!({"operation": "params_update"}),
+            ),
+            (
+                "an unknown answer",
+                serde_json::json!({"params_answer": "yes", "operation": "params_update"}),
+            ),
+            (
+                "an answer that is no string",
+                serde_json::json!({"params_answer": true, "operation": "params_update"}),
+            ),
+            (
+                "no operation",
+                serde_json::json!({"params_answer": "params_applied"}),
+            ),
+            (
+                "another operation",
+                serde_json::json!({"params_answer": "params_applied", "operation": "create"}),
+            ),
+        ] {
+            let content = serde_json::json!({"header": header, "messages": []});
+            let err = validate_emits(&content, &c).expect_err(what);
+            assert!(err.contains("event_id"), "{what}: {err}");
+        }
+        // The answer says nothing but its detail: one that carries work beside
+        // it (a script's, say) owes what the work owes.
+        for (slot, value) in [
+            ("messages", serde_json::json!([{"origin": "assistant"}])),
+            ("fired", serde_json::json!({})),
+            ("meta", serde_json::json!({"detail": "d", "op": "add"})),
+            ("meta", serde_json::json!("d")),
+        ] {
+            let mut content = serde_json::json!({
+                "header": {"params_answer": "params_applied", "operation": "params_update"},
+                "messages": []
+            });
+            content[slot] = value;
+            let err = validate_emits(&content, &c).expect_err(slot);
+            assert!(err.contains("event_id"), "{slot}: {err}");
+        }
+        for (key, value) in [
+            ("event_id", serde_json::json!(5)),
+            ("error_code", serde_json::json!("made_up")),
+        ] {
+            let mut content = serde_json::json!({
+                "header": {"params_answer": "params_refused", "operation": "params_update"},
+                "messages": []
+            });
+            content["header"][key] = value;
+            let err = validate_emits(&content, &c).expect_err(key);
+            assert!(
+                err.starts_with("hop:") && !err.contains("required"),
+                "{key}: {err}"
+            );
+        }
+        let content = serde_json::json!({
+            "header": {"params_answer": "params_refused", "operation": "params_update"},
+            "messages": "none"
+        });
+        let err = validate_emits(&content, &c).expect_err("a wrong body type");
+        assert!(err.starts_with("body:"), "{err}");
+    }
+
     #[test]
     fn validate_emits_rejects_hop_enum_violation() {
         let c = sample_compiled();
@@ -833,6 +1029,85 @@ mod tests {
         assert!(
             validate_consumes(&serde_json::json!({"system": {}}), &headers, &compiled).is_err()
         );
+    }
+
+    /// GH #1353 (OR-w2.tuer.3): a params-only update owes no body key of the
+    /// cell's work -- recognised by the lane AND a `params` object, nothing less.
+    #[test]
+    fn gh1353_a_params_update_owes_no_required_body_key() {
+        let block: ConsumesBlock = serde_json::from_value(serde_json::json!({
+            "body": {"messages": {"type": "array"}, "op": {"type": "object"}},
+            "hop": {"subscriber": {"type": "string"}},
+            "context": {"turn_id": {"type": "string"}}
+        }))
+        .unwrap();
+        let compiled = CompiledConsumes::compile(&block);
+        let on = |route: &str| {
+            let mut h = crate::Headers::new();
+            h.hop.insert("route".into(), serde_json::json!(route));
+            h.hop
+                .insert("subscriber".into(), serde_json::json!("/a/store"));
+            h.context.insert("turn_id".into(), serde_json::json!("t"));
+            h
+        };
+        let update = serde_json::json!({"params": {"query_timeout_ms": 5}});
+        assert_eq!(
+            validate_consumes(&update, &on("in_params"), &compiled),
+            Ok(())
+        );
+        let mut no_route = on("in_params");
+        no_route.hop.remove("route");
+        for (what, body, headers) in [
+            ("no lane", update.clone(), no_route),
+            ("another lane", update.clone(), on("in_model")),
+            ("no params", serde_json::json!({}), on("in_params")),
+            (
+                "params is no object",
+                serde_json::json!({"params": [1]}),
+                on("in_params"),
+            ),
+            (
+                "work in system beside it",
+                serde_json::json!({"params": {}, "system": {"a": "b"}}),
+                on("in_params"),
+            ),
+            (
+                "another slot beside it",
+                serde_json::json!({"params": {}, "attachments": []}),
+                on("in_params"),
+            ),
+            ("no body object", serde_json::json!(null), on("in_params")),
+        ] {
+            let err = validate_consumes(&body, &headers, &compiled).expect_err(what);
+            assert!(
+                err.contains("consumes.body 'messages' missing"),
+                "{what}: {err}"
+            );
+        }
+        for system in [serde_json::json!({}), serde_json::json!([])] {
+            let body = serde_json::json!({"params": {}, "system": system});
+            assert_eq!(
+                validate_consumes(&body, &on("in_params"), &compiled),
+                Ok(())
+            );
+        }
+        // Work beside the update owes every slot of the work.
+        let work = serde_json::json!({"params": {}, "messages": [{"type": "tool_call"}]});
+        let err = validate_consumes(&work, &on("in_params"), &compiled).unwrap_err();
+        assert!(err.contains("consumes.body 'op' missing"), "{err}");
+        // A key that is there still holds its type.
+        let typed = serde_json::json!({"params": {}, "messages": "none"});
+        let err = validate_consumes(&typed, &on("in_params"), &compiled).unwrap_err();
+        assert!(err.contains("'messages' has wrong type"), "{err}");
+        // The headers owe what they owed.
+        let mut headers = on("in_params");
+        headers.hop.remove("subscriber");
+        let err = validate_consumes(&update, &headers, &compiled).unwrap_err();
+        assert!(err.contains("consumes.hop 'subscriber' missing"), "{err}");
+        let mut headers = on("in_params");
+        headers.context.remove("turn_id");
+        let err = validate_consumes(&update, &headers, &compiled).unwrap_err();
+        assert!(err.contains("consumes.context 'turn_id' missing"), "{err}");
     }
 
     #[test]

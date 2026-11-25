@@ -57,12 +57,13 @@
 
 use meclaw_colony::{HandedConnection, IoLivenessMark, SurfaceEntry};
 use meclaw_core::Path;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{Mutex, mpsc, watch};
+use tokio::time::Instant;
 
 use crate::mount_guard::MountGuard;
 use crate::voice::cell::{VoiceEvent, VoiceReconfig};
@@ -271,6 +272,10 @@ pub struct VoiceIoShared {
     /// How much audio one outbound binary frame may carry, in milliseconds;
     /// `0` sends every synthesis chunk exactly as its provider produced it.
     pub audio_out_frame_ms: u32,
+    /// How long a chunk of a duplex model's audio that finds nothing left to
+    /// play at the edge is held back, in milliseconds; `0`, the default, sends
+    /// every chunk as it comes ([`crate::voice::out_lead`]).
+    pub audio_out_lead_ms: u32,
     /// Whether the handler turns markdown into speech text before a synthesis.
     ///
     /// The I/O half never applies it — the handler does, before the text is
@@ -289,8 +294,9 @@ pub struct VoiceIoShared {
     /// `speak_plain` is: a `params` update is in force at the next `release`,
     /// while the declaration follows on the next respawn.
     pub release_grace_ms: u64,
-    /// Where semantic events go — the handler is the only reader.
-    pub events_tx: mpsc::Sender<VoiceEvent>,
+    /// Where semantic events go: the queue of [`forward_events`], which hands
+    /// them to the handler.
+    events: EventsOut,
     /// Issue #7: proof that a provider round trip happened.
     pub liveness: IoLivenessMark,
     /// Who is connected.
@@ -328,6 +334,10 @@ pub struct VoiceIoShared {
     /// the frame length. Off, the connection sends the handler exactly the
     /// events it sent before the lane existed.
     pub emit_first_audio: bool,
+    /// Whether a duplex call reports how its audio went
+    /// (`params.emit_audio_report`, #1637). Read once per life. Off, the
+    /// connection collects nothing and sends no event for it.
+    pub emit_audio_report: bool,
 }
 
 /// The connection table: who is connected, under which session identity.
@@ -426,8 +436,7 @@ impl VoiceIoShared {
         if !held {
             self.emit(VoiceEvent::SeedUnheld {
                 session_id: session_id.to_string(),
-            })
-            .await;
+            });
             return;
         }
         self.send_to(
@@ -540,8 +549,7 @@ impl VoiceIoShared {
                 self.emit(VoiceEvent::ClientTooSlow {
                     session_id: session_id.to_string(),
                     dropped,
-                })
-                .await;
+                });
                 self.undeliverable(session_id, conn_id, cmd, "the client is not reading")
                     .await;
             }
@@ -555,10 +563,8 @@ impl VoiceIoShared {
     /// One command that will never reach its client, and the end of the session
     /// it was addressed to.
     ///
-    /// The only `.await` this leaves in the command loop is [`Self::emit`], and
-    /// that one is the handler waiting for itself: the events channel is the
-    /// handler's own seam, block-only by the spec. What #593 was about —
-    /// waiting for a *client* — is gone from this loop.
+    /// Nothing here waits for a client, which is what #593 was about, nor for
+    /// the handler: [`Self::emit`] queues (GH #1634).
     async fn undeliverable(&self, session_id: &str, conn_id: u64, cmd: ToConnection, why: &str) {
         report_undeliverable(self, session_id, conn_id, cmd, why).await;
         self.drop_session(session_id, conn_id).await;
@@ -570,8 +576,7 @@ impl VoiceIoShared {
         if reported {
             self.emit(VoiceEvent::Disconnected {
                 session_id: session_id.to_string(),
-            })
-            .await;
+            });
         }
     }
 
@@ -615,22 +620,57 @@ impl VoiceIoShared {
             external_timeout,
             idle_timeout: external_timeout,
             audio_out_frame_ms: 20,
+            audio_out_lead_ms: crate::voice::params::DEFAULT_AUDIO_OUT_LEAD_MS,
             speak_plain: false,
             release_grace_ms: 1500,
-            events_tx,
+            events: spawn_forwarder(events_tx).0,
             liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
             sessions: Mutex::new(Registry::default()),
             shutdown: None,
             emit_first_audio: false,
+            emit_audio_report: false,
         })
     }
 
-    /// Emit one event to the handler, blocking on a full channel.
+    /// Emit one event to the handler, without ever waiting for it.
     ///
-    /// The block is the design (spec § 2): a handler that cannot keep up stalls
-    /// its own socket reader, TCP does the rest, and nothing is dropped.
-    pub(crate) async fn emit(&self, event: VoiceEvent) {
-        if self.events_tx.send(event).await.is_err() {
+    /// The event is queued for [`forward_events`], which hands it on in the
+    /// order of the emits and drops nothing. A handler that cannot keep up
+    /// stalls no work of the connection that reports to it, and so not the
+    /// model's audio on the line (GH #1634). What it does hold up is the reading
+    /// of the clients, see [`Self::backlog`].
+    pub(crate) fn emit(&self, event: VoiceEvent) {
+        self.queue(None, event);
+    }
+
+    /// [`Self::emit`] for the two events that name their connection: the
+    /// `Connected` its count opens with and the report that takes it along.
+    pub(crate) fn emit_from(&self, conn_id: u64, event: VoiceEvent) {
+        self.queue(Some(conn_id), event);
+    }
+
+    /// Whether the handler is behind by [`BACKLOG_REST`] events. While it is, a
+    /// connection does not read its client: the sender is held by TCP, as it was
+    /// by the full event channel, and nothing else of the connection waits.
+    pub(crate) fn backlog(&self) -> watch::Receiver<bool> {
+        self.events.backlog.clone()
+    }
+
+    /// Report a client that did not take its audio in time, if its connection
+    /// still holds the session: under the name of one that was displaced the
+    /// report would be about the client that took its place.
+    pub(crate) async fn client_too_slow(&self, session_id: &str, conn_id: u64, dropped: usize) {
+        if self.holds(session_id, conn_id).await {
+            self.emit(VoiceEvent::ClientTooSlow {
+                session_id: session_id.to_string(),
+                dropped,
+            });
+        }
+    }
+
+    fn queue(&self, conn: Option<u64>, event: VoiceEvent) {
+        let at = Instant::now();
+        if self.events.queue.send(Queued { event, at, conn }).is_err() {
             tracing::debug!("voice: the handler is gone, event dropped");
         }
     }
@@ -650,6 +690,176 @@ fn deliver_close(tx: mpsc::Sender<ToConnection>, code: u16) {
     tokio::spawn(async move {
         let _ = tx.send(ToConnection::Close(code)).await;
     });
+}
+
+/// How many events may wait for the handler, behind the ones its channel holds,
+/// before the connections of the cell stop reading their clients: as many again
+/// as that channel takes. Above it a client that reports faster than the handler
+/// answers would fill the process at the speed of its socket.
+const BACKLOG_REST: usize = 64;
+
+/// The end of the way to the handler that a connection holds.
+pub(crate) struct EventsOut {
+    /// What [`VoiceIoShared::emit`] queues at.
+    queue: mpsc::UnboundedSender<Queued>,
+    /// See [`VoiceIoShared::backlog`]; written by [`forward_events`] alone.
+    backlog: watch::Receiver<bool>,
+}
+
+/// One event on its way to the handler, and when it was queued.
+pub(crate) struct Queued {
+    event: VoiceEvent,
+    at: Instant,
+    /// The connection it comes from, where that is told apart from its session
+    /// ([`VoiceIoShared::emit_from`]).
+    conn: Option<u64>,
+}
+
+/// Where an event takes the longest wait of its session, see
+/// [`VoiceEvent::longest_wait_slot`].
+type WaitSlot = fn(&mut VoiceEvent) -> Option<&mut Option<u64>>;
+
+/// The longest wait on the way to the handler, per session: from
+/// `Connected` until an event carries it out or the session ends.
+#[derive(Default)]
+struct LongestWaits {
+    by_session: HashMap<String, LongestWait>,
+}
+
+/// The count of one session, and the connection that holds it.
+struct LongestWait {
+    conn: Option<u64>,
+    longest: Duration,
+}
+
+impl LongestWaits {
+    /// One event passes after `waited`.
+    ///
+    /// Only `Connected` opens a count: a timer or a late report of a session
+    /// that is over must not leave one behind for ever. And only the report of
+    /// the connection that opened it takes it along: a connection displaced by
+    /// another of the same session reports after that one's `Connected`, and
+    /// the count is the new one's by then (#1637).
+    fn pass(
+        &mut self,
+        event: &mut VoiceEvent,
+        conn: Option<u64>,
+        waited: Duration,
+        slot: WaitSlot,
+    ) {
+        if let Some(session) = event.session_id() {
+            match event {
+                VoiceEvent::Connected { .. } => {
+                    let count = LongestWait {
+                        conn,
+                        longest: waited,
+                    };
+                    self.by_session.insert(session.to_string(), count);
+                }
+                VoiceEvent::Disconnected { .. } => {
+                    self.by_session.remove(session);
+                }
+                _ => {
+                    if let Some(count) = self.by_session.get_mut(session) {
+                        count.longest = waited.max(count.longest);
+                    }
+                }
+            }
+        }
+        if slot(event).is_some() {
+            let own = |s: &&str| self.by_session.get(*s).is_some_and(|c| c.conn == conn);
+            let count = (event.session_id().filter(own)).map(str::to_string);
+            let count = count.and_then(|s| self.by_session.remove(&s));
+            if let Some(told) = slot(event) {
+                *told = count.map(|c| crate::voice::audio_report::whole_ms(c.longest));
+            }
+        }
+    }
+}
+
+/// Start the one task that hands this cell's events to the handler, and
+/// return the end [`VoiceIoShared::emit`] queues at (GH #1634).
+fn spawn_forwarder(
+    events_tx: mpsc::Sender<VoiceEvent>,
+) -> (EventsOut, tokio::task::JoinHandle<()>) {
+    let (queue_tx, queue) = mpsc::unbounded_channel();
+    let (backlog_tx, backlog) = watch::channel(false);
+    let task = tokio::spawn(forward_events(
+        queue,
+        events_tx,
+        backlog_tx,
+        VoiceEvent::longest_wait_slot,
+    ));
+    let out = EventsOut {
+        queue: queue_tx,
+        backlog,
+    };
+    (out, task)
+}
+
+/// Hand the queued events to the handler, one after the other.
+///
+/// The one place of the I/O half that waits for the handler (GH #1634): a
+/// handler behind by its whole channel used to stop the connection's loop in
+/// the middle of an `emit`, and the model's audio with it. One queue for the
+/// whole cell and not one per connection, because the order of the emits is a
+/// promise between two connections of one session too (`Disconnected` of the
+/// old one ahead of `Connected` of the new). It has no hard bound: nothing is
+/// dropped and no emit waits. What bounds the events clients cause (ticks and
+/// provider events come at the pace of the call) is that they are not read
+/// while [`BACKLOG_REST`] events wait, which this task says on `backlog`; so it
+/// goes on reading its queue while it waits for the handler.
+///
+/// Ends when the last half that can emit is gone and everything waiting is
+/// handed on, or when the handler is gone.
+async fn forward_events(
+    mut queue: mpsc::UnboundedReceiver<Queued>,
+    events_tx: mpsc::Sender<VoiceEvent>,
+    backlog: watch::Sender<bool>,
+    slot: WaitSlot,
+) {
+    let mut waits = LongestWaits::default();
+    let mut waiting: VecDeque<Queued> = VecDeque::new();
+    let mut open = true;
+    while open || !waiting.is_empty() {
+        let behind = waiting.len() + queue.len() >= BACKLOG_REST;
+        backlog.send_if_modified(|said| std::mem::replace(said, behind) != behind);
+        tokio::select! {
+            biased;
+            () = events_tx.closed() => return,
+            // The room first: the wait for it is part of what is counted.
+            room = events_tx.reserve(), if !waiting.is_empty() => {
+                let Ok(room) = room else { return };
+                if let Some(Queued { mut event, at, conn }) = waiting.pop_front() {
+                    waits.pass(&mut event, conn, at.elapsed(), slot);
+                    room.send(event);
+                }
+            }
+            queued = queue.recv(), if open => match queued {
+                Some(queued) => waiting.push_back(queued),
+                None => open = false,
+            },
+        }
+    }
+}
+
+/// Run the I/O half's loop beside its forwarder, whose panic is the half's own:
+/// it unwinds [`run_io`] and so reaches the supervisor (AUDIT-PRE14-001). Its
+/// ordinary end means the handler is gone, and that ends the loop by itself.
+async fn beside_the_forwarder(
+    mut forwarder: tokio::task::JoinHandle<()>,
+    serve: impl Future<Output = ()>,
+) {
+    tokio::pin!(serve);
+    let ended = tokio::select! {
+        biased;
+        ended = &mut forwarder => ended,
+        () = &mut serve => return,
+    };
+    match ended {
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        _ => serve.await,
+    }
 }
 
 /// A connection id, unique within this process.
@@ -725,6 +935,9 @@ pub struct VoiceIo {
     /// factory, which builds this half from the effective params of the life
     /// about to start — names it in one line.
     pub audio_out_frame_ms: u32,
+    /// The lead of a duplex model's audio in milliseconds, straight from
+    /// `params`. See [`VoiceIoShared::audio_out_lead_ms`].
+    pub audio_out_lead_ms: u32,
     /// Whether the handler turns markdown into speech text before a synthesis.
     /// Carried for the declaration only; see [`VoiceIoShared::speak_plain`].
     pub speak_plain: bool,
@@ -789,6 +1002,8 @@ pub struct VoiceIo {
     /// rather than an argument of [`VoiceIo::new`], for the reason the frame
     /// length is one: only the factory names it.
     pub emit_first_audio: bool,
+    /// See [`VoiceIoShared::emit_audio_report`].
+    pub emit_audio_report: bool,
 }
 
 impl VoiceIo {
@@ -830,6 +1045,7 @@ impl VoiceIo {
             duplex_call_marks: crate::voice::call_marks::CallMarks::default(),
             duck: crate::voice::duck::DuckParams::default(),
             audio_out_frame_ms: crate::voice::params::DEFAULT_AUDIO_OUT_FRAME_MS,
+            audio_out_lead_ms: crate::voice::params::DEFAULT_AUDIO_OUT_LEAD_MS,
             speak_plain: crate::voice::params::DEFAULT_SPEAK_PLAIN,
             release_grace_ms: crate::voice::params::DEFAULT_RELEASE_GRACE_MS,
             events_tx,
@@ -844,6 +1060,7 @@ impl VoiceIo {
             credential_backoff_max_ms: crate::credential_rounds::default_credential_backoff_max_ms(
             ),
             emit_first_audio: false,
+            emit_audio_report: false,
         }
     }
 }
@@ -871,6 +1088,12 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
     // the loop. `shutdown_tx` closes for the upgraded sockets; `connections`
     // aborts the handed HTTP ones.
     let (shutdown_tx, shutdown_rx) = watch::channel(());
+    // The handler's end of its own channel stays open for as long as this
+    // future does: a forwarder that panicked drops its sender, and a handler
+    // that read that as the end could win the race against the panic itself
+    // and have this future aborted before it passes the panic on.
+    let (events, forwarder) = spawn_forwarder(io.events_tx.clone());
+    let _handler_seam = io.events_tx;
     let mut connections = tokio::task::JoinSet::new();
     let shared = Arc::new(VoiceIoShared {
         stt: io.stt,
@@ -894,13 +1117,15 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         external_timeout: io.external_timeout,
         idle_timeout: io.idle_timeout,
         audio_out_frame_ms: io.audio_out_frame_ms,
+        audio_out_lead_ms: io.audio_out_lead_ms,
         speak_plain: io.speak_plain,
         release_grace_ms: io.release_grace_ms,
-        events_tx: io.events_tx,
+        events,
         liveness: io.liveness,
         sessions: Mutex::new(Registry::default()),
         shutdown: Some(shutdown_rx),
         emit_first_audio: io.emit_first_audio,
+        emit_audio_report: io.emit_audio_report,
     });
     let mount = io.mount;
     let cell_path = io.cell_path;
@@ -938,7 +1163,7 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
     let (mut handoff, registration) = match surfaces.register(&mount, entry).await {
         Ok((rx, held)) => (Some(rx), Some(MountGuard::new(&surfaces, &mount, held))),
         Err(e) => {
-            shared.emit(VoiceEvent::MountFailed(e.to_string())).await;
+            shared.emit(VoiceEvent::MountFailed(e.to_string()));
             (None, None)
         }
     };
@@ -979,7 +1204,7 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
     //
     // A line after this call would run on exactly one of the two paths, which
     // is why the four drops below are all there is.
-    serve_until_the_handler_goes(
+    let serve = serve_until_the_handler_goes(
         &shared,
         &mut reconfig_rx,
         &mut from_handler,
@@ -987,8 +1212,8 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         &mount,
         &mut connections,
         &mut vaulted,
-    )
-    .await;
+    );
+    beside_the_forwarder(forwarder, serve).await;
     drop(shutdown_tx);
     drop(connections);
     drop(handoff);
@@ -1040,8 +1265,7 @@ async fn serve_until_the_handler_goes(
             // is the half that is awake while nothing arrives.
             (slot, round, wait_ms) = next_credential_round(vaulted) => {
                 shared
-                    .emit(VoiceEvent::CredentialRoundExpired { slot, round, wait_ms })
-                    .await;
+                    .emit(VoiceEvent::CredentialRoundExpired { slot, round, wait_ms });
                 continue;
             }
         };
@@ -1152,9 +1376,7 @@ async fn serve_until_the_handler_goes(
                 let shared = shared.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(ms)).await;
-                    shared
-                        .emit(VoiceEvent::ReleaseGraceExpired { session_id, token })
-                        .await;
+                    shared.emit(VoiceEvent::ReleaseGraceExpired { session_id, token });
                 });
             }
         }
@@ -1231,20 +1453,17 @@ pub(crate) async fn register(
     let dispatch = spawn_delivery(shared.clone(), session_id.to_string(), conn_id, to_conn);
     if let Some(old) = shared.claim(session_id, conn_id, dispatch).await {
         deliver_close(old, CLOSE_SESSION_REPLACED);
-        shared
-            .emit(VoiceEvent::Disconnected {
-                session_id: session_id.to_string(),
-            })
-            .await;
+        shared.emit(VoiceEvent::Disconnected {
+            session_id: session_id.to_string(),
+        });
     }
     let (ack, taken) = tokio::sync::oneshot::channel();
-    shared
-        .emit(VoiceEvent::Connected {
-            session_id: session_id.to_string(),
-            mode,
-            ack: Some(ack),
-        })
-        .await;
+    let connected = VoiceEvent::Connected {
+        session_id: session_id.to_string(),
+        mode,
+        ack: Some(ack),
+    };
+    shared.emit_from(conn_id, connected);
     taken
 }
 
@@ -1346,14 +1565,12 @@ async fn report_undeliverable(
 ) {
     match cmd {
         ToConnection::Speak { speak_id, .. } if shared.holds(session_id, conn_id).await => {
-            shared
-                .emit(VoiceEvent::SpeakEnded {
-                    session_id: session_id.to_string(),
-                    speak_id,
-                    reason: SpeakEndReason::Failed,
-                    detail: Some(format!("nothing was said: {why}")),
-                })
-                .await;
+            shared.emit(VoiceEvent::SpeakEnded {
+                session_id: session_id.to_string(),
+                speak_id,
+                reason: SpeakEndReason::Failed,
+                detail: Some(format!("nothing was said: {why}")),
+            });
         }
         _ => {
             tracing::warn!(%session_id, %why, "voice: a command did not reach its client");
@@ -1404,6 +1621,283 @@ mod tests {
             }
         });
         tx
+    }
+
+    // ── The way to the handler (GH #1634) ───────────────────────────────
+
+    /// A half with nothing configured, on the sender the handler reads.
+    fn half(events_tx: mpsc::Sender<VoiceEvent>) -> Arc<VoiceIoShared> {
+        VoiceIoShared::for_test_with_stt(events_tx, marker(), Arc::new(EchoStt::new()))
+    }
+
+    /// An event spelled short: its kind and session, a tick with its number.
+    fn short(event: &VoiceEvent) -> String {
+        let session = event.session_id().unwrap_or("-");
+        match event {
+            VoiceEvent::Connected { .. } => format!("{session} connected"),
+            VoiceEvent::Disconnected { .. } => format!("{session} gone"),
+            VoiceEvent::LiveTick { now_ms, .. } => format!("{session} {now_ms}"),
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn tick(session: &str, now_ms: u64) -> VoiceEvent {
+        VoiceEvent::LiveTick {
+            session_id: session.to_string(),
+            now_ms,
+            model_heard_ms: None,
+        }
+    }
+
+    fn connected(session: &str) -> VoiceEvent {
+        VoiceEvent::Connected {
+            session_id: session.to_string(),
+            mode: Mode::Auto,
+            ack: None,
+        }
+    }
+
+    fn gone(session: &str) -> VoiceEvent {
+        VoiceEvent::Disconnected {
+            session_id: session.to_string(),
+        }
+    }
+
+    /// An event that names no connection, queued at this moment.
+    fn queued(event: VoiceEvent, at: Instant) -> Queued {
+        Queued {
+            event,
+            at,
+            conn: None,
+        }
+    }
+
+    /// The event that stands in for a call's report.
+    fn report(session: &str) -> VoiceEvent {
+        VoiceEvent::LiveEnded {
+            session_id: session.to_string(),
+            at_ms: 0,
+            model_audible: false,
+            model_heard_ms: None,
+        }
+    }
+
+    /// The field of [`report`] the count is put into.
+    fn report_slot(event: &mut VoiceEvent) -> Option<&mut Option<u64>> {
+        match event {
+            VoiceEvent::LiveEnded { model_heard_ms, .. } => Some(model_heard_ms),
+            _ => None,
+        }
+    }
+
+    /// Far more events than the handler's channel holds, and nobody reads:
+    /// whoever emits goes on, and later the handler reads every one, in the
+    /// order they were emitted -- across the two connections of one session and
+    /// beside another session as well.
+    #[tokio::test(start_paused = true)]
+    async fn events_reach_the_handler_in_order() {
+        let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(4);
+        let shared = half(events_tx);
+        let mut emitted = Vec::new();
+        meclaw_testing::deadline::hang("the emits do not wait for the handler", async {
+            for round in 0..20u64 {
+                let (conn_id, to_conn, _rx) = new_connection_slot();
+                register(&shared, "call-1", conn_id, to_conn, Mode::Auto).await;
+                if round > 0 {
+                    emitted.push("call-1 gone".to_string());
+                }
+                emitted.push("call-1 connected".to_string());
+                for n in 0..5 {
+                    for session in ["call-1", "call-2"] {
+                        shared.emit(tick(session, 10 * round + n));
+                        emitted.push(format!("{session} {}", 10 * round + n));
+                    }
+                }
+            }
+        })
+        .await;
+        drop(shared);
+        let mut read = Vec::new();
+        while read.len() < emitted.len() {
+            let event = meclaw_testing::deadline::hang("the next event", events_rx.recv()).await;
+            read.push(short(&event.expect("every event is handed on")));
+        }
+        assert_eq!(read, emitted);
+    }
+
+    /// Nothing that waits is lost when the last half falls, and the task ends
+    /// after it; a handler that is gone ends it as well, with events waiting.
+    #[tokio::test(start_paused = true)]
+    async fn the_forwarder_hands_everything_on_and_ends() {
+        let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(1);
+        let (EventsOut { queue, .. }, task) = spawn_forwarder(events_tx);
+        for n in 0..10 {
+            let event = tick("call-1", n);
+            let at = Instant::now();
+            assert!(queue.send(queued(event, at)).is_ok());
+        }
+        drop(queue);
+        let mut read = Vec::new();
+        while let Some(event) =
+            meclaw_testing::deadline::hang("the next event", events_rx.recv()).await
+        {
+            read.push(short(&event));
+        }
+        let want: Vec<String> = (0..10).map(|n| format!("call-1 {n}")).collect();
+        assert_eq!(read, want);
+        let ended = meclaw_testing::deadline::hang("the forwarder ends", task).await;
+        ended.expect("no panic");
+
+        let (events_tx, events_rx) = mpsc::channel::<VoiceEvent>(1);
+        let (EventsOut { queue, .. }, task) = spawn_forwarder(events_tx);
+        drop(events_rx);
+        let ended = meclaw_testing::deadline::hang("the forwarder ends", task).await;
+        ended.expect("no panic");
+        assert!(queue.is_closed(), "and nothing is queued for nobody");
+    }
+
+    /// The forwarder says when the handler is behind by the bound and when no
+    /// longer, reading on while it waits, and hands every event on in order.
+    #[tokio::test(start_paused = true)]
+    async fn the_backlog_is_told_while_the_handler_is_behind() {
+        let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(1);
+        let (out, _task) = spawn_forwarder(events_tx);
+        let EventsOut { queue, mut backlog } = out;
+        // One in the handler's channel, and one less than the bound behind it.
+        let bound = BACKLOG_REST as u64;
+        let put = |n| {
+            assert!(
+                queue
+                    .send(queued(tick("call-1", n), Instant::now()))
+                    .is_ok()
+            )
+        };
+        (0..bound).for_each(put);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert!(!*backlog.borrow_and_update(), "under the bound");
+        put(bound);
+        let told = backlog.wait_for(|behind| *behind);
+        let told = meclaw_testing::deadline::hang("the bound is told", told).await;
+        assert!(*told.expect("the forwarder runs"));
+        let first = events_rx.recv().await.expect("an event");
+        let told = backlog.wait_for(|behind| !*behind);
+        let told = meclaw_testing::deadline::hang("and its end", told).await;
+        assert!(!*told.expect("the forwarder runs"));
+        let mut read = vec![short(&first)];
+        while read.len() <= BACKLOG_REST {
+            let event = meclaw_testing::deadline::hang("the next event", events_rx.recv()).await;
+            read.push(short(&event.expect("every event is handed on")));
+        }
+        let want: Vec<String> = (0..=bound).map(|n| format!("call-1 {n}")).collect();
+        assert_eq!(read, want);
+    }
+
+    /// A panic of the forwarder is the I/O half's own; its end is not the
+    /// half's end (A1').
+    #[tokio::test(start_paused = true)]
+    async fn a_panic_of_the_forwarder_ends_the_io_half() {
+        let half = tokio::spawn(beside_the_forwarder(
+            tokio::spawn(async { panic!("the forwarder broke") }),
+            std::future::pending(),
+        ));
+        let ended = meclaw_testing::deadline::hang("the half ends", half).await;
+        assert!(ended.expect_err("the panic comes through").is_panic());
+
+        let (go, gone) = tokio::sync::oneshot::channel::<()>();
+        let half = tokio::spawn(beside_the_forwarder(tokio::spawn(async {}), async {
+            let _ = gone.await;
+        }));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(!half.is_finished(), "the half serves on");
+        drop(go);
+        let ended = meclaw_testing::deadline::hang("the half ends with its loop", half).await;
+        ended.expect("no panic");
+    }
+
+    /// The longest wait is counted per session, from the queue to the
+    /// handler's channel with the wait for its room; the report takes it along
+    /// and the count with it.
+    #[tokio::test(start_paused = true)]
+    async fn the_longest_wait_is_counted_per_session() {
+        let start = Instant::now();
+        let (events_tx, mut events_rx) = mpsc::channel::<VoiceEvent>(1);
+        let (queue_tx, queue) = mpsc::unbounded_channel();
+        let (backlog, _) = watch::channel(false);
+        tokio::spawn(forward_events(queue, events_tx, backlog, report_slot));
+        let put = |event| {
+            let at = Instant::now();
+            assert!(queue_tx.send(queued(event, at)).is_ok());
+        };
+        let at = |ms| tokio::time::sleep_until(start + Duration::from_millis(ms));
+
+        put(connected("a"));
+        put(connected("b"));
+        put(tick("a", 1));
+        at(30).await;
+        // Room at 30 for b's first event, at 70 for a's tick.
+        assert_eq!(short(&events_rx.recv().await.expect("a")), "a connected");
+        at(70).await;
+        assert_eq!(short(&events_rx.recv().await.expect("b")), "b connected");
+        at(80).await;
+        assert_eq!(short(&events_rx.recv().await.expect("tick")), "a 1");
+        put(report("a"));
+        put(report("b"));
+        put(report("a"));
+        let mut told = Vec::new();
+        for _ in 0..3 {
+            let mut event = events_rx.recv().await.expect("a report");
+            let wait = *report_slot(&mut event).expect("a report");
+            told.push((event.session_id().expect("its session").to_string(), wait));
+        }
+        assert_eq!(
+            told,
+            [
+                ("a".to_string(), Some(70)),
+                ("b".to_string(), Some(30)),
+                ("a".to_string(), None),
+            ],
+            "the second report of a session has nothing left to say"
+        );
+    }
+
+    /// A session that ends leaves no count behind, with or without a report,
+    /// and what still comes for it opens none; a session that comes back
+    /// counts from the start.
+    #[test]
+    fn a_session_that_ends_leaves_no_count_behind() {
+        let ms = Duration::from_millis;
+        let mut waits = LongestWaits::default();
+        let mut pass = |mut event: VoiceEvent, waited| {
+            waits.pass(&mut event, None, ms(waited), report_slot);
+            let told = report_slot(&mut event).and_then(|wait| *wait);
+            (told, waits.by_session.len())
+        };
+        assert_eq!(pass(connected("a"), 500), (None, 1));
+        assert_eq!(pass(gone("a"), 900), (None, 0));
+        assert_eq!(pass(tick("a", 1), 40), (None, 0));
+        assert_eq!(pass(report("a"), 40), (None, 0));
+        assert_eq!(pass(connected("a"), 3), (None, 1));
+        assert_eq!(pass(tick("a", 2), 20), (None, 1));
+        assert_eq!(pass(report("a"), 7), (Some(20), 0));
+        assert_eq!(pass(gone("a"), 9), (None, 0));
+    }
+
+    /// A connection displaced by another of the same session reports after the
+    /// new one has connected: the count is the new one's, and stays it.
+    #[test]
+    fn a_displaced_connections_report_leaves_the_new_count_alone() {
+        let ms = Duration::from_millis;
+        let mut waits = LongestWaits::default();
+        let mut pass = |mut event: VoiceEvent, conn, waited| {
+            waits.pass(&mut event, conn, ms(waited), report_slot);
+            report_slot(&mut event).and_then(|wait| *wait)
+        };
+        assert_eq!(pass(connected("a"), Some(1), 10), None);
+        assert_eq!(pass(gone("a"), None, 0), None);
+        assert_eq!(pass(connected("a"), Some(2), 5), None);
+        assert_eq!(pass(tick("a", 1), None, 50), None);
+        assert_eq!(pass(report("a"), Some(1), 1), None, "the old connection's");
+        assert_eq!(pass(report("a"), Some(2), 1), Some(50), "the new one's own");
     }
 
     /// A mount another cell holds is refused out loud, and the life goes on.
@@ -1827,8 +2321,8 @@ mod tests {
     /// GH #601 — a client that stops taking what is queued for it loses the
     /// connection, and the cell says so instead of writing a log line.
     ///
-    /// The colony side of this cell is backpressure and stays that way
-    /// (`voice_t5_behaviour::backpressure_loses_nothing`). The socket side is
+    /// The handler's emissions into the colony are backpressure and stay that
+    /// way (`voice_t5_behaviour::backpressure_loses_nothing`). The socket side is
     /// not: past [`DISPATCH_QUEUE`] commands behind an already full connection
     /// channel the session is given up on, by count and without a clock. The
     /// ruling of 2026-09-09 on GH #601 is that this verdict is a message —
@@ -1870,13 +2364,15 @@ mod tests {
             external_timeout: marker(),
             idle_timeout: marker(),
             audio_out_frame_ms: 20,
+            audio_out_lead_ms: crate::voice::params::DEFAULT_AUDIO_OUT_LEAD_MS,
             speak_plain: false,
             release_grace_ms: 1500,
-            events_tx,
+            events: spawn_forwarder(events_tx).0,
             liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
             sessions: Mutex::new(Registry::default()),
             shutdown: None,
             emit_first_audio: false,
+            emit_audio_report: false,
         });
 
         // A connection nobody reads: the receiver is held and never polled, so
@@ -1979,13 +2475,15 @@ mod tests {
             external_timeout: marker(),
             idle_timeout: marker(),
             audio_out_frame_ms: 20,
+            audio_out_lead_ms: crate::voice::params::DEFAULT_AUDIO_OUT_LEAD_MS,
             speak_plain: false,
             release_grace_ms: 1500,
-            events_tx,
+            events: spawn_forwarder(events_tx).0,
             liveness: meclaw_colony::io_liveness::IoLivenessMark::disabled(),
             sessions: Mutex::new(Registry::default()),
             shutdown: None,
             emit_first_audio: false,
+            emit_audio_report: false,
         });
 
         let (conn_id, to_conn, mut to_conn_rx) = new_connection_slot();

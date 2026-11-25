@@ -137,6 +137,8 @@ fn run_classify(args: Value) -> Value {
 /// One rendered declaration for a level, as `grow_level` produces it.
 fn grow(params: Value) -> Value {
     let member = params["level"] == json!("member");
+    // GH #1597 / GH #1598: a screen and an app carry their member's half behind them.
+    let screen = params["level"] == json!("screen") || params["level"] == json!("app");
     let wish = json!({"recipe": "grow_level", "request": "…", "params": params});
     let out = if member {
         first_manifest(wish)
@@ -150,10 +152,18 @@ fn grow(params: Value) -> Value {
     // a manifest rolls forward — a node that landed without its edges is the
     // island this recipe exists to prevent. Since GH #585 a member wish carries
     // two more behind it, the devices that member always gets, in the same
-    // manifest; the level is the one in front either way.
+    // manifest; the level is the one in front either way. Since GH #1597 a screen
+    // carries its member's half behind it: the edges the member sends it. Since
+    // GH #1598 an app does too: the mutation receipt, from the member straight to it.
     assert_eq!(
         decls.len(),
-        if member { 3 } else { 1 },
+        if member {
+            4
+        } else if screen {
+            2
+        } else {
+            1
+        },
         "the level is not the declaration this manifest leads with: {decls:?}"
     );
     decls[0].clone()
@@ -423,6 +433,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
         "thirty-eight",
         "thirty-nine",
         "forty",
+        "forty-one",
     ];
     for (name, n) in rendered_counts() {
         let word = words.get(n - 1).copied().unwrap_or("?");
@@ -448,7 +459,7 @@ fn the_briefing_tells_the_composer_the_same_counts() {
 fn a_level_the_table_does_not_carry_is_refused_by_name() {
     let out = run_recipes(json!({"recipe": "grow_level", "request": "…",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.2.30"}}));
+                   "template": "org@2.2.31"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("level_unknown"),
@@ -464,7 +475,7 @@ fn a_level_the_table_does_not_carry_is_refused_by_name() {
     // and the switch refuses it one cell earlier, before an inference is bought
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os", "level": "department", "name": "x",
-                   "template": "org@2.2.30"}}));
+                   "template": "org@2.2.31"}}));
     assert_eq!(early["header"]["error_code"], json!("level_unknown"));
     assert_eq!(early["header"]["route"], json!("error"));
 }
@@ -476,7 +487,7 @@ fn a_named_grow_level_missing_its_per_level_parameter_is_refused_not_downgraded(
     // live under, because a typo would otherwise silently buy an inference.
     let out = run_classify(json!({"request": "…", "recipe": "grow_level",
         "params": {"scope": "/os/orgs/acme/members/alex", "level": "channel",
-                   "name": "telegram", "template": "telegram-connector@2.2.8"}}));
+                   "name": "telegram", "template": "telegram-connector@2.2.9"}}));
     assert_eq!(
         out["header"]["error_code"],
         json!("recipe_params_incomplete")
@@ -630,7 +641,7 @@ fn the_door_is_one_edge_more_and_the_readme_counts_it() {
 #[test]
 fn a_door_on_any_level_but_an_assistant_is_refused_by_name() {
     let params = json!({"scope": "/os/orgs/acme", "level": "member", "name": "alex",
-                        "template": "member@2.10.8", "door": true});
+                        "template": "member@2.11.0", "door": true});
     let early = run_classify(json!({"request": "…", "recipe": "grow_level",
                                     "params": params.clone()}));
     assert_eq!(early["header"]["route"], json!("error"));
@@ -849,7 +860,7 @@ fn a_null_door_is_an_absent_key_in_the_sentence() {
 /// — the same discipline the six levels above run under.
 fn credentialled_wish() -> Value {
     json!({"scope": "/os/orgs/acme/members/alex", "level": "assistant",
-           "name": "scribe", "template": "assistant@4.0.8",
+           "name": "scribe", "template": "assistant@4.1.0",
            "ctx": {"model": "${MODEL_CORE}", "model_fast": "${MODEL_CORE_FAST}",
                    "model_surface": "${MODEL_SURFACE}"},
            "override_params": {"cogny/brain": {"temperature": 0.2}},
@@ -1012,10 +1023,10 @@ fn the_grants_travel_in_the_same_declaration_as_the_lanes() {
         assert_eq!(row["target"], json!("./access/store"));
         assert_eq!(
             row["rows"].as_array().expect("rows").len(),
-            21,
+            19,
             "ONE grant per consumer (GH #1061: the three brains and their three \
              curators, GH #1247: the two surfaces' deciders, GH #1248: their two \
-             quick voices, #1398: their quick voices' four siblings, GH #1279: their two screen models, D54g (GH #1506): their two second judges, GH #1528: the three curators' ballast judges; the search tool stays anonymous without a search \
+             quick voices, #1398: their quick voices' two bridge siblings (GH #1584: the speculation's two went with it), GH #1279: their two screen models, D54g (GH #1506): their two second judges, GH #1528: the three curators' ballast judges; the search tool stays anonymous without a search \
              credential): the answer edge is addressed by \
              `hop.grant_id`, and two brains sharing a handle would each be \
              handed the other's sealed box"

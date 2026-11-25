@@ -531,6 +531,7 @@ def _fail_closed(rows, mode, why):
     pre = next((r for r in rows if r.get("name") == "precheck"), None)
     if pre is not None:
         pre.pop("cmds", None)
+        pre.pop("paths", None)
         pre["cmd"] = ["bash", "-c", PRECHECK_WHOLE_TREE]
         pre["reason"] = list(pre.get("reason") or []) + ["fail-closed: whole tree"]
     if mode != "strand":

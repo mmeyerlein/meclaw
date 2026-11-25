@@ -37,10 +37,10 @@ journal; it sends nothing to anybody. A Grafana annotation follows when
 `MECLAW_GRAFANA_URL` and `GRAFANA_ADMIN_PASS` are in the environment (as for
 `grafana_push.py`); any failure there is ignored.
 
-Coverage. If a `merge_done` is newer than the newest `coverage_built`, the
-harness or binary list of the tree no longer matches the newest map
-(`binaries_changed`, review Z-I1), or master moved past its `rev`, the night
-first tries `coverage.carry` (GH #1461): when the diff from the newest clean
+Coverage, on demand (OR-W1-P-22, owner ruling R-W1-5). A map is due only
+when a Rust path (`*.rs`, `Cargo.toml`, `Cargo.lock`) moved on master since the
+rev of the newest `coverage_built` -- the last GREEN map (`coverage_due`); with
+none journaled it is due. Then the night first tries `coverage.carry` (GH #1461): when the diff from the newest clean
 GREEN map to master selects no test, that map is carried to master without a
 run, lane or no lane, and the report says so. Nothing is due while master's
 tip already has a GREEN map (`green_on_master`, GH #1554), whatever merged
@@ -54,21 +54,25 @@ state is set and not `off`, not the owner's machine) first -- the owner's
 machine stays free at night while lanes run --, else the lane of transport
 `local` in the host file (`local_lane`; the machine the night runs on is always
 on). A build lane the store calls on that ends in exit 3 (not up) hands over to
-the local lane in the same night, the line names both, and the lane's
-`coverage_skipped_no_lane` is resolved when the local build installed a map
-(exit 0); a local build that fails leaves it open. A local build reports
+the local lane in the same night, and the line names both. The lane is free
+(`lane_name`: no live lease, no live pass) and the build takes it by lease. A
+local build reports
 place and minutes from its map (`built on lane L (local, n min, lock-wait m
 min)`); its exit 3 is the cargo lock still held after the wait cap, reported
 `skipped, cargo lock busy`, and the report follows -- the unit `pipe-night` has
-no runtime end, and while it runs every new `arm` fails. With neither lane it
-journals `process_finding rule=coverage_skipped_no_lane`. It never powers a
-lane. A build with red
+no runtime end, and while it runs every new `arm` fails. With no free lane it
+says so in one line (`skipped, no free lane ...`) -- no finding; the
+narrowing plans wider without a map. It never powers a lane. A build with red
 tests (exit `coverage.RED_EXIT`, welle-tb S1 C-Beleg) is reported `RED on lane X` with the
 names and is a `process_finding rule=coverage_red` -- the build journals it; when the
 night's store has none open, the night journals it itself. Red is never swallowed.
 The outcome also names how many browser locks the installed map measured
 (`browser_cover.night_line`, S1b point 4); an unmeasured lock is no red -- the
 integration rule runs it (`browser_plan`).
+
+The rules `coverage_stale` and `coverage_skipped_no_lane` are retired
+(OR-W1-P-22): an open finding of either is resolved by the night with that
+note; a `coverage_red` names red tests and stays open.
 """
 
 import argparse
@@ -100,7 +104,6 @@ TOP_STATIONS = 5
 LOST_AFTER_H = 6      # a planned run without `pass_ended` older than this is lost
 RED_VERDICTS = ("RED", "ABORTED")
 WAVE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-COVERAGE_RULE = "coverage_skipped_no_lane"
 COVERAGE_RED_RULE = "coverage_red"
 
 # The hook's runner; tests replace it with a fake.
@@ -378,16 +381,27 @@ def coverage_cli():
     return None
 
 
-def lane_name(db):
+def lane_name(db, now=None):
     """The build lane the night's coverage build goes to first: the first runner
-    that is on (state set and not `off`), by name -- never the owner's machine
-    (transport `local`, class `egon`): that one is `local_lane`, where `coverage
-    build` runs under the machine's cargo lock only when no build lane is on or
-    the one that is on is not up (exit 3, `build_on_a_lane`; R-59-2, d59-2 V6)."""
-    row = db.execute("SELECT name FROM runners WHERE state IS NOT NULL AND state != ''"
-                     " AND state != 'off' AND transport IS NOT 'local'"
-                     " AND class IS NOT 'egon' ORDER BY name LIMIT 1").fetchone()
-    return row[0] if row else None
+    that is on (state set and not `off`) and free, by name -- never the owner's
+    machine (transport `local`, class `egon`): that one is `local_lane`, where
+    `coverage build` runs under the machine's cargo lock only when no build lane
+    is on or the one that is on is not up (exit 3, `build_on_a_lane`; R-59-2,
+    d59-2 V6). Free (d54s lanekit, Nr. 59): no unexpired `lane:<x>` lease and no
+    live pass there -- 21.11. the night built on build01 beside a soul2me gate
+    and both went red. The build itself then takes the lane by lease."""
+    from . import schedule as _schedule
+    at = _now(now)
+    stamp = at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    busy = {r["lane"] for r in _schedule._live_runs(db, at.timestamp())}
+    for (name,) in db.execute("SELECT name FROM runners WHERE state IS NOT NULL AND state != ''"
+                              " AND state != 'off' AND transport IS NOT 'local'"
+                              " AND class IS NOT 'egon' ORDER BY name").fetchall():
+        lease = _store.lease_who(db, "lane:%s" % name)
+        if name in busy or (lease and not _store._expired(lease, stamp)):
+            continue
+        return name
+    return None
 
 
 def local_lane(hosts=None):
@@ -404,19 +418,6 @@ def local_lane(hosts=None):
     except OSError:
         pass
     return None
-
-
-def _map_and_metadata():
-    """The newest coverage map and the cached `cargo metadata` of this tree (or None)."""
-    from . import gate as _gate
-    from . import narrow as _narrow
-    cov, _why = _narrow.newest_map()
-    try:
-        with open(_gate.metadata_path(str(REPO)), encoding="utf-8") as fh:
-            meta = json.load(fh)
-    except (OSError, ValueError):
-        meta = None
-    return cov, meta if isinstance(meta, dict) else None
 
 
 def binaries_changed(cov, metadata):
@@ -452,32 +453,41 @@ def green_on_master():
     return bool(cov) and cov.get("rev") == head and _coverage.verdict_of(cov) == "GREEN"
 
 
+# what moves a coverage map: Rust sources and the cargo manifests (OR-W1-P-22)
+RUST_SUFFIXES = (".rs",)
+RUST_NAMES = ("Cargo.toml", "Cargo.lock")
+
+
+def rust_paths(paths):
+    """The paths of `paths` that move a coverage map: `*.rs`, `Cargo.toml`, `Cargo.lock`."""
+    return [p for p in paths
+            if p.endswith(RUST_SUFFIXES) or p.rsplit("/", 1)[-1] in RUST_NAMES]
+
+
 def coverage_due(db, runner):
-    """`(due, merges_since, since)`: a `merge_done` after the newest map, the
-    harness/binary list changed, or master moved -- never while master's tip
-    already has a GREEN map (GH #1554)."""
+    """`(due, why)` (OR-W1-P-22, owner ruling R-W1-5): due only when a Rust path
+    moved on master since the rev of the newest `coverage_built` -- the last
+    GREEN map, the only kind that journals one. Without any it is due; a diff
+    git cannot read (an unknown rev) is due too, it proves no standstill.
+    Never while master's tip already has a GREEN map (GH #1554)."""
     if green_on_master():
-        return False, 0, None
-    built = db.execute("SELECT seq, at, data FROM journal WHERE event='coverage_built'"
+        return False, "master has a GREEN map"
+    built = db.execute("SELECT data FROM journal WHERE event='coverage_built'"
                        " ORDER BY seq DESC LIMIT 1").fetchone()
-    after = built[0] if built else 0
-    merges = db.execute("SELECT count(*), min(at) FROM journal WHERE event='merge_done'"
-                        " AND seq > ?", (after,)).fetchone()
-    if merges[0]:
-        return True, merges[0], merges[1]
-    if binaries_changed(*_map_and_metadata())[0]:
-        return True, 0, built[1] if built else None
-    if built:
-        rev = (json.loads(built[2]) if built[2] else {}).get("rev")
-        try:
-            res = runner(["git", "-C", str(REPO), "rev-parse", "master"],
-                         capture_output=True, text=True, check=False, timeout=10)
-            head = (res.stdout or "").strip()
-            if res.returncode == 0 and head and rev and head != rev:
-                return True, 0, built[1]
-        except Exception:  # noqa: BLE001 -- unknown master = nothing due
-            pass
-    return False, 0, None
+    rev = (json.loads(built[0]) if built and built[0] else {}).get("rev")
+    if not rev:
+        return True, "no GREEN map"
+    try:
+        res = runner(["git", "-C", str(REPO), "diff", "--name-only", rev, "master", "--"],
+                     capture_output=True, text=True, check=False, timeout=30)
+    except Exception as exc:  # noqa: BLE001 -- an unreadable diff proves nothing
+        return True, "diff since GREEN map %s unreadable: %s" % (rev[:9], exc)
+    if res.returncode != 0:
+        return True, "diff since GREEN map %s unreadable (git exit %d)" % (rev[:9], res.returncode)
+    moved = rust_paths((res.stdout or "").split())
+    if not moved:
+        return False, "no Rust path moved since GREEN map %s" % rev[:9]
+    return True, "%d Rust path(s) moved since GREEN map %s" % (len(moved), rev[:9])
 
 
 # --- report ---------------------------------------------------------------------
@@ -627,20 +637,16 @@ def report(db, now=None, out_root=None, runner=subprocess.run, date=None):
         pass
     red = [r["run"] for r in ended if r["data"].get("verdict") in RED_VERDICTS]
     classes = classify(db, red)
-    due, merges, cov_since = coverage_due(db, runner)
+    due, why = coverage_due(db, runner)
     # GH #1461: a due map is carried first; only a diff that selects tests books a lane
-    coverage, not_carried = carry_coverage(db) if due else ("not due", None)
+    coverage, not_carried = carry_coverage(db) if due else ("not due (%s)" % why, None)
     if coverage is None and coverage_cli() and (lane_name(db) or local_lane()):
         coverage = build_on_a_lane(db, coverage_cli(), runner)
     elif coverage is None:
-        coverage = "skipped, " + ("no build lane on and no local lane in the host file"
-                                  if coverage_cli() else "W6 coverage.py missing")
-        open_now = [f for f in _safe(retro.open_findings, db)
-                    if f.get("rule") == COVERAGE_RULE and f.get("subject") == "coverage"]
-        if not open_now:
-            _events.emit(db, "process_finding", "finding",
-                         {"rule": COVERAGE_RULE, "subject": "coverage", "value": merges,
-                          "threshold": 0, "since": cov_since or at}, at=at)
+        # OR-W1-P-22: no free lane is one line, never a finding
+        coverage = "skipped, " + ("no free lane (no build lane free and no local lane in the"
+                                  " host file)" if coverage_cli() else "W6 coverage.py missing")
+    _resolve_retired(db)
     if not_carried:
         coverage += " (not carried: %s)" % not_carried
     findings = sorted(_safe(retro.open_findings, db), key=lambda f: (f.get("seq") or 0))
@@ -662,6 +668,21 @@ def report(db, now=None, out_root=None, runner=subprocess.run, date=None):
     return path
 
 
+# OR-W1-P-22: the rules no longer evaluated; a coverage_red names red tests and stays open
+RETIRED_RULES = ("coverage_stale", "coverage_skipped_no_lane")
+
+
+def _resolve_retired(db):
+    """Resolve the open `coverage_stale`/`coverage_skipped_no_lane` -- both rules
+    are retired (OR-W1-P-22): a missing or old map blocks nothing."""
+    for f in _safe(retro.open_findings, db):
+        if f.get("rule") in RETIRED_RULES:
+            try:
+                retro.resolve(db, f["seq"], "rule retired (OR-W1-P-22)")
+            except (ValueError, KeyError):
+                pass
+
+
 def carry_coverage(db):
     """`(line, None)` when the due map was carried to master without a run
     (`coverage.carry`, GH #1461), else `(None, why)` -- the night then builds as
@@ -677,38 +698,18 @@ def carry_coverage(db):
 
 
 def build_on_a_lane(db, cli, runner):
-    """The night's build (d59-2 V6, #1487): on a build lane that is on, else on
-    the local lane; a build lane that is not up (exit 3) hands over to the
-    local lane in the same night -- the store may still call a lane on after
-    its machine was switched off, and then nobody built. One line, both places.
-    The lane's `coverage_skipped_no_lane` is resolved only when the local build
-    installed a map (exit 0); a local build that fails leaves it open."""
+    """The night's build (d59-2 V6, #1487): on a free build lane, else on the
+    local lane; a build lane that is not up (exit 3) hands over to the local
+    lane in the same night -- the store may still call a lane on after its
+    machine was switched off, and then nobody built. One line, both places."""
     lane, local = lane_name(db), local_lane()
     if not lane:
         return build_coverage(db, cli, local, runner, local=True)
-    seq = _journal_seq(db)
     rc, line = _build(db, cli, lane, runner)
     if rc != 3 or not local:
         return line
-    local_rc, local_line = _build(db, cli, local, runner, local=True)
-    if local_rc == 0:
-        _resolve_no_lane(db, lane, seq)
+    _local_rc, local_line = _build(db, cli, local, runner, local=True)
     return "%s; %s" % (line, local_line)
-
-
-def _resolve_no_lane(db, lane, since_seq):
-    """The `coverage_skipped_no_lane` the not-up build lane's own `coverage
-    build` journaled for `lane` (seq > `since_seq`) is resolved: called only when
-    the local lane took over the same night and its build installed a map (exit
-    0), so the coverage run was not skipped (d59-2 fix round, review M5; fix
-    round 2, delta review I1). The journal stays append-only (`finding_resolved`)."""
-    for f in _safe(retro.open_findings, db):
-        if (f.get("rule") == COVERAGE_RULE and f.get("subject") == lane
-                and (f.get("seq") or 0) > since_seq):
-            try:
-                retro.resolve(db, f["seq"], "the local lane took over the coverage build")
-            except Exception:  # noqa: BLE001 -- a finding left open is never a stop
-                pass
 
 
 def build_coverage(db, cli, lane, runner, local=False):

@@ -8,7 +8,6 @@ pub mod curator_hive;
 #[path = "../support/curator_moveout.rs"]
 pub mod curator_moveout;
 pub mod gh_d58_moveout_a_conditional_feed_leaves_with_the_round;
-pub mod gh_d58_moveout_a_held_round_counts_only_when_it_is_sent;
 pub mod gh_d58_moveout_a_set_override_of_the_moved_params_passes_the_door;
 pub mod gh_d58_moveout_a_side_call_goes_out_when_its_condition_holds;
 pub mod gh_d58_moveout_a_side_call_marked_first_leaves_before_the_main_call;

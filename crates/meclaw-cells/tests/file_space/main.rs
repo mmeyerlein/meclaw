@@ -4,6 +4,7 @@
 #[path = "../support/file_space_hive.rs"]
 pub mod file_space_hive;
 pub mod gh1085_the_templates_deliver_whole_or_by_budget;
+pub mod gh1640_a_silent_python_child_is_named;
 pub mod gh899_a_file_is_read_by_its_address;
 pub mod gh899_the_twins_parse_one_address;
 pub mod gh900_blocks_cascade_and_merge_are_pure;
@@ -39,3 +40,7 @@ pub mod gh980_projection_tools_hidden_without_a_projection;
 pub mod gh994_a_page_number_on_a_file_without_pages;
 pub mod gh996_inserting_at_the_line_after_the_last_appends;
 pub mod gh_d583_raten_cells_the_rate_comes_from_the_targets_row;
+// `warm_python` is also a private module inside `file_space_hive`; folding puts both in one crate
+#[allow(clippy::duplicate_mod)]
+#[path = "../support/warm_python.rs"]
+pub mod warm_python;

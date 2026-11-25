@@ -65,12 +65,6 @@ RULES = (
      "window": "every run the flakes table counts",
      "proposal": "Quarantine the test with a GH issue or fix it; a test above five percent"
                  " teaches builders to rerun."},
-    {"rule": "coverage_stale",
-     "metric": "age of the newest coverage_built in days",
-     "threshold": 7,
-     "window": "newest coverage_built",
-     "proposal": "Run the coverage build on a lane at night; the test selection reads a"
-                 " stale map."},
     {"rule": "minimum_stale",
      "metric": "runner fingerprint changed after the newest minimum_measured",
      "threshold": 0,
@@ -96,12 +90,6 @@ RULES = (
                " turnarounds)",
      "proposal": "Read the slowest turnarounds: a long tail is queue or fix rounds, not"
                  " build time."},
-    {"rule": "coverage_skipped_no_lane",
-     "metric": "night coverage run skipped because no lane was on",
-     "threshold": 0,
-     "window": "each night report (emitted by night.py only)",
-     "proposal": "Power a lane for the night coverage run, or accept the stale map until"
-                 " the next working day."},
 )
 
 DRIFT_RECENT, DRIFT_BASE, DRIFT_MIN_DELTA_S = 5, 20, 1.0
@@ -674,17 +662,6 @@ def _rule_flake_rate_high(db, now):
     return out
 
 
-def _rule_coverage_stale(db, now):
-    row = db.execute("SELECT at FROM journal WHERE event='coverage_built' AND at <= ?"
-                     " ORDER BY at DESC LIMIT 1", (now,)).fetchone()
-    if row is None:
-        return []
-    age = _secs(row[0], now) / 86400
-    if age <= 7:
-        return []
-    return [{"subject": "coverage", "value": round(age, 1), "threshold": 7, "since": row[0]}]
-
-
 def _stable(fp):
     return {k: v for k, v in fp.items() if k not in VOLATILE_FINGERPRINT}
 
@@ -780,12 +757,10 @@ RULE_FUNCS = {
     "station_drift": _rule_station_drift,
     "cache_quota_low": _rule_cache_quota_low,
     "flake_rate_high": _rule_flake_rate_high,
-    "coverage_stale": _rule_coverage_stale,
     "minimum_stale": _rule_minimum_stale,
     "lane_reserve_breached": _rule_lane_reserve_breached,
     "stray_target_old": _rule_stray_target_old,
     "turnaround_spread": _rule_turnaround_spread,
-    # coverage_skipped_no_lane: emitted by night.py only
 }
 
 

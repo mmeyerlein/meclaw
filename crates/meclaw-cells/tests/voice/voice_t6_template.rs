@@ -401,16 +401,18 @@ fn the_call_key_is_declared_and_the_session_key_is_still_read() {
             "credential_request",
             "usage",
             "call_mark",
-            "first_audio"
+            "first_audio",
+            "audio_report"
         ]),
-        "the thirteen lanes this cell names for itself -- `spoken` and `delegation` \
+        "the fourteen lanes this cell names for itself -- `spoken` and `delegation` \
          are the duplex provider's two, added in 2.1.0, `delegation_cancel` the \
          drop of an overtaken delegation (POC gpt-live-1), `renewed` its third \
          (GH #896), `seed_ask` its fourth (the opening's seed, GH #1359), \
          `credential_request` the ask for its sealed keys (GH #1059), \
          `usage` and `call_mark` a call's usage and time marks (D48), \
          `first_audio` the stamp of an answer's first audible audio \
-         (`emit_first_audio`, d54g callseam), and they are on the SAME enum because a lane is a lane whichever \
+         (`emit_first_audio`, d54g callseam), `audio_report` how a call's audio went \
+         (`emit_audio_report`, #1637), and they are on the SAME enum because a lane is a lane whichever \
          engine produced it"
     );
 }
@@ -439,7 +441,7 @@ fn the_readme_manifest_binds_the_three_lanes_and_the_way_back() {
         .expect("add_nodes is a list");
     assert_eq!(nodes.len(), 1, "one channel is one node");
     assert_eq!(nodes[0]["name"], json!("channels/voice"));
-    assert_eq!(nodes[0]["template"], json!("voice@2.10.1"));
+    assert_eq!(nodes[0]["template"], json!("voice@2.11.0"));
 
     let edges = manifest["diff"]["add_edges"]
         .as_array()
@@ -549,6 +551,25 @@ fn the_readme_says_where_the_partial_lane_ends() {
             "templates/voice/README.md does not tell a reader about `{claim}`"
         );
     }
+}
+
+/// The lead ships off, as the README and the declaration say, and the key is
+/// there for a set to order it (#1633).
+#[test]
+fn the_lead_ships_off_and_the_readme_says_so() {
+    let Some((cfg, _, readme)) = shipped() else {
+        return;
+    };
+    assert_eq!(cfg["params"]["audio_out_lead_ms"], json!(0));
+    let declared = &cfg["contract"]["settings"]["audio_out_lead_ms"];
+    assert_eq!(declared["default"], json!(0));
+    assert!(readme.contains("`params.audio_out_lead_ms` is `0` here"));
+    let params = json!({"mount": "voice", "stt": {"provider": "echo"}});
+    let params = VoiceParams::parse(&params).expect("a document that names no lead parses");
+    assert_eq!(
+        params.audio_out_lead_ms, 0,
+        "and it is the cell's own default"
+    );
 }
 
 // ═════════════════════════════ 3. the params the cell really parses

@@ -708,7 +708,10 @@ fn gh_d54g_stamp_a_silent_second_judge_closes_the_turn_at_the_wait_bound() {
     let call = on(&called, JUDGE);
 
     // 2. The second judge does not answer; its cell reports the bound it
-    // ran into. The turn closes with ONE stamp, without the unsure class.
+    // ran into. The turn closes with ONE stamp. GH #1585 (contract point 3):
+    // the first verdict stands as it would without a second judge (`simple`
+    // 0.7 at `threshold` 0.6), WITH its needs and families -- no longer the
+    // dropped statement above.
     let silent = verdict_back(
         call,
         json!({"finish_reason": "error", "error_code": "provider_timeout"}),
@@ -718,10 +721,17 @@ fn gh_d54g_stamp_a_silent_second_judge_closes_the_turn_at_the_wait_bound() {
     let out = run_cell(ROUTE, &over, silent).0;
     assert_eq!(routes(&out), vec!["stamp".to_string()], "{out:?}");
     let got = stamp_of(&out);
-    for key in ["turn_id", "path", "p", "intent", "needs", "families"] {
-        assert_eq!(got[key], want[key], "{key}: {out:?}");
-    }
-    assert_ne!(fallback_of(&out), "", "the hop says why: {out:?}");
+    assert_eq!(got["turn_id"], want["turn_id"], "{out:?}");
+    assert_eq!(got["intent"], want["intent"], "{out:?}");
+    assert_eq!(got["path"], json!("simple"), "{out:?}");
+    assert_eq!(got["p"], json!(0.7), "{out:?}");
+    assert_eq!(got["needs"], json!(["tool"]), "{out:?}");
+    assert_eq!(got["families"], json!(["history"]), "{out:?}");
+    assert_eq!(
+        got["trail"]["fallback"],
+        json!("error"),
+        "the trail says why: {out:?}"
+    );
     assert_eq!(got["trail"]["sharpened"], json!(false), "{out:?}");
 
     // 3. The ask that opens the sharpening names the bound the turn now

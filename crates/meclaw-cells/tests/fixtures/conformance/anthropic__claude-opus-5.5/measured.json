@@ -63,5 +63,29 @@
       "note": "measured.json + responses/basic,reasoning,tool"
     }
   },
-  "cost_usd": 0.003687
+  "cost_usd": 0.003687,
+  "refusals": [
+    {
+      "rule": "R3",
+      "param": "reasoning_off",
+      "wire": "chat",
+      "status": 400,
+      "body": "{\"error\":{\"message\":\"Reasoning is mandatory for this endpoint and cannot be disabled.\",\"code\":400,\"metadata\":{\"provider_name\":null}}}"
+    },
+    {
+      "rule": "R4",
+      "param": "top_p",
+      "wire": "chat",
+      "status": 404,
+      "body": "{\"error\":{\"message\":\"No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection\",\"code\":404,\"metadata\":{\"routing_funnel\":[{\"step\":\"Initial Endpoints\",\"endpoint_count\":11},{\"step\":\"Filter by Regional Surcharge\",\"endpoint_count\":6},{\"step\":\"Filter by Tier Endpoint Rows\",\"endpoint_count\":5,\"reason\":\"Excluded tier endpoint rows the request did not opt into\"}],\"failed_routing_step\":\"Filter by Parameters\"}}}"
+    },
+    {
+      "rule": "R8",
+      "param": "tool_choice_named",
+      "wire": "chat",
+      "status": 404,
+      "body": "{\"error\":{\"message\":\"No endpoints found that support the provided 'tool_choice' value. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection\",\"code\":404,\"metadata\":{\"routing_funnel\":[{\"step\":\"Initial Endpoints\",\"endpoint_count\":11},{\"step\":\"Filter by Regional Surcharge\",\"endpoint_count\":6},{\"step\":\"Filter by Tier Endpoint Rows\",\"endpoint_count\":5,\"reason\":\"Excluded tier endpoint rows the request did not opt into\"}],\"failed_routing_step\":\"Filter by Tool Compatibility\"}}}"
+    }
+  ],
+  "refusals_measured_at": "2026-11-23T11:34:49Z"
 }

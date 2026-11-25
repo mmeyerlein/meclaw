@@ -1,4 +1,4 @@
-# `freeswitch@3.1.7`
+# `freeswitch@3.2.0`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -82,7 +82,7 @@ out and refuses the session. No key travels through `.env`.
 | direction | what travels |
 |---|---|
 | in, `in_speak` | the finished assistant turn, to be spoken into the call. `context.call_id` picks the connection, exactly as it does for a `voice` channel standing on its own |
-| in, `in_advise` | one section of advice for a duplex session that is already running: `hop.section` is `fact` (say it), `context` (think it), `correction` (rewrite the standing instruction), `interrupt` (a correction and a fact in one breath; once per `hop.turn_id`, a second of the same turn is a no-op, #1404), `renew` (open the call's next provider session) or `horizon` (when the answer of a running round comes: `body.seconds` in the set's `duplex.gpt_live.horizon_text`, as a correction, never into a section the model is still speaking, never after the answer it announces; without that text it is dropped). It goes to the media half alone, ends no synthesis and becomes no turn. Duplex only — a cascade instance answers `wrong_engine` |
+| in, `in_advise` | one section of advice for a duplex session that is already running: `hop.section` is `fact` (say it), `context` (think it), `correction` (rewrite the standing instruction), `interrupt` (a correction and a fact in one breath; once per `hop.turn_id`, a second of the same turn is a no-op, #1404), `renew` (open the call's next provider session) or `horizon` (when the answer of a running round comes: `body.seconds` in the set's `duplex.gpt_live.horizon_text`, as a comment (a request to speak, #1635), never into a section the model is still speaking, never after the answer it announces; without that text it is dropped). It goes to the media half alone, ends no synthesis and becomes no turn. Duplex only — a cascade instance answers `wrong_engine` |
 | in, `call_incoming` | somebody is ringing this member. `hop` carries `call_uuid`, `number` and — since 2.0.0 — `user_id`, the member the switch put the caller through as. This is THE turn of an inbound call — a call with no `user_id` and no `callers` entry gets no turn and its leg is put down, and since 1.1.0 a call that arrives while the line is busy gets what `params.second_call` says it gets (§ *What a second call gets*) |
 | in, `call_ringing` | the switch is ringing a number this channel dialled. It moves the row and raises no turn |
 | in, `call_answered` | somebody picked up. `hop` carries `call_uuid`. A turn for a call this channel PLACED; for an inbound call it moves the row and raises no turn, because `call_incoming` already said it |
@@ -97,6 +97,7 @@ out and refuses the session. No key travels through `.env`.
 | out, `hop.route == 'usage'` | what a duplex call used (D48, `emit_usage` on the media half): `hop` carries `seconds` (the call's total over every provider session) and `final`, the final one also `complete`; the body is empty. Crosses the rim on the `delegation` edge since #1369; the member declares it as a port at `./channels` |
 | out, `hop.route == 'call_mark'` | a time mark of a duplex call (D48, `call_marks_s` / `call_mark_every_s` on the media half): `hop` carries `elapsed_s`; the body is empty. Crosses the rim with `usage` since #1369; the member declares it as a port at `./channels` |
 | out, `hop.route == 'first_audio'` | the first audible audio of an answer (`emit_first_audio` on the media half): one per duplex answer, `hop` carries `turn_id` and `t_first_audio_ms` on the session's clock; the body is empty. Crosses the rim with `usage` since #1534; before, every stamp of a phone call died at the media half as a `no_route` dead letter |
+| out, `hop.route == 'audio_report'` | how the audio of a duplex call went (`emit_audio_report` on the media half): one at the end of the call, after its `final` usage; the body carries the late chunks, the holes at the way out and the longest waits, no word of the call. Crosses the rim with `first_audio` since #1637; the set that orders the report draws the edge beyond it |
 | out, `hop.route == 'error'` | a caller with no entry in `callers` — whose leg is put down in the same breath — a request this hive cannot read, or the media half's own failure |
 | out, `tool_result` / `tool_schemas` | the receipt of a `call`/`hangup`, and the offer itself |
 | out, `call_accepted` / `call_queued` / `call_refused` / `call_abandoned` | what a second call got. One receipt per inbound call, empty `messages[]`, `hop` carries `call_id`, `policy`, `capacity` and `cause`. The installing manifest draws the edge that drains them |
@@ -280,7 +281,7 @@ and the three grants seeded there in the same declaration (`seed_rows`).
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.1.7",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.2.0",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -401,7 +402,8 @@ A media half with a `duplex` block emits `spoken`, `delegation` and `renewed`
 as well; its channel adds the three to the first edge's condition, as the
 `voice` channel's edge does -- a `renewed` the edge leaves out dies at the
 channel, and the renewed session goes on without its handover. The same holds
-for `seed_ask`, `usage` and `call_mark` (D48), and for `first_audio` (#1534):
+for `seed_ask`, `usage` and `call_mark` (D48), for `first_audio` (#1534)
+and for `audio_report` (#1637):
 the hive lets them out of its rim, and the line's own container leg carries the ones its set drains.
 
 **`voice_session` is gone, and the call has a key of its own** (retracted in
@@ -1278,7 +1280,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.1.7`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.2.0`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1291,7 +1293,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.1.7"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.2.0"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

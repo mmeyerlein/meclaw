@@ -70,6 +70,12 @@ WS_EXPECTED_G = 20            # a run without cargo: its workspace only
 # (`hygiene.warm_targets` knows target/ only), so today every booked aux target
 # counts this value; a recorded row of that path would count its own bytes.
 AUX_EXPECTED_G = 10
+# What a pass adds to a target that is warm on the disk already (d54s lanekit,
+# Nr. 56): new generations, not the bytes once more. Start value from the
+# 21.11. rel0896 spur (estimate 10-20 G), not measured; the run's watchdog
+# keeps free_min_g regardless. A warm aux target counts AUX_WARM_GROWTH_G.
+WARM_GROWTH_G = 15
+AUX_WARM_GROWTH_G = 5
 DEFAULT_BUDGET = {"free_min_g": 30, "reserve_g": 60, "max_trees": 4, "export_g": 40,
                   "ws_g": 20, "bench_g": 60, "pool_g": 10}
 # `cpu` may be overbooked by this factor (W3 plan: 1.25 until measured). 1.5 is
@@ -146,11 +152,18 @@ ADDITIVE_DDL = (
     "CREATE TABLE IF NOT EXISTS lease_classes (pool TEXT, holder TEXT, since TEXT, "
     "class TEXT, PRIMARY KEY (pool, holder, since))",
     "CREATE TABLE IF NOT EXISTS lease_streak (pool TEXT PRIMARY KEY, merges INTEGER)",
+    # w2 batchgolden (#1639): the processes that block on a queue place (`take
+    # --wait`, `gate --wait-admission`, `merge --wait`: pool = its tree lease,
+    # since = its `merges.id`); `start` tells a pid the kernel gave out again.
+    "CREATE TABLE IF NOT EXISTS lease_waiters (pool TEXT, holder TEXT, since TEXT, "
+    "pid INTEGER, start TEXT, PRIMARY KEY (pool, holder, since, pid))",
 )
 # `lease_entries.hold_min`: the explicit `take --ttl` of a holder -- a lease
 # held on purpose, which the idle reclaim (R-TV-W21 b) leaves to its hold TTL.
 ADDITIVE_COLUMNS = (("runners", "root", "TEXT"), ("runners", "spec", "TEXT"),
                     ("lease_entries", "hold_min", "INTEGER"),
+                    # where the pid of a waiter counts: host and PID namespace (`_here`)
+                    ("lease_waiters", "host", "TEXT"),
                     # lease re-check m2: the release cap's streak beside the merges'
                     ("lease_streak", "releases", "INTEGER"))
 
@@ -594,6 +607,32 @@ def _demand(stations):
     return peak
 
 
+# w1 fruehrot (#1607): the build targets of the floor (`build [lib+bins]`) -- any
+# other target makes a plan more than the floor.
+_BEYOND_FLOOR = ("meclaw_bin", "workspace", "packages", "tests", "extra", "restrict")
+_SELECT_BEYOND_FLOOR = ("binaries", "rdeps", "all", "extra", "compile")
+
+
+def floor_only(stations):
+    """Is the plan's cargo at most the floor? No station needs cargo, or the only
+    one is `build` with the floor's targets (`lib_bins`) and `tests` runs the t0
+    floor selection. w1 fruehrot (#1607): the kit merge of d54s waited 1 013 s in
+    the admission ("all 4 cargo tokens are held") for a 24-s gate of exactly this
+    plan -- it needs no lane lease of its own (`_admit`, guest)."""
+    for st in stations:
+        if _needs(st)["cargo"] < 1:
+            continue
+        if st.get("name") != "build" or any((st.get("build") or {}).get(k)
+                                             for k in _BEYOND_FLOOR):
+            return False
+    for st in stations:
+        if st.get("name") == "tests":
+            sel = st.get("select") or {}
+            if not sel.get("floor") or any(sel.get(k) for k in _SELECT_BEYOND_FLOOR):
+                return False
+    return True
+
+
 def check_cpu(stations):
     """Refuses (exit 2) a plan with a station whose `needs.cpu` is no thread count: a
     negative value other than the symbols, None, a missing key or a legacy plan without
@@ -734,12 +773,15 @@ def _fit(cap, live_here, demand, tree):
     return ("needs " + ", ".join(over)) if over else ""
 
 
-def _target_g(db, lane, aux=()):
-    """The disk a cargo pass on `lane` reserves: the lane's target/ (its last
-    recorded bytes, else None) plus each aux target the plan books (`aux`, names
-    of `plan.AUX_TARGETS`): a recorded row of its path, else `AUX_EXPECTED_G`
-    -- today always the latter, nothing records aux rows yet (GH #1419 review
-    o53-r1 M2 -- the aux targets lie beside target/, not in it)."""
+def _target_g(db, lane, aux=(), cold=False):
+    """The disk a cargo pass on `lane` reserves: the lane's target/ (warm, i.e.
+    a recorded row: its growth `WARM_GROWTH_G` -- the bytes lie on the disk
+    already and count in its free space, d54s lanekit Nr. 56; else None) plus
+    each aux target the plan books (`aux`, names of `plan.AUX_TARGETS`): a
+    recorded row of its path `AUX_WARM_GROWTH_G`, else `AUX_EXPECTED_G` (GH
+    #1419 review o53-r1 M2 -- the aux targets lie beside target/, not in it).
+    `cold`: as if target/ had no row (its growth `DEFAULT_EXPECTED_G`) -- the need
+    once the run's own warm target is cleared (w1 leaseklar #1620)."""
     sql = ("SELECT bytes FROM workspaces WHERE runner = ? AND kind = 'target' AND "
            "state IN ('warm', 'in_use') AND bytes IS NOT NULL AND %s "
            "ORDER BY used_at DESC LIMIT 1")
@@ -748,10 +790,10 @@ def _target_g(db, lane, aux=()):
     from . import executor as _executor
     aux_like = "%%/%s/%%" % _executor.AUX_DIR
     row = db.execute(sql % "path NOT LIKE ?", (lane, aux_like)).fetchone()
-    g = int(math.ceil(row["bytes"] / float(1 << 30))) if row else None
+    g = WARM_GROWTH_G if row and not cold else None
     for name in sorted(set(aux)):
         row = db.execute(sql % "path LIKE ?", (lane, "%%/%s/%s" % (_executor.AUX_DIR, name))).fetchone()
-        add = int(math.ceil(row["bytes"] / float(1 << 30))) if row else AUX_EXPECTED_G
+        add = AUX_WARM_GROWTH_G if row else AUX_EXPECTED_G
         g = (DEFAULT_EXPECTED_G if g is None else g) + add
     return g
 
@@ -1163,6 +1205,40 @@ def lane_tree_name(repo_id, worktree):
     return base if repo_id == CORE_REPO else "%s@%s" % (repo_id, base)
 
 
+def repo_key(repo_id, key):
+    """The lease key of `key` (`<wave>/<strand>[:<n>]`) in the repository `repo_id`
+    (w1 leaseklar #1620): the core's as it was, a satellite's `<repo>@<key>` -- the
+    rule of `lane_tree_name`. soul2me's `w1/fehlerwort` and the core's held one
+    lease and blocked the core strand 104 min. A key that names a repository stays."""
+    repo_id = (repo_id or CORE_REPO).strip()
+    if not key or repo_id == CORE_REPO or key != bare_key(key):
+        return key
+    return "%s@%s" % (repo_id, key)
+
+
+def bare_key(key):
+    """`key` without its repository (`repo_key`): what a branch or a wave reads."""
+    head, sep, rest = (key or "").partition("@")
+    return rest if sep and "/" not in head else key
+
+
+def repo_of(tree):
+    """The repository id of the tree `tree`: a satellite's register word, else
+    `CORE_REPO` (also for a register that cannot be read -- the gate refuses it)."""
+    from . import register
+    if not tree or not register.is_satellite(tree):
+        return CORE_REPO
+    try:
+        with open(register.register_path(tree), encoding="utf-8") as fh:
+            word = json.load(fh).get("repo")
+    except (OSError, ValueError, AttributeError):
+        return CORE_REPO
+    return word if isinstance(word, str) and REPO_WORD_RE.fullmatch(word) else CORE_REPO
+
+
+REPO_WORD_RE = re.compile(r"[a-z][a-z0-9_-]*")
+
+
 def admission_tree(cargo, tree_name, holder):
     """The tree a pass runs in, relative to its lane's root: `tree` for a cargo pass,
     else `wt/<the tree's name>` (the holder's, `/` as `-`, when the gate names none).
@@ -1218,7 +1294,7 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
         holder_key = _batch_speaker(st, holder_key, lane_pref or "")
     ctx = _Ctx(db, now, branch=holder_key)
     ctx.lane_procs = lane_procs or {}
-    held_lane, left, release = None, None, False
+    held_lane, left, release, guest = None, None, False, False
     if pool_lanes:
         # re-check Kette FR2 m1: one class places the caller and queues it
         release = _release_class(holder_key, release_tree or wait_tree or "", mode)
@@ -1238,6 +1314,10 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
             if lane_pref and lane_pref != held_lane:
                 raise ScheduleError("%s holds lane %s, not %s -- release it first, then take %s"
                                     % (holder_key, held_lane, lane_pref, lane_pref))
+        elif floor_only(stations):
+            # w1 fruehrot (#1607): a floor plan is a guest on any pool lane -- no
+            # lease, no queue place; `_fit` still keeps it out of a busy build tree.
+            guest = True
         else:
             left = _lanes_left(st, _ahead_of(st, holder_key, merge, release))
 
@@ -1384,7 +1464,7 @@ def _admit(db, plan, *, repo, mode, strand, wave, base, lane_pref, now, tree_nam
     lane_name = chosen["name"]
     lease_taken = False
     if pool_lanes:
-        if lane_name in pool_lanes:
+        if lane_name in pool_lanes and not guest:
             ttl_min = int(math.ceil(ttl_s / 60.0))
             mine = _holder(st, holder_key)
             if mine:
@@ -1421,9 +1501,12 @@ def _dispatch(db, plan, runner, run, stations, names, demand, cargo, tree, now, 
         aux = [st["aux_target"] for st in stations
                if st.get("aux_target") and (st.get("needs") or {}).get("cargo_aux")]
         expected_g = _target_g(db, lane, aux) or DEFAULT_EXPECTED_G
+        cold_g = _target_g(db, lane, aux, cold=True) or DEFAULT_EXPECTED_G
     reserved_live_g = sum(int(x["expected_g"] or 0) for x in here)
     budget = dict(DEFAULT_BUDGET, reserved_live_g=reserved_live_g)
     budget["need_free_g"] = budget["reserve_g"] + reserved_live_g + expected_g
+    if cargo:  # w1 leaseklar (#1620): the need once its own warm target is cleared
+        budget["cold_need_free_g"] = budget["reserve_g"] + reserved_live_g + cold_g
     tree_path = tree_under(root, tree)
     ws = "%s/ws/%s" % (root, run)
     at = _iso(now)
@@ -1514,7 +1597,7 @@ def _dispatch(db, plan, runner, run, stations, names, demand, cargo, tree, now, 
                 "strand": strand or wave, "tree": tree_path, "target": "%s/target" % root, "ws": ws,
                 "stations": stations, "capacity": capacity, "cache_known": [],
                 "live_runs": [x["run"] for x in here], "expected_g": expected_g,
-                "fingerprint_expected": fp, "budget": budget, "quarantine": [], "decide": [],
+                "fingerprint_expected": fp, "budget": budget, "quarantine": [],
                 "deadline_at": deadline_at, "+env": env, "+nice": egon,
                 "+cpu_overbook": CPU_OVERBOOK, "+export_root": "%s/export" % root,
                 # the lane's core tools for a tree without its own (GH #1263)
@@ -2028,6 +2111,7 @@ def _load(db):
         "SELECT holder, since, hold_min FROM lease_holds WHERE pool = ?", (POOL,))}
     classes = {(r["holder"], r["since"]): r["class"] for r in db.execute(
         "SELECT holder, since, class FROM lease_classes WHERE pool = ?", (POOL,))}
+    waiters = waiter_marks(db, POOL)
     for e in db.execute("SELECT * FROM lease_entries WHERE pool = ? ORDER BY seq", (POOL,)):
         if e["resource"]:
             h = {"strand": e["holder"], "since": _epoch(e["since"]), "seen": _epoch(e["seen"]),
@@ -2048,6 +2132,7 @@ def _load(db):
             cls = classes.get((e["holder"], e["since"]))
             if cls in ("merge", "release"):
                 w[cls] = True
+            w["waiters"] = waiters.get((e["holder"], e["since"])) or []
             st["waiting"].append(w)
     row = db.execute("SELECT merges, releases FROM lease_streak WHERE pool = ?",
                      (POOL,)).fetchone()
@@ -2104,7 +2189,7 @@ def _release_class(key, tree="", mode=""):
         return True
     if not tree:
         return False
-    wave, _, strand = key.split(":", 1)[0].rpartition("/")
+    wave, _, strand = bare_key(key).split(":", 1)[0].rpartition("/")
     # `plans/<wave>` or `plans/<wave>-<date>`: `<wave>*` also matched a wave
     # `<wave>X-...` with a strand of the same name (re-check Kette Minor 2)
     dirs = [glob.escape(wave), glob.escape(wave) + "-*"] if wave else ["*"]
@@ -2175,6 +2260,9 @@ def _save(db, st, ctx):
         if cls:
             db.execute("INSERT OR REPLACE INTO lease_classes (pool, holder, since, class) "
                        "VALUES (?,?,?,?)", (POOL, w["strand"], _iso(w["since"]), cls))
+    db.execute("DELETE FROM lease_waiters WHERE pool = ?", (POOL,))
+    for w in st["waiting"]:
+        enter_waiters(db, POOL, w["strand"], _iso(w["since"]), w.get("waiters") or [])
     db.execute("INSERT OR REPLACE INTO lease_streak (pool, merges, releases) VALUES (?, ?, ?)",
                (POOL, int(st.get("merge_streak") or 0), int(st.get("release_streak") or 0)))
     db.execute("DELETE FROM lease_entries WHERE pool = ?", (POOL,))
@@ -2218,6 +2306,76 @@ def _alive(pid):
     except OverflowError:
         return False
     return True
+
+
+def _proc(pid):
+    """`(state, start)` of `pid` from `/proc`: its state letter and its start in
+    clock ticks since boot; `("", "")` without an answer."""
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as fh:
+            fields = fh.read().rsplit(")", 1)[1].split()
+        return fields[0], fields[19]
+    except (OSError, IndexError):
+        return "", ""
+
+
+def _here():
+    """Where a pid of this process counts: the host and its PID namespace."""
+    try:
+        ns = os.readlink("/proc/self/ns/pid")
+    except OSError:
+        ns = ""
+    return ("%s %s" % (socket.gethostname(), ns)).strip()
+
+
+def waiter_mark():
+    """`(pid, start, host)` of this process, as a blocking waiter enters it."""
+    return os.getpid(), _proc(os.getpid())[1], _here()
+
+
+def renew_waiters(marks, wait):
+    """The marks of a queue place whose caller asks again: with `wait` this
+    process beside every other waiter that lives (a double start: the place
+    goes when the last one ends), without it none -- the caller ends now and
+    another process comes back."""
+    me = waiter_mark()
+    return [m for m in marks if m[0] != me[0] and not waiter_gone(*m)] + [me] if wait else []
+
+
+def waiter_gone(pid, start, host):
+    """Has the waiter `(pid, start, host)` ended? A pid that started at another
+    time is another process; without a start on either side the pid alone
+    speaks (fail-closed: a live pid keeps the place). A pid of another host or
+    PID namespace says nothing here: not gone, the rules of a place without a
+    process hold."""
+    if host and host != _here():
+        return False
+    if not _alive(pid):
+        return True
+    state, now = _proc(pid)
+    return state in ("Z", "X") or bool(start and now and now != start)
+
+
+def waiter_marks(db, pool):
+    """`{(holder, since): [(pid, start, host), ...]}` of the blocking waiters of `pool`."""
+    out = {}
+    for r in db.execute("SELECT holder, since, pid, start, host FROM lease_waiters "
+                        "WHERE pool = ? ORDER BY rowid", (pool,)):
+        out.setdefault((r["holder"], r["since"]), []).append(
+            (int(r["pid"]), r["start"] or "", r["host"] or ""))
+    return out
+
+
+def enter_waiters(db, pool, holder, since, marks):
+    for pid, start, host in marks:
+        db.execute("INSERT OR REPLACE INTO lease_waiters (pool, holder, since, pid, start, host) "
+                   "VALUES (?,?,?,?,?,?)", (pool, holder, since, pid, start, host))
+
+
+def waiters_gone(marks):
+    """Is the place of the blocking waiters `marks` orphaned? Only one that names
+    a process, and only when every one of them has ended."""
+    return bool(marks) and all(waiter_gone(*m) for m in marks)
 
 
 def _stale(h, st, ctx, want=None, idle=True, key=None):
@@ -2290,6 +2448,13 @@ def _run_live(h, ctx):
 
 
 def _stale_wait(w, st, ctx):
+    # w2 batchgolden (#1639): a blocking waiter (`take --wait`, `gate
+    # --wait-admission`, a candidate) is as alive as its process -- 24.11. the
+    # place of an ended one held build03 as an offer for 30 min. A place without
+    # a process (`take` that ended in exit 3) is picked up by another one.
+    if waiters_gone(w.get("waiters")):
+        return "its waiting process (pid %s) is gone" % ", ".join(
+            str(m[0]) for m in w["waiters"])
     # A waiter in its own worktree is alive as long as the tree is; the TTL is
     # for waiters queued from outside (`--strand`), which have no tree.
     if w.get("tree"):
@@ -2650,10 +2815,7 @@ def _prune(st, ctx, key, want=None):
         if why and h.get("lane") and _lane_tree_busy(h, ctx, why):
             continue
         if why:
-            st["holders"].remove(h)
-            ctx.log("stale", h["strand"], why, resource=h["resource"], run=h.get("run"))
-            ctx.say("reclaimed the cargo token of %s -- %s (ttl %d min)"
-                    % (h["strand"], why, _hold_ttl(h, st)))
+            _reclaim(st, ctx, h, why)
     for w in list(st["waiting"]):
         why = "" if w["strand"] == key else _stale_wait(w, st, ctx)
         if why:
@@ -2712,7 +2874,8 @@ def _grant(st, ctx, key, lane, tree, ttl_min=None, run=None, merge=False, releas
 
 def _enqueue(st, ctx, key, want, tree, wait=False, merge=False, release=False):
     """Queue `key` (or keep its place) and return the refusal line of `take`;
-    `wait`: the caller blocks itself (`take --wait`, `gate --wait-admission`);
+    `wait`: the caller blocks itself (`take --wait`, `gate --wait-admission`) --
+    its process stands at the place, which goes when it ends (`_stale_wait`);
     `merge`: a merge candidate's gate, which waits ahead of the strands (K14);
     `release`: a release-path strand (`_release_class`), ahead of the program."""
     names = [w["strand"] for w in st["waiting"]]
@@ -2735,6 +2898,9 @@ def _enqueue(st, ctx, key, want, tree, wait=False, merge=False, release=False):
             entry["merge"] = True
         if release:
             entry["release"] = True
+    # The place belongs to who asked last: a blocking caller enters its process
+    # (again in each round), one that ends now leaves none behind.
+    entry["waiters"] = renew_waiters(entry.get("waiters") or [], wait)
     st["waiting"] = _queue_order(st["waiting"], st.get("merge_streak", 0),
                                  st.get("release_streak", 0))
     pos = [w["strand"] for w in st["waiting"]].index(key)
@@ -2758,7 +2924,8 @@ def _enqueue(st, ctx, key, want, tree, wait=False, merge=False, release=False):
 def _by(ctx, key):
     """"" for the holder's own branch -- `<strand>:<n>` is the strand's own too (R2 M5)."""
     # The admission's close sets the branch to the holder key itself (re-check Z-A M-a).
-    if ctx.branch and ctx.branch in (key, key.split(":", 1)[0]):
+    bare = bare_key(key)
+    if ctx.branch and ctx.branch in (key, key.split(":", 1)[0], bare, bare.split(":", 1)[0]):
         return ""
     return " (released by %s)" % (ctx.branch or "a detached tree")
 
@@ -2863,11 +3030,65 @@ def lease_off(db, *, force=False, now=None, branch=None, path=""):
 
 
 def lease_who(db, *, now=None, path=""):
-    """`who`: holders, the queue with offers, the last five log lines."""
+    """`who`: holders, the queue with offers, the last five log lines. A lease past
+    its deadline over an empty lane tree goes first (`_reclaim_overdue`): `who` writes
+    then, and probes each overdue lane over ssh first (up to its probe timeout per
+    lane, serial; no answer holds the lease -- fail-closed, only slower)."""
     _ensure(db)
     ctx = _Ctx(db, _now(now), None, path)
+    ctx.lane_procs = _probe_overdue_lanes(db, ctx.now)
+    freed = False
     with _tx(db):   # one snapshot: `who` must not see half a queue
-        return _who(db, ctx)
+        st = _load(db)
+        if st is not None and _reclaim_overdue(st, ctx):
+            _save(db, st, ctx)
+            freed = True
+        res = _who(db, ctx)
+    if freed:
+        _wake(_db_path(db))     # after the commit: a waiter may take the lane now
+    return res
+
+
+def _overdue(h, st, ctx):
+    """Why `h` is past its deadline (the hold TTL since it was last seen) with no
+    live run and no live process it entered, "" else (w1 leaseklar #1620)."""
+    if ctx.now - h["seen"] <= _hold_ttl(h, st) * 60:
+        return ""
+    return _stale(h, st, ctx, idle=False)
+
+
+def _probe_overdue_lanes(db, now):
+    """The lane tree probe of every overdue lane lease, before `BEGIN IMMEDIATE`
+    (the reason of `_probe_stale_lanes`)."""
+    st = _load(db)
+    if not st or not st.get("lanes"):
+        return {}
+    ctx = _Ctx(db, now)
+    return {h["lane"]: _tree_answer(db, h["lane"]) for h in st["holders"]
+            if h.get("lane") and _overdue(h, st, ctx)}
+
+
+def _reclaim_overdue(st, ctx):
+    """w1 leaseklar (#1620, OR-W1-93): `who` showed `STALE: last seen N min ago, no
+    live process` and the lease stood until a `release --force` by hand. A lease
+    past its deadline goes by itself, journaled `stale` -- a lane lease only over a
+    lane tree probed empty (a pid or no answer keeps it, `_lane_tree_busy`).
+    Returns whether one went."""
+    freed = False
+    for h in list(st["holders"]):
+        why = _overdue(h, st, ctx)
+        if not why or (h.get("lane") and _lane_tree_busy(h, ctx, why)):
+            continue
+        _reclaim(st, ctx, h, why)
+        freed = True
+    return freed
+
+
+def _reclaim(st, ctx, h, why):
+    st["holders"].remove(h)
+    ctx.log("stale", h["strand"], why, resource=h["resource"], run=h.get("run"))
+    ctx.say("reclaimed the cargo token of %s -- %s (ttl %d min)"
+            % (h["strand"], why, _hold_ttl(h, st)))
 
 
 def _who(db, ctx):
@@ -3752,6 +3973,24 @@ def _run_once(argv, env, cwd, queue=True):
     return code, out, pre + err
 
 
+def _legacy_key(db, key, legacy, tree):
+    """`key`, or the bare `legacy` key of a lease an older kit took for this very
+    tree (w1 leaseklar #1620: several kit versions share the store). Only a lease
+    whose registered tree is the caller's is the caller's -- the core's lease of the
+    same name has another tree (or none) and stays the core's."""
+    if key == legacy or not tree:
+        return key
+    st = _load(db)
+    if not st:
+        return key
+    mine = [e for e in st["holders"] + st["waiting"] if e["strand"] == key]
+    old = [e for e in st["holders"] + st["waiting"] if e["strand"] == legacy and e.get("tree")]
+    if mine or not old:
+        return key
+    here = os.path.realpath(tree)
+    return legacy if any(os.path.realpath(e["tree"]) == here for e in old) else key
+
+
 def _run_verb(argv, env, cwd, queue=True):
     ctx = _Ctx(None, 0)
     verb = argv[0] if argv else ""
@@ -3809,6 +4048,8 @@ def _run_verb(argv, env, cwd, queue=True):
                     "and belongs to %s" % (verb, "|".join(HOLDER_VERBS)))
             return 2, "", _join(ctx.err)
         key = "%s:%s" % (key, opts["holder"]) if key else ""
+    # w1 leaseklar (#1620): the key names the repository of the caller's tree
+    legacy, key = key, repo_key(repo_of(tree), key)
 
     if verb in ("check", "lane") and (not os.path.exists(db_path) or not key):
         return 0, "", ""
@@ -3832,6 +4073,8 @@ def _run_verb(argv, env, cwd, queue=True):
 
     db = store.open(db_path)
     try:
+        if verb in ("take", "release", "check", "lane"):
+            key = _legacy_key(db, key, legacy, tree)
         if verb == "init":
             res = lease_init(db, max=opts["max"], lanes=opts["lanes"], ttl=opts["ttl"] or "90",
                              force=opts["force"], lanes_file=lanes_file, now=now, branch=branch,
@@ -3855,7 +4098,7 @@ def _run_verb(argv, env, cwd, queue=True):
                                 force=opts["force"])
         else:
             res = lease_take(db, key, lane=opts["lane"] or None, ttl=opts["ttl"],
-                             tree=tree if branch == key else "", now=now, branch=branch,
+                             tree=tree if branch == bare_key(key) else "", now=now, branch=branch,
                              path=db_path, wait=opts["wait"], pid=opts["pid"], queue=queue,
                              # re-check Kette Minor 2 / FR2 m2: the class reads the
                              # strand file in the caller's tree -- any tree, like
@@ -3873,25 +4116,34 @@ def _run_verb(argv, env, cwd, queue=True):
 CANDIDATE_STRAND = "candidate"
 
 
-def candidate_key(wave_name, n):
-    """The lease of lane number `n` of a candidate build: the holder form of a
-    strand's second lease (`<wave>/candidate:<n>`, GH #1146) -- one strand
-    `candidate` per wave, so `token who` names it, and nothing besides the
-    normal admission: no verb of its own, never `init --force` (kit trap 23.10.)."""
-    return "%s/%s:%s" % (wave_name, CANDIDATE_STRAND, n)
+def candidate_key(wave_name, r12, n):
+    """The lease of lane number `n` of the candidate build of commit `r12`
+    (twelve hex): the holder form of a strand's second lease
+    (`<wave>/candidate:<rev12>-<n>`, GH #1146) -- one strand `candidate` per
+    wave, so `token who` names it, and nothing besides the normal admission: no
+    verb of its own, never `init --force` (kit trap 23.10.). The rev is part of
+    it since w2 candlease (#1638): two revs of one wave shared `candidate:<n>`
+    and the second run ended at once. An older kit's `candidate:<n>` is a holder
+    like any other -- it reads and releases as before."""
+    return "%s/%s:%s" % (wave_name, CANDIDATE_STRAND, _candidate_holder(r12, n))
 
 
-def _candidate_argv(verb, wave_name, n):
-    return [verb, "--strand", "%s/%s" % (wave_name, CANDIDATE_STRAND), "--holder", str(n)]
+def _candidate_holder(r12, n):
+    return "%s-%s" % (r12, n)
 
 
-def candidate_take(wave_name, n, lane, *, env, cwd, wait=False, pid=None):
-    """`take --lane <lane>` for `candidate_key(wave_name, n)`; (code, out, err)
+def _candidate_argv(verb, wave_name, r12, n):
+    return [verb, "--strand", "%s/%s" % (wave_name, CANDIDATE_STRAND),
+            "--holder", _candidate_holder(r12, n)]
+
+
+def candidate_take(wave_name, r12, n, lane, *, env, cwd, wait=False, pid=None):
+    """`take --lane <lane>` for `candidate_key(wave_name, r12, n)`; (code, out, err)
     as `run_lanes`. `wait`: `--wait`, queued until the lane is free (the
     `--wait-admission` of the verb). Without it a leased lane is exit 3 with NO
     queue place (`lease_take(queue=False)`): the build gives the lanes it got
     back and ends, it never comes back for an offer."""
-    argv = _candidate_argv("take", wave_name, n) + ["--lane", lane]
+    argv = _candidate_argv("take", wave_name, r12, n) + ["--lane", lane]
     if pid is not None:
         argv += ["--pid", str(pid)]
     if wait:
@@ -3899,10 +4151,10 @@ def candidate_take(wave_name, n, lane, *, env, cwd, wait=False, pid=None):
     return _run_once(argv, env, cwd, queue=False)
 
 
-def candidate_release(wave_name, n, *, env, cwd):
-    """`release` of `candidate_key(wave_name, n)`; (code, out, err) -- the
+def candidate_release(wave_name, r12, n, *, env, cwd):
+    """`release` of `candidate_key(wave_name, r12, n)`; (code, out, err) -- the
     verb wakes the waiters itself (`WAKE_VERBS`)."""
-    return _run_once(_candidate_argv("release", wave_name, n), env, cwd)
+    return _run_once(_candidate_argv("release", wave_name, r12, n), env, cwd)
 
 
 def _cli_lanes(args):

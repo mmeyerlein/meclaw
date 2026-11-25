@@ -811,5 +811,5 @@ def register(sub):
                         " (default: the graph's rev)")
     p.add_argument("--replay", default=None, help="cases JSON: plan each red diff, count misses")
     p.add_argument("--workdir", default=None, help="replay: keep the unpacked trees here")
-    p.add_argument("--db", default=None, help="store for `coverage_stale` (default: none)")
+    p.add_argument("--db", default=None, help="store path (default: none)")
     p.set_defaults(func=_cmd_impact)

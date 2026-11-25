@@ -29,7 +29,6 @@ use meclaw_cells::timer::io::TimerReconfig;
 use meclaw_colony::{DbConn, LongRunningCell};
 use meclaw_core::{Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid, validate_ubf_body};
 use serde_json::json;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 fn build_msg(body: serde_json::Value) -> meclaw_core::Message {
@@ -98,17 +97,22 @@ fn rig() -> Rig {
     }
 }
 
-/// No emission within a generous window. Used where the contract is silence.
-async fn expect_silence(rx: &mut mpsc::Receiver<CellEmission>) {
-    if let Ok(Some(em)) = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
+/// No emission at all, proven by an event and not by a window (GH #1589).
+/// The handler has returned and the caller has dropped every sender it held
+/// (the sink and the rig's own), so the channel closes exactly when no
+/// producer is left -- also one the handler might have spawned. A late
+/// emission keeps it open and arrives; the old 300 ms of quiet passed any
+/// emission slower than that. The wait carries only the hang mark.
+async fn expect_silence(mut rx: mpsc::Receiver<CellEmission>) {
+    let got = meclaw_testing::deadline::hang("the output channel to close", rx.recv()).await;
+    if let Some(em) = got {
         panic!("expected no emission, got: {}", em.content);
     }
 }
 
 async fn expect_emission(rx: &mut mpsc::Receiver<CellEmission>) -> CellEmission {
-    tokio::time::timeout(Duration::from_secs(30), rx.recv())
+    meclaw_testing::deadline::hang("the cell's emission", rx.recv())
         .await
-        .expect("no emission within 30s")
         .expect("channel closed")
 }
 
@@ -130,9 +134,8 @@ async fn an_op_inside_a_tool_call_turn_is_accepted() {
             .expect("the op must have created a row");
     assert_eq!(row.status, "active");
     assert_eq!(row.schedule_name, "assistant-reminder");
-    let rc = tokio::time::timeout(Duration::from_secs(30), r.rc_rx.recv())
+    let rc = meclaw_testing::deadline::hang("the SetActive reconfig", r.rc_rx.recv())
         .await
-        .expect("no SetActive within 30s")
         .expect("channel closed");
     assert!(matches!(rc, TimerReconfig::SetActive(_)));
 }
@@ -157,7 +160,9 @@ async fn the_legacy_raw_body_path_still_works_and_still_says_nothing() {
         "the raw-body op must still create its row"
     );
     // No inbound id, so nothing to answer: the legacy contract is unchanged.
-    expect_silence(&mut r.out_rx).await;
+    drop(sink);
+    drop(r.out_tx);
+    expect_silence(r.out_rx).await;
 }
 
 // ---- 2. the answer ---------------------------------------------------------

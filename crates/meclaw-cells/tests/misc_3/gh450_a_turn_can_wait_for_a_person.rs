@@ -393,6 +393,44 @@ fn a_sweep_writes_the_expiry_first_and_emits_the_receipt_from_its_reply() {
     assert_eq!(hop_str(&receipt[0], "rule_id"), "hold-newcomer");
 }
 
+/// GH #1277: the warden compares its stamp with `expires_at` as text, the way
+/// the screen's window does. A stamp taken over raw ("2026-8-…" sorts above
+/// every "2026-0…" and "2026-1…") expires a hold that has weeks to run, and the
+/// row it parks itself carries a time no reader can order.
+#[test]
+fn gh1277_an_unpadded_stamp_expires_no_hold_before_its_time() {
+    const RAW: &str = "2026-8-14T9:5:3.5Z";
+    const NORMAL: &str = "2026-08-14T09:05:03.500000Z";
+
+    let mut doc = to_warden("hold-newcomer", &probe_body("hello"));
+    doc["header"]["hop"]["fw_now"] = json!(RAW);
+    let read = emit_from("warden", json!({}), doc);
+    let mut reply = warden_reply(
+        &read[0]["header"],
+        "pile",
+        "select",
+        json!([
+            pile_row("old1", "2026-08-14T09:05:03.400000Z"),
+            pile_row("live1", "2026-10-01T00:00:00.000000Z")
+        ]),
+    );
+    // The stamp a parent's edge hands back is taken over no more raw than the
+    // one on the hop.
+    reply["header"]["context"]["wd_now"] = json!(RAW);
+    let out = emit_from("warden", json!({}), reply);
+    assert_eq!(out.len(), 2, "one expiry, one parked row: {out:?}");
+    let expire = op_of(&out[0]);
+    assert_eq!(
+        expire["where"]["hold_id"]["in"],
+        json!(["old1"]),
+        "a hold that runs until October is not due in August"
+    );
+    assert_eq!(expire["set"]["decided_at"], json!(NORMAL));
+    let row = &op_of(&out[1])["row"];
+    assert_eq!(row["held_at"], json!(NORMAL));
+    assert_eq!(row["expires_at"], json!("2026-08-14T10:05:03.500000Z"));
+}
+
 #[test]
 fn releasing_an_expired_hold_can_never_produce_a_pass() {
     let ask = emit_from("warden", json!({}), release_doc("h1", "release"));

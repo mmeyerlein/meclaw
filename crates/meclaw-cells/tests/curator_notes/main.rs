@@ -6,13 +6,11 @@ pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
 pub mod curator_profiles;
 pub mod gh1512_a_turn_note_reaches_the_target_that_speaks;
-pub mod gh_d58_note_a_discarded_call_uses_up_nothing;
-pub mod gh_d58_note_a_kept_speculation_receipts_what_it_showed;
+pub mod gh_d54s_wohlfilter_a_wellbeing_fact_stays_out_of_the_state_line;
 pub mod gh_d58_note_a_once_note_left_out_for_space_stays_open;
 pub mod gh_d58_note_a_once_note_never_rides_a_live_feed;
 pub mod gh_d58_note_a_once_note_reaches_the_next_start_window_and_its_renewals;
 pub mod gh_d58_note_a_once_note_stands_in_every_call_of_one_turn_and_never_again;
-pub mod gh_d58_note_a_released_fallback_receipts_with_its_sends;
 pub mod gh_d58_note_a_set_override_of_note_once_passes_the_door;
 pub mod gh_d58_note_a_shown_note_with_a_receipt_answers_at_the_rim;
 pub mod gh_d58_note_a_turn_note_behaves_as_before;

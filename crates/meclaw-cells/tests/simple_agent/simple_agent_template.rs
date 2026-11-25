@@ -255,6 +255,8 @@ fn simple_agent_is_sealed_and_speaks_the_turn_door() {
                 "close",
                 "in_pack",
                 "in_model",
+                // GH #1353: a params-only update for one cell of the agent.
+                "in_params",
                 "mutation_committed",
                 "in_sealed",
                 "in_briefing",
@@ -283,6 +285,9 @@ fn simple_agent_is_sealed_and_speaks_the_turn_door() {
                 "conversations",
                 // D58 note (GH #1477): the curator's answer to a note's sender.
                 "note_receipt",
+                // GH #1353: the answer of the cell an `in_params` update named.
+                "params_applied",
+                "params_refused",
             ]
             .map(str::to_string)
             .to_vec()

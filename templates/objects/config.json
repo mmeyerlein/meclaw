@@ -36,6 +36,10 @@
         {
           "route": "in_facts",
           "because": "memory's answer to `facts` (restamped by the member when `hop.recall_caller == 'objects'`, `hop.subject` restated off the member's `context.objects_subject`: a refusal names no subject): a `bundle` whose `system.memory.bundle.text` is the JSON `{subject, as_of, answers, candidates[], complete, complete_reason?}` -- the facts are `candidates[]`, newest first, the object is `subject` -- or a refusal (`hop.reject_reason` / `hop.error_code`: `missing_audience`, `invalid_input`, `store_refused`), which keeps the facts last stored. Then the brief is rendered and pushed when it changed"
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
@@ -66,6 +70,14 @@
         {
           "route": "facts",
           "because": "a question to memory's `in_query {subject}` (GH #948): hop `audience_now` = the row's round, `subject`, `recall_caller` 'objects' -- the member's door stamps the round and the caller into the context and nothing else; body `{subject, limit: 3, messages: []}`. Once per new version of an active row"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -243,6 +255,41 @@
           "to": ".",
           "condition": "has(hop.route) && (hop.route == 'source_changed' || hop.route == 'facts' || hop.route == 'candidate' || hop.route == 'alias')",
           "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/store')"
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "cur_origin",
               "cur_phase",

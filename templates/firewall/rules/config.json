@@ -39,6 +39,15 @@
         "created_at": "text"
       }
     },
+    "indexes": {
+      "arrivals_window": {
+        "table": "arrivals",
+        "on": [
+          "channel",
+          "recorded_at"
+        ]
+      }
+    },
     "query_timeout_ms": 5000,
     "transfer": {
       "base_path": "export"

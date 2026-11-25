@@ -50,5 +50,50 @@
       "note": "measured.json + responses/basic,reasoning,tool"
     }
   },
-  "cost_usd": 0.01277
+  "cost_usd": 0.01277,
+  "refusals": [
+    {
+      "rule": "R5",
+      "param": "temperature",
+      "wire": "messages",
+      "status": 400,
+      "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"`temperature` is deprecated for this model.\"},\"request_id\":\"req_011ChKnmoz6KzyzQpwKLyx8W\"}"
+    },
+    {
+      "rule": "R5",
+      "param": "top_p",
+      "wire": "messages",
+      "status": 400,
+      "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"`top_p` is deprecated for this model.\"},\"request_id\":\"req_011ChKnmqKxPGH3aME93K4nz\"}"
+    },
+    {
+      "rule": "R6",
+      "param": "thinking_enabled",
+      "wire": "messages",
+      "status": 400,
+      "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"\\\"thinking.type.enabled\\\" is not supported for this model. Use \\\"thinking.type.adaptive\\\" and \\\"output_config.effort\\\" to control thinking behavior.\"},\"request_id\":\"req_011ChKnmrXtLqjNyk74bgnCS\"}"
+    },
+    {
+      "rule": "R13",
+      "param": "text_before_tool_result",
+      "wire": "messages",
+      "status": 400,
+      "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.2: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_meclaw_1. Each `tool_use` block must have a corresponding `tool_result` block in the next message.\"},\"request_id\":\"req_011ChKnmzA2aXMXtAbi5TVxT\"}"
+    },
+    {
+      "rule": "R14",
+      "param": "unknown_field",
+      "wire": "messages",
+      "status": 400,
+      "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"x_meclaw_unknown: Extra inputs are not permitted\"},\"request_id\":\"req_011ChKnn1RBWxSYm7Rorm7ej\"}"
+    },
+    {
+      "rule": "R15",
+      "param": "no_version",
+      "wire": "messages",
+      "status": 400,
+      "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"anthropic-version: header is required\"},\"request_id\":\"req_011ChKnn2asyoN36kow75iAy\"}"
+    }
+  ],
+  "refusals_measured_at": "2026-11-23T11:35:20Z"
 }

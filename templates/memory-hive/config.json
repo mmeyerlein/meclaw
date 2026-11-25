@@ -101,6 +101,10 @@
           "because": "a model package for this hive's model call, pushed by the colony's llm-registry (GH #858): a PARAMS-ONLY body -- an empty `system` slot, no `messages` -- that the llm cell merges into its live params and answers with nothing. It goes from this path straight to the llm cell it is addressed to (`./closer`, `./dialectic`, `./dreamer`, `./judge`), past every other cell, because a params body is not a request. This hive has 4 llm cells, so the door reads `hop.subscriber` -- the cell path the registry addresses a push by -- and one edge per cell carries only the pushes whose path ends in that cell's name. The guard is permissive (the form of GH #478): a message with no subscriber at all -- which the registry never sends -- would reach every llm cell, and that is what lets the substrate's lane check see a door for the lane. The llm cell takes package keys from a params-only message only (GH #853), so no request on another lane can change the model it runs on. Draw it only from the registry's `update` lane, restamped `in_model`"
         },
         {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
+        },
+        {
           "route": "clock_op",
           "context": [],
           "because": "run this hive's night now, from outside the sealed rim (GH #1019): body `{op: trigger, schedule_name: \"nightly-dream\"}` (the name may be left out) runs the nightly consolidation once, about two seconds later, exactly as a nightly strike would -- same body, same `dream_run`/`dream_to`, its own `consolidation_log` row. Since GH #1229 (R-AG-1) the lane ends at ./writer, not at the clock: the clock carries no schedule of its own and takes orders from the writer alone, which arms the next night with every episode it writes. So the trigger is the event that arms the night for now -- it replaces a night armed for `night_at_utc`, and the next written episode arms the next one; a replay that fires one night per recorded day waits for that night's receipt before it writes the next day. The lane carries the trigger and nothing else: `add`, `modify`, `remove`, a `params` slot, a `schedule_id` or another name are refused by the writer on `reject` (`reject_reason: op_not_accepted`) and never reach the clock -- an `add` would otherwise plant a strike the clock emits from inside the hive, at any inner cell past the rim. The run itself is read where it lands -- in `consolidation_log`"
@@ -180,6 +184,14 @@
             "./embed"
           ],
           "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -530,7 +542,7 @@
         {
           "from": "./dreamer",
           "to": "./dream-glue",
-          "condition": "!(has(context.store_origin) && context.store_origin == 'recur') && !(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "condition": "!(has(context.store_origin) && context.store_origin == 'recur') && !(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_context": {
               "store_origin": "'dream'",
@@ -546,7 +558,7 @@
         {
           "from": "./judge",
           "to": "./dream-glue",
-          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_context": {
               "store_origin": "'dream'",
@@ -599,7 +611,7 @@
         {
           "from": "./closer",
           "to": "./close-glue",
-          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_context": {
               "store_origin": "'close'",
@@ -777,7 +789,7 @@
         {
           "from": "./dialectic",
           "to": "./recall",
-          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_context": {
               "mem_phase": "'answer'"
@@ -1395,7 +1407,7 @@
         {
           "from": "./closer",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -1434,7 +1446,7 @@
         {
           "from": "./dialectic",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -1473,7 +1485,7 @@
         {
           "from": "./dreamer",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -1512,7 +1524,7 @@
         {
           "from": "./judge",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -1811,6 +1823,504 @@
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'conversations'",
           "modifier": {
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/clock')"
+        },
+        {
+          "from": ".",
+          "to": "./closer",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/closer')"
+        },
+        {
+          "from": ".",
+          "to": "./dialectic",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/dialectic')"
+        },
+        {
+          "from": ".",
+          "to": "./dreamer",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/dreamer')"
+        },
+        {
+          "from": ".",
+          "to": "./judge",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/judge')"
+        },
+        {
+          "from": ".",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/store')"
+        },
+        {
+          "from": "./clock",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./clock",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./closer",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./closer",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./dialectic",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./dialectic",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./dreamer",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./dreamer",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./judge",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./judge",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "affect_filter",
+              "affect_req",
+              "alias_req",
+              "batch_id",
+              "close_group",
+              "close_pass",
+              "dream_from",
+              "dream_run",
+              "dream_to",
+              "ent_clock",
+              "mem_phase",
+              "memory_tier",
+              "port_run",
+              "port_table",
+              "recall_as_of",
+              "recall_id",
+              "recall_query",
+              "recall_subject",
+              "recall_window_from",
+              "recall_window_to",
+              "recall_input_soft",
+              "store_origin",
+              "embed_episode",
+              "embed_item",
+              "embed_retry",
+              "conv_req",
+              "correction_key"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "affect_filter",
               "affect_req",

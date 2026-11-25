@@ -14,6 +14,12 @@
 //! judge was asked about every round of the wall, and after the rebuild every
 //! row of the wall stands whole, no message is in the one-line form of the
 //! ballast and no `gc` mark counts `ballast`.
+//!
+//! One test per way (GH #1640). The twelve ways ran in one test: 26 s alone, 73 s
+//! in the middle of 125 gates, 198 s in the slowest green one, and the runner's kill
+//! at 240 s in one of them. A way is one wall of python work that stretches
+//! with the load of the lane and waits on no clock: with 64 tests at once one way
+//! took 51 s against 2 s alone.
 
 // harness_fold: #[path = "support/curator_bank.rs"]
 #[allow(unused_imports)]
@@ -87,60 +93,99 @@ fn answers_a_string(_: &Wall, _: &Msg) -> Judged {
     Judged::Broken("\"asked\"")
 }
 
-#[test]
-fn a_failed_judge_keeps_the_round() {
-    let ways: [(&str, Way); 12] = [
-        ("failed", fails),
-        ("timed out", times_out),
-        ("no json", says_no_json),
-        ("cut json", cuts_its_json),
-        ("unknown verdict", names_no_verdict_of_the_form),
-        ("no answer", never_answers),
-        ("asked, empty line", asks_without_a_line),
-        ("asked, blank line", asks_with_a_blank_line),
-        ("finish length", is_cut_at_its_length),
-        ("finish error with text", ends_in_an_error_with_text),
-        ("json array", answers_an_array),
-        ("json string", answers_a_string),
-    ];
-    let mut found = Findings::default();
-    for (way, judge) in ways {
-        let (wall, _) = phone_asked::wall();
-        let wall = wall.judged_by(judge);
-        let Some((h, o)) = found.judge(way, || rebuild_with_hive(&wall, &wall.runs[0])) else {
-            continue;
-        };
-        found.judge(way, || {
-            for (key, _) in &wall.asked {
-                assert!(
-                    h.judged
-                        .iter()
-                        .any(|r| request_text(r).contains(key.as_str())),
-                    "{}: the judge is asked about {key}",
-                    o.who()
-                );
-            }
-            for i in 0..wall.pieces.len() {
-                assert_eq!(
-                    o.shown(&wall, i),
-                    Shown::Whole,
-                    "{}: the row {} stands whole\n{}",
-                    o.who(),
-                    wall.pieces[i].key,
-                    o.view()
-                );
-            }
-            for t in o.window() {
-                assert!(
-                    asked_ids(&t).is_empty(),
-                    "{}: no line of the ballast: {t}",
-                    o.who()
-                );
-            }
-            for g in &o.gc {
-                assert_eq!(g["classes"][BALLAST], json!(0), "{}: {g}", o.who());
-            }
-        });
+/// The wall, its judge failing this way, through its rebuild: every round was
+/// put to the judge and every row stands whole.
+fn the_round_stays(judge: Way) {
+    let (wall, _) = phone_asked::wall();
+    let wall = wall.judged_by(judge);
+    let (h, o) = rebuild_with_hive(&wall, &wall.runs[0]);
+    for (key, _) in &wall.asked {
+        assert!(
+            h.judged
+                .iter()
+                .any(|r| request_text(r).contains(key.as_str())),
+            "{}: the judge is asked about {key}",
+            o.who()
+        );
     }
-    found.finish();
+    for i in 0..wall.pieces.len() {
+        assert_eq!(
+            o.shown(&wall, i),
+            Shown::Whole,
+            "{}: the row {} stands whole\n{}",
+            o.who(),
+            wall.pieces[i].key,
+            o.view()
+        );
+    }
+    for t in o.window() {
+        assert!(
+            asked_ids(&t).is_empty(),
+            "{}: no line of the ballast: {t}",
+            o.who()
+        );
+    }
+    for g in &o.gc {
+        assert_eq!(g["classes"][BALLAST], json!(0), "{}: {g}", o.who());
+    }
+}
+
+#[test]
+fn a_failed_call_keeps_the_round() {
+    the_round_stays(fails);
+}
+
+#[test]
+fn a_call_out_of_its_time_keeps_the_round() {
+    the_round_stays(times_out);
+}
+
+#[test]
+fn an_answer_without_json_keeps_the_round() {
+    the_round_stays(says_no_json);
+}
+
+#[test]
+fn cut_json_keeps_the_round() {
+    the_round_stays(cuts_its_json);
+}
+
+#[test]
+fn an_unknown_verdict_keeps_the_round() {
+    the_round_stays(names_no_verdict_of_the_form);
+}
+
+#[test]
+fn no_answer_keeps_the_round() {
+    the_round_stays(never_answers);
+}
+
+#[test]
+fn asked_with_an_empty_line_keeps_the_round() {
+    the_round_stays(asks_without_a_line);
+}
+
+#[test]
+fn asked_with_a_blank_line_keeps_the_round() {
+    the_round_stays(asks_with_a_blank_line);
+}
+
+#[test]
+fn an_end_at_the_length_keeps_the_round() {
+    the_round_stays(is_cut_at_its_length);
+}
+
+#[test]
+fn an_error_end_with_a_text_keeps_the_round() {
+    the_round_stays(ends_in_an_error_with_text);
+}
+
+#[test]
+fn a_json_array_keeps_the_round() {
+    the_round_stays(answers_an_array);
+}
+
+#[test]
+fn a_json_string_keeps_the_round() {
+    the_round_stays(answers_a_string);
 }

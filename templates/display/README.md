@@ -1,18 +1,20 @@
-# `display@2.14.0`
+# `display@2.15.0`
 
 > **Normative source:** this README is the public rendering of the display-hive description (`meclaw-next/23-display/display-hive.md`, internal), with its reference model and its scenarios, which travel with this template in `compose/scenarios/`. Where the two differ, that document rules and this README is redrawn from it (`docs/development-rules.md` § 10).
 
 One screen per member, reached at `/<mount>/` on the colony's one listener, that several
 agents and applications write onto at the same time. A **view** is a named, owned,
 optionally expiring piece of that screen: whoever sends one owns it, replaces it under the
-same name, and takes it down again. Three lanes go in. `in_view` puts a view up,
+same name, and takes it down again. Four lanes go in. `in_view` puts a view up,
 `in_withdraw` takes it down, `in_notice` turns a classified message into a window of its
-sender. Two come out: `event` carries what a person did that the screen could not answer
+sender, and `mutation_committed`, the mutation door's receipt, wakes a cold curator into
+its boot (GH #1590). Two come out: `event` carries what a person did that the screen could not answer
 itself, `receipt` a write that was refused. The hive is the address, and the cells inside
 it are its own business.
 
 ```
-in_view / in_withdraw / in_notice  ->  compose  <->  views    rows + rest row
+in_view / in_withdraw / in_notice
+mutation_committed                 ->  compose  <->  views    rows + rest row
                                          | \
                                          |  +->  judge, clock    relevance, time
                                          v
@@ -81,7 +83,9 @@ of a window that appeared or left in the last pass before the kill. One second l
 the next stroke, both are equal; everything else comes back from the rows, the small row
 and the clock. `REBUILD n/n` of the scenario driver pins it: the driver kills the curator
 after every scenario and compares the rebuilt state with the old one after the next
-stroke.
+stroke. A born screen does not wait for an app: the mutation door's boot receipt
+(`mutation_committed`) wakes the cold curator into this boot, so `/` and every output
+serve a page before the first app write; it is no event of § 4.1 and runs no pass.
 
 The curator takes one message at a time, so events that arrive together are computed and
 answered in the order they arrived. A browser hears the pass: one `patch` per pass, from

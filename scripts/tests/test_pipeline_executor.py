@@ -7,6 +7,7 @@ filterset it was handed. Nothing compiles; the whole file stays under 30 s.
 
 Run: `python3 -m unittest scripts.tests.test_pipeline_executor` from the root.
 """
+import contextlib
 import datetime
 import fcntl
 import gc
@@ -139,6 +140,15 @@ JUNIT_TWO = """<?xml version="1.0" encoding="UTF-8"?>
     <testcase name="broken" classname="b::z" time="0.2"><failure type="test failure">boom</failure></testcase>
   </testsuite>
 </testsuites>
+"""
+
+# A precheck stand-in: what reached it on the argv, and how many paths its list file held.
+FAKE_PRECHECK = """import os, sys
+args = sys.argv[1:]
+with open(args[args.index("--files-from") + 1], encoding="utf-8") as fh:
+    paths = fh.read().splitlines()
+with open(os.environ["CALLS"], "a", encoding="utf-8") as out:
+    out.write("precheck argc=%d paths=%d first=%s last=%s\\n" % (len(args), len(paths), paths[0], paths[-1]))
 """
 
 
@@ -2956,6 +2966,171 @@ class TestNeedsField(unittest.TestCase):
         reuse = {"name": "tests", "cargo": True, "needs": {"cpu": 8, "cargo": 0}}
         self.assertFalse(executor._needs_cargo(reuse), "a nextest station after build reuses without the lock")
         self.assertTrue(executor._needs_cargo({"name": "old", "cargo": 1}), "a plan without needs keeps the old flag")
+
+
+class PathsTravelInAFile(ExecutorCase):
+    """#1520: a station's paths reach it through a list file in the run's
+    workspace, never on the argv -- the same on a lane as on this machine,
+    because the executor writes the file where it runs."""
+
+    def test_sixty_thousand_paths_reach_the_station_and_its_argv_stays_short(self):
+        paths = ["docs/gen/f%05d.md" % i for i in range(60000)]
+        self.write_exe(self.tree / "scripts" / "precheck.py", FAKE_PRECHECK)
+        planned = gate_plan.precheck_station(paths)
+        st = station("precheck", None, cmds=[{"argv": planned.cmds[0], "cwd": ""}],
+                     paths=list(planned.paths))
+        rc, evs = self.run_exec(self.dispatch([st]))
+        self.assertEqual(0, rc, self.err_text)
+        self.assertEqual("GREEN", self.ended(evs)["precheck"]["verdict"])
+        self.assertEqual(["precheck argc=2 paths=60000 first=docs/gen/f00000.md "
+                          "last=docs/gen/f59999.md"], self.calls.read_text().splitlines())
+        ran = [ln for ln in (self.ws / "logs" / "precheck.log").read_text().splitlines()
+               if ln.startswith("$ ")]
+        self.assertEqual(1, len(ran))
+        self.assertLess(len(ran[0]), 400)
+        self.assertNotIn("{paths}", ran[0])
+
+    def test_a_paths_argv_without_paths_is_red_not_an_empty_green(self):
+        # review argvpre I-2: a station that lost its `paths` would check an empty
+        # list and say GREEN -- it ends RED with its reason instead
+        self.write_exe(self.tree / "scripts" / "precheck.py", FAKE_PRECHECK)
+        planned = gate_plan.precheck_station(["docs/a.md"])
+        st = station("precheck", None, cmds=[{"argv": planned.cmds[0], "cwd": ""}])
+        st.pop("paths", None)
+        rc, evs = self.run_exec(self.dispatch([st]))
+        ended = self.ended(evs)["precheck"]
+        self.assertEqual("RED", ended["verdict"], ended)
+        self.assertIn("paths missing", str(ended), ended)
+        self.assertFalse(self.calls.exists() and self.calls.read_text().strip(),
+                         "the station ran")
+
+
+
+class TestFailFastEndsTheRun(ExecutorCase):
+    """w1 fruehrot (#1607): in d54s five full strand gates ran red to the end
+    (6 583 s) although their finding stood after 68-85 s. With `+fail_fast` the
+    first red station ends the run: the running stations are stopped (SKIP),
+    the pending ones never start, the pass is RED (a verdict, not ABORTED) and
+    `pass_ended` names the station and the second it stopped at. Fake stations."""
+
+    run_guarded = TestExecutorFailures.run_guarded
+
+    def stations(self, fifo, side_cmd):
+        # `red` fails only once `side` runs: the FIFO is the event, no clock.
+        return [station("side", "echo x > %s; %s" % (fifo, side_cmd)),
+                station("red", "cat %s > /dev/null; exit 1" % fifo),
+                station("later", after=["side"])]
+
+    def test_the_first_red_station_stops_the_run(self):
+        fifo = self.root / "go"
+        os.mkfifo(fifo)
+        rc, evs = self.run_guarded(self.dispatch(self.stations(fifo, "exec sleep 600"),
+                                                 **{"+fail_fast": True}))
+        self.assertEqual(1, rc, self.err_text)
+        ended = self.ended(evs)
+        self.assertEqual("RED", ended["red"]["verdict"])
+        self.assertEqual(("SKIP", "fail-fast: red red"),
+                         (ended["side"]["verdict"], ended["side"].get("reason")))
+        self.assertEqual("SKIP", ended["later"]["verdict"])
+        passed = [e["data"] for e in evs if e["event"] == "pass_ended"][-1]
+        self.assertEqual("RED", passed["verdict"])
+        self.assertEqual("red", passed["stopped"]["station"])
+        self.assertIsInstance(passed["stopped"]["after_s"], float)
+
+    def test_collect_runs_every_station(self):
+        fifo = self.root / "go"
+        os.mkfifo(fifo)
+        rc, evs = self.run_guarded(self.dispatch(self.stations(fifo, "true"),
+                                                 **{"+fail_fast": False}))
+        self.assertEqual(1, rc, self.err_text)
+        ended = self.ended(evs)
+        self.assertEqual({"side": "GREEN", "red": "RED", "later": "GREEN"},
+                         {n: d["verdict"] for n, d in ended.items()})
+        passed = [e["data"] for e in evs if e["event"] == "pass_ended"][-1]
+        self.assertNotIn("stopped", passed)
+
+    def test_the_summary_line_names_the_stop(self):
+        from scripts.pipeline import receipt
+        doc = {"mode": "strand", "rev": REV, "secs": 71.6, "verdict": "RED",
+               "stations": [{"name": "clippy", "scope": "", "secs": 70, "verdict": "RED"}],
+               "stopped": {"station": "clippy", "after_s": 71.6}}
+        self.assertEqual("GATE-SUMMARY strand %s 0/1 72s RED -- stopped at clippy after 72 s"
+                         % REV[:7], receipt.gate_lines(doc)[-1])
+        del doc["stopped"]
+        self.assertTrue(receipt.gate_lines(doc)[-1].endswith(" 72s RED"))
+
+
+class TestFailFastGivesAGrace(ExecutorCase):
+    """w1 abbruchfrist (#1607): fail-fast killed the running stations without time
+    to clean up (soul2me lab left slots and stub_model on build04). A stopped
+    station's process group gets SIGTERM, `STOP_GRACE_S` to clean up, then
+    SIGKILL; the station (and with it the run and the lease) ends only once the
+    group is gone. A child that traps TERM cleans up (marker) only after a
+    test-controlled event inside the grace (`kit_time.HANG`); one that ignores
+    TERM ends by SIGKILL -- markers and pids, no clock."""
+
+    run_guarded = TestExecutorFailures.run_guarded
+
+    def stopped_child(self, body, grace=0.2, group_alive=None):
+        fifo, pid, script = self.root / "go", self.root / "child.pid", self.root / "child.sh"
+        os.mkfifo(fifo)
+        # The child joins the station's group (a background job of `sh`), says
+        # its pid, and only then lets `red` fail: the FIFO is the event.
+        # The loop ends once `over` exists: the cleanup of a red run (the guard
+        # refuses an os.kill on an orphan of this test).
+        over = self.root / "over"
+        self.addCleanup(over.write_text, "")
+        script.write_text("%s\necho $$ > %s\necho x > %s\nwhile [ ! -e %s ]; do sleep 1; done\n"
+                          % (body, pid, fifo, over))
+        stations = [station("side", "sh %s & exec sleep 600" % script),
+                    station("red", "cat %s > /dev/null; exit 1" % fifo)]
+        looks = mock.patch.object(executor, "_group_alive", group_alive, create=True) \
+            if group_alive else contextlib.nullcontext()
+        with mock.patch.object(executor, "STOP_GRACE_S", grace, create=True), looks:
+            rc, evs = self.run_guarded(self.dispatch(stations, **{"+fail_fast": True}))
+        return rc, evs, int(pid.read_text().strip())
+
+    @staticmethod
+    def alive(pid):
+        """True while `pid` runs; a zombie (state Z) is dead -- its reaper may
+        still be on the way (init/subreaper of the orphaned child)."""
+        try:
+            with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as fh:
+                return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except (OSError, IndexError):
+            return False
+
+    def test_a_child_that_traps_term_cleans_up_before_the_run_ends(self):
+        """The cleanup waits for an event the test controls: `release` appears on
+        the executor's second look at the stopped group, i.e. only while the
+        station still waits for its group. Without the grace (no wait, or an
+        immediate SIGKILL) the cleanup never runs and the marker is missing."""
+        mark, release = self.root / "cleaned", self.root / "release"
+        over = self.root / "over"
+        # getattr: the pin must fail on its marker, not on a missing name, where the fix is absent.
+        real, looks = getattr(executor, "_group_alive", lambda pgid: False), []
+
+        def group_alive(pgid):
+            looks.append(pgid)
+            if len(looks) == 2:
+                release.write_text("")
+            return real(pgid)
+
+        body = ("trap 'while [ ! -e %s ] && [ ! -e %s ]; do sleep 0.05; done; "
+                "[ -e %s ] && echo done > %s; exit 0' TERM" % (release, over, release, mark))
+        rc, evs, child = self.stopped_child(body, kit_time.HANG, group_alive)
+        self.assertEqual(1, rc, self.err_text)
+        self.assertEqual("done", mark.read_text().strip() if mark.exists() else None,
+                         "the run ended before the stopped group cleaned up")
+        self.assertFalse(self.alive(child))
+        self.assertEqual("SKIP", self.ended(evs)["side"]["verdict"])
+
+    def test_a_child_that_ignores_term_ends_by_kill_before_the_run_ends(self):
+        rc, evs, child = self.stopped_child("trap '' TERM")  # grace 0.2: ends by SIGKILL either way
+        self.assertEqual(1, rc, self.err_text)
+        self.assertFalse(self.alive(child), "the station's group outlived the run")
+        passed = [e["data"] for e in evs if e["event"] == "pass_ended"][-1]
+        self.assertEqual("RED", passed["verdict"])
 
 
 def setUpModule():

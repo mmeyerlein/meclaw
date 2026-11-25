@@ -213,11 +213,19 @@ except Exception:
     a = {}
 if not isinstance(a, dict):
     a = {}
+# GH #1591: `_calls` makes the writer bundle several proposals into ONE
+# message, one tool_call turn each with its own id -- the shape a bundling
+# producer sends (diag K-189: four calls in one in_propose message).
+calls = a.get("_calls") if isinstance(a.get("_calls"), list) else None
+if calls is not None:
+    turns = [{"origin": "assistant", "type": "tool_call", "id": str(c.get("id")),
+              "text": json.dumps(c.get("args"))} for c in calls]
+else:
+    turns = [{"origin": "assistant", "type": "tool_call", "id": "w1", "text": raw}]
 sys.stdout.write(json.dumps({
     "header": {"route": "propose", "actor": "member:alex",
                "subscriber": str(a.get("subscriber") or "")},
-    "messages": [{"origin": "assistant", "type": "tool_call", "id": "w1",
-                  "text": raw}]}))
+    "messages": turns}))
 "#;
 
 /// The probe. It reaches PAST the ports straight into `./store`, which is
@@ -718,6 +726,81 @@ async fn the_gate_writes_a_valid_entity_and_audits_it() {
         Some("member:alex"),
         "the actor came from context, which only an edge can write: {audit}"
     );
+
+    h.shutdown().await;
+}
+
+/// GH #1591: the contract is ONE proposal per message, and a message that
+/// bundles two must not lose the first one silently. Before the fix the gate took
+/// the last `tool_call`, acked it and never answered the other: the sender held it
+/// for done (diag K-189, four calls in one message, one ack). Now every surplus
+/// call gets its own `rejected` ack with `multiple_calls` and an audit line; the
+/// one call the contract carries runs as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_tool_call_in_one_proposal_is_refused_not_dropped() {
+    let Some(root) = shipped_affinity() else {
+        return;
+    };
+    let td = tempfile::TempDir::new().unwrap();
+    build_tree(&td, &root);
+    let (h, mut rx, _push_rx) = boot(&td).await;
+
+    let first = json!({"op": "upsert_entity", "kind": "person",
+                       "display_name": "Ada Vale", "owner_member": "member:alex",
+                       "aieos": valid_aieos("bbbb-2222", "Ada")});
+    let second = json!({"op": "upsert_entity", "kind": "person",
+                        "display_name": "Bo Vale", "owner_member": "member:alex",
+                        "aieos": valid_aieos("cccc-3333", "Bo")});
+    let bundle = json!({"_calls": [{"id": "call-a", "args": first},
+                                   {"id": "call-b", "args": second}]});
+    h.send(to(
+        "/writer",
+        &meclaw_core::serde_json::to_string(&bundle).unwrap(),
+    ))
+    .await;
+
+    // Two calls, two acks -- told apart by the id of the call each answers,
+    // not by arrival order.
+    let mut acks = std::collections::BTreeMap::new();
+    for _ in 0..2 {
+        let ack = recv_route(&mut rx, "ack").await;
+        let id = body_of(&ack)["messages"][0]["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        acks.insert(id, turn_json(&ack));
+    }
+    let a = acks
+        .get("call-a")
+        .expect("the first call is answered, not dropped");
+    assert_eq!(a["outcome"].as_str(), Some("rejected"), "{a}");
+    assert_eq!(a["reason_code"].as_str(), Some("multiple_calls"), "{a}");
+    let b = acks
+        .get("call-b")
+        .expect("the call the gate runs is answered");
+    assert_eq!(b["outcome"].as_str(), Some("accepted"), "{b}");
+
+    let audit = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "audit",
+               "columns": ["outcome", "reason_code", "action"],
+               "where": {"reason_code": "multiple_calls"}, "limit": 5}),
+    )
+    .await;
+    assert_eq!(audit.as_array().map(|a| a.len()), Some(1), "audit: {audit}");
+    assert_eq!(audit[0]["outcome"].as_str(), Some("invalid"), "{audit}");
+
+    // And the refused call wrote nothing.
+    let rows = probe(
+        &h,
+        &mut rx,
+        json!({"operation": "select", "table": "entities",
+               "columns": ["entity_id"], "where": {"display_name": "Ada Vale"},
+               "limit": 5}),
+    )
+    .await;
+    assert_eq!(rows.as_array().map(|a| a.len()), Some(0), "rows: {rows}");
 
     h.shutdown().await;
 }

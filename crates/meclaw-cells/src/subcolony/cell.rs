@@ -98,13 +98,21 @@ impl LongRunningCell for SubcolonyCell {
                 self.reconfig = Some(reconfig_tx.clone());
             }
 
+            // GH #1353: on the params lane an update or nothing -- nothing is
+            // handed to the child.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                refuse_params(sink, &msg, &push, "invalid_input", &detail).await;
+                return;
+            }
+
             // β params-update slot, handled FIRST. Only tuning moves; the
             // containment keys are immutable and a message touching one gets a
             // loud reject rather than a silent no-op.
             if let meclaw_core::Body::Inline(ref v) = msg.body
                 && v.get("params").is_some()
             {
-                self.apply_params_update(&msg, sink, db).await;
+                self.apply_params_update(&msg, &push, sink, db).await;
                 return;
             }
 
@@ -228,15 +236,47 @@ impl LongRunningCell for SubcolonyCell {
     }
 }
 
+/// Refuse a params update: on the params lane the shared answer (GH #1353),
+/// otherwise the error every other refusal of this cell is.
+async fn refuse_params(
+    sink: &OutputSink,
+    msg: &Message,
+    push: &crate::params_overlay::ParamsPush,
+    error_code: &str,
+    detail: &str,
+) {
+    if !push.refused(sink, error_code, detail).await {
+        emit::error(sink, msg, error_code, detail).await;
+    }
+}
+
 impl SubcolonyCell {
     /// Apply a runtime params update. Only the tunables move, and only for the
     /// NEXT request.
-    async fn apply_params_update(&mut self, msg: &Message, sink: &OutputSink, db: &mut DbConn) {
+    async fn apply_params_update(
+        &mut self,
+        msg: &Message,
+        push: &crate::params_overlay::ParamsPush,
+        sink: &OutputSink,
+        db: &mut DbConn,
+    ) {
         let meclaw_core::Body::Inline(body) = &msg.body else {
             return;
         };
+        // GH #1353: a slot addressed to another cell moves nothing.
+        if let Some(detail) = push.foreign_detail() {
+            refuse_params(sink, msg, push, "invalid_input", &detail).await;
+            return;
+        }
         let Some(update) = body.get("params").and_then(|p| p.as_object()).cloned() else {
-            emit::error(sink, msg, "invalid_input", "params slot: not a JSON object").await;
+            refuse_params(
+                sink,
+                msg,
+                push,
+                "invalid_input",
+                "params slot: not a JSON object",
+            )
+            .await;
             return;
         };
         let current = SubcolonyOverlay {
@@ -249,7 +289,7 @@ impl SubcolonyCell {
         {
             Ok(pair) => pair,
             Err(e) => {
-                emit::error(sink, msg, "invalid_input", &e.detail()).await;
+                refuse_params(sink, msg, push, "invalid_input", &e.detail()).await;
                 return;
             }
         };
@@ -262,9 +302,10 @@ impl SubcolonyCell {
         match write {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                emit::error(
+                refuse_params(
                     sink,
                     msg,
+                    push,
                     "invalid_input",
                     &format!("cell.db params write failed: {e}"),
                 )
@@ -272,9 +313,10 @@ impl SubcolonyCell {
                 return;
             }
             Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                emit::error(
+                refuse_params(
                     sink,
                     msg,
+                    push,
                     "query_timeout",
                     "params write exceeded query_timeout_ms",
                 )
@@ -287,5 +329,6 @@ impl SubcolonyCell {
         self.params.external_timeout_ms = new_overlay.external_timeout_ms;
         self.params.query_timeout_ms = new_overlay.query_timeout_ms;
         db.set_query_timeout(Some(Duration::from_millis(self.params.query_timeout_ms)));
+        push.applied(sink).await;
     }
 }

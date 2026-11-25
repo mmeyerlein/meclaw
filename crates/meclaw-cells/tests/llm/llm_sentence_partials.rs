@@ -20,8 +20,12 @@ use meclaw_colony::stateful_cell::StatefulCell;
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, CellEmission, MessageBuilder, OutputSink, Path, Uuid};
 use meclaw_testing::deadline;
-use meclaw_testing::mock_http::{MockResponse, start_mock_server_capturing};
+use meclaw_testing::mock_http::MockResponse;
+// harness_fold: #[path = "mock_openai.rs"]
+#[allow(unused_imports)]
+use crate::mock_openai; // harness_fold: mod mock_openai;
 use meclaw_testing::mock_sse::{self, Dialect, Script, chat, messages, responses};
+use mock_openai::MockOpenAI;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 
@@ -307,7 +311,7 @@ async fn no_partial_is_cut_inside_tool_call_arguments() {
 
 /// The captured request body of one call through the one-body mock.
 async fn body_of(raw: Value, response: MockResponse, input: Value) -> (Vec<u8>, Vec<Value>) {
-    let (addr, _join, captured) = start_mock_server_capturing(vec![response]).await;
+    let MockOpenAI { addr, captured, .. } = MockOpenAI::start(vec![response]).await;
     let mut raw = raw;
     let base = raw["base_url"]
         .as_str()

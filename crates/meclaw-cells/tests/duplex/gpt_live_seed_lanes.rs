@@ -291,6 +291,76 @@ async fn gpt_live_a_late_seed_for_renewal_n_skips_the_open_renewal_n_plus_1() {
     );
 }
 
+/// GH #1460: the handover for a renewal that is open but has not said
+/// `Started` yet is held and reaches it at its start -- the curator's answer
+/// and the provider's handshake run side by side, so the block can come
+/// first. Dropping it left the renewal to take over at its grace knowing
+/// nothing of the call.
+///
+/// Ordered by the fake, not by the scheduler: the renewal's `Started` waits
+/// for the test's gate, and an advise sent right behind the handover travels
+/// the same lane to the session in charge -- once it is there, the handover
+/// has been handled by the connection, before any start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gpt_live_a_handover_before_the_renewal_started_reaches_it_at_its_start() {
+    let raw = duplex_cell::duplex_params(json!({"default_mode": "auto"}));
+    let (mut live, start_renewals) =
+        duplex_cell::boot_seeded_held_start(raw, 300, 60_000, 400).await;
+    let (_client, _hello) = live.connect("session=early-handover&mode=auto").await;
+    for n in 0..=1 {
+        let ask = live.emission("seed_ask").await;
+        assert_eq!(duplex_cell::header(&ask, "renewal_n"), Some(&json!(n)));
+    }
+    live.send(duplex_cell::handover_msg(
+        "early-handover",
+        "The story so far.",
+        1,
+    ))
+    .await;
+    live.send(duplex_cell::advise_msg(
+        "early-handover",
+        "context",
+        "A fact for the session in charge.",
+        None,
+    ))
+    .await;
+    loop {
+        let (at, control) =
+            tokio::time::timeout(duplex_cell::marker(), live.tagged_controls.recv())
+                .await
+                .expect("HANG: the advise behind the handover reaches no session")
+                .expect("the fake is running");
+        // Renewal 1 reads no control before its start, and that waits for
+        // the gate: nothing can reach it here. The mark is the advise
+        // itself, by its text, so no other append can stand in for it.
+        if at == 1
+            && matches!(
+                &control,
+                DuplexControl::Append { content, .. }
+                    if content.contains("A fact for the session in charge.")
+            )
+        {
+            break;
+        }
+    }
+    start_renewals.send(true).expect("the fake holds the gate");
+    loop {
+        let (at, control) =
+            tokio::time::timeout(duplex_cell::marker(), live.tagged_controls.recv())
+                .await
+                .expect("HANG: the held handover reaches no session")
+                .expect("the fake is running");
+        if let DuplexControl::Append {
+            kind: AppendKind::Thinking,
+            ..
+        } = control
+        {
+            assert_eq!(at, 2, "the held handover is renewal 1's");
+            break;
+        }
+    }
+}
+
 /// An answer that does not say which session it answers is refused by name:
 /// without the number the connection cannot tell a start from a renewal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

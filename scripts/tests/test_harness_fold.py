@@ -587,5 +587,23 @@ class DocPathMentions(unittest.TestCase):
         self.assertEqual(dead, [], "%d dead, first: %r" % (len(dead), dead[:5]))
 
 
+
+class BinaryDocsAreNotRead(unittest.TestCase):
+    """d54s lanekit (Nr. 42): `dead-path-lock` skips binary files under docs/
+    (NUL byte in the first KiB) instead of counting them `unread`; a text
+    file in another encoding still lands there."""
+
+    def test_binary_files_are_skipped_latin1_text_is_unread(self):
+        repo = pathlib.Path(tempfile.mkdtemp(prefix="hf-binary-"))
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        (repo / "docs" / "r").mkdir(parents=True)
+        (repo / "docs" / "r" / "a.tgz").write_bytes(b"\x1f\x8b\x08\x00\xff\xfe" + b"\x00" * 40)
+        (repo / "docs" / "r" / "cell.db").write_bytes(b"SQLite format 3\x00\xff\xfe")
+        (repo / "docs" / "r" / "latin.txt").write_bytes("caf\xe9 crates/x/tests/y.rs".encode("latin-1"))
+        unread = []
+        self.assertEqual([], hf.dead_path_mentions(str(repo), frozen={}, unread=unread))
+        self.assertEqual(["docs/r/latin.txt"], unread)
+
+
 if __name__ == "__main__":
     unittest.main()

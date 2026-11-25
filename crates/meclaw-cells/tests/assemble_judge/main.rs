@@ -12,6 +12,8 @@ pub mod gh1562_a_late_unsure_verdict_is_not_sharpened;
 pub mod gh1562_a_stamp_after_the_fire_acts_on_nothing;
 pub mod gh1564_a_woken_turn_answers_on_its_channel;
 pub mod gh1564_the_wake_ends_the_wait_for_the_stamp;
+pub mod gh1585_the_second_judge_in_three_points;
+pub mod gh1596_a_recall_that_never_comes_ends_its_wait;
 pub mod gh_d54g_listennote_seam_carries_the_choices;
 pub mod gh_d54g_stamp_route;
 pub mod gh_d54g_stamp_route_an_owed_family_stands_on_the_stamp;

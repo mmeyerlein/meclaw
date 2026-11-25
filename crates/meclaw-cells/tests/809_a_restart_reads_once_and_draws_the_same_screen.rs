@@ -2004,8 +2004,11 @@ const WIRE_OWNERS: [&str; 2] = ["Wire", "Reader"];
 /// back, `ack` puts in and hands back the colony's answer to that one message, `event`
 /// hands out the thing a lock waits for, `barrier` settles (and `settled` hands out the
 /// reader after it), `opening` hands out the reader wrapped in `Unsettled`, `report` reads
-/// a hang's last state for its text.
-const WIRE_VERBS: [(&str, &str, &str); 11] = [
+/// a hang's last state for its text, `wait` blocks until the listener holds a surface the
+/// colony registered and hands nothing back -- it reads the listener's table, never the
+/// colony's state, so a page read after it still settles first (GH #1590: a screen born by
+/// a mutation is mounted later than the boot).
+const WIRE_VERBS: [(&str, &str, &str); 12] = [
     ("new", "build", "Self"),
     ("send", "write", ""),
     ("next_out", "event", "Option<Message>"),
@@ -2013,6 +2016,7 @@ const WIRE_VERBS: [(&str, &str, &str); 11] = [
     ("shutdown", "write", ""),
     ("rescan_templates", "ack", "Result<(), String>"),
     ("mutate", "ack", "MutationOutcome"),
+    ("mounted", "wait", ""),
     ("settle", "barrier", "Settled"),
     ("last_state", "report", "String"),
     ("settled", "barrier", "Reader<'_>"),

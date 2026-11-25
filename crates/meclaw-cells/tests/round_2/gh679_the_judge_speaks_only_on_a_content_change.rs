@@ -246,7 +246,8 @@ fn the_hive_wires_the_judge() {
         json!({"from": "./compose", "to": "./judge",
                "condition": "has(hop.route) && hop.route == 'judge'"}),
         json!({"from": "./judge", "to": "./compose",
-               "condition": "has(hop.finish_reason)",
+               // GH #1353: the answer to a refused params push is no verdict.
+               "condition": "has(hop.finish_reason) && !has(hop.params_answer)",
                "modifier": {"set_hop": {"route": "'in_verdict'"}}}),
     ] {
         assert!(edges.contains(&wanted), "missing edge {wanted}");

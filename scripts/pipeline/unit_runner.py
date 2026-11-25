@@ -62,6 +62,27 @@ failed set-up exits 5 too (GH #1313). No unit at all is RED. Exit 0 GREEN, 1 RED
 (`scripts/pipeline/events.py`: `{at, run, kind: note, event: test_result,
 text, data: {run, station, part, verdict, secs, tests, fail[, reason]}}`).
 
+SELECTION (#1605)
+=================
+`--select imports --changed <path> ...` runs only the units whose hull
+reaches a changed path (`Hulls`: imports, transitively -- `tests.support`,
+`lab/`, `apps/`, `scripts/` on sys.path, a directory a file names as a base --
+plus the repository paths the text names, followed through every named
+Python file and script -- a test that runs `scripts/go.sh` reaches what go.sh
+names, bare or behind `$ROOT/`; a named data file (JSON, TOML, a fixture) is
+a leaf: only a diff at that file selects through it; a named directory without
+Python below it holds its data files; a changed data file no hull reaches
+selects the units naming its deepest named ancestor directory, Python tree or
+not). `--guard GLOB` (repeats) names units that
+run anyway: tree scanners, whose reads no import shows. A changed file no
+hull reaches adds no unit (#1618); fail-safe, every unit runs, only for a
+changed path no hull reaches that cannot be read (gone, unreadable) or a
+Python file an unresolved import of the hulls may name; `--select-all
+REASON` (release, ci) runs every unit. The summary (and `--list`'s `UNIT-LIST`) ends in
+` -- selected <k> of <n> files: <reason>`; a diff that reaches no unit is
+GREEN with `selected 0 of <n>`. The station register hands these flags to a
+station with `"select": "imports"` (`register.py`).
+
 Standard library only: the runner travels in the kit to a lane
 (`/srv/target/kit/<sha8>/scripts/pipeline/`) and runs there as a script.
 """
@@ -213,6 +234,368 @@ def units(root, by, include, exclude=(), top="root"):
     for rel in files:
         groups.setdefault(os.path.dirname(rel) or ".", []).append(module_of(rel))
     return sorted((d, mods) for d, mods in groups.items())
+
+
+# --- the selection (#1605) ------------------------------------------------------
+
+# A changed path that no hull holds and that is only documentation selects nothing.
+DOC_SUFFIXES = (".md", ".rst")
+DOC_DIRS = ("docs/",)
+_DOTTED = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$")
+_PATHISH = re.compile(r"^[A-Za-z0-9_.@+-][A-Za-z0-9_./@+-]*$")
+# where an absolute import is looked up: the root, scripts/ (the satellites put
+# it on sys.path), the importing file's own directory (a script's sys.path[0])
+IMPORT_BASES = ("", "scripts")
+
+
+def is_doc(rel):
+    return rel.startswith(DOC_DIRS) or rel.endswith(DOC_SUFFIXES)
+
+
+# What a file names, read by pattern (the stdlib parser costs ~10 ms a file,
+# a satellite's unit hull reads ~900 files): import lines (lazy ones too,
+# parenthesised names across lines), quoted path-like strings, and runs of them
+# joined by `,` or `/` (`os.path.join(ROOT, "lab", "x.json")`, `ROOT / "sets" / "a"`).
+_IMPORT = re.compile(r"^[ \t]*import[ \t]+([\w., \t]+)", re.M)
+_FROM = re.compile(r"^[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[^\n#;]+)", re.M)
+_QUOTED = re.compile(r"""(["'])([A-Za-z0-9_./@+-]{1,300})\1""")
+_RUN = re.compile(r"""(?:(["'])[A-Za-z0-9_.@+-]{1,100}\1[ \t]*[,/][ \t]*)+(["'])[A-Za-z0-9_.@+-]{1,100}\2""")
+_PIECE = re.compile(r"""(["'])([A-Za-z0-9_.@+-]{1,100})\1""")
+# a script names paths unquoted or behind a
+# variable (`python3 scripts/x.py`, `"$ROOT/scripts/x.py"`): every bare
+# path-like word, and every tail of it after a `/`
+_BARE = re.compile(r"[A-Za-z0-9_./@+-]{1,300}")
+# a non-Python file larger than this is data, read as a leaf (it names nothing)
+TEXT_MAX_B = 1 << 20
+# a script runs what it names, so a test reaches through it; every other
+# non-Python file (JSON, TOML, JSONL, a fixture) is data: a leaf (Befund #1605)
+SCRIPT_SUFFIXES = (".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs")
+
+
+def _names(text):
+    out = []
+    for item in text.strip("() \t\n").replace("\n", ",").split(","):
+        name = item.strip().split(" as ")[0].strip().rstrip("\\").strip()
+        if name and name != "*" and re.match(r"^[\w.]+$", name):
+            out.append(name)
+    return out
+
+
+class Hulls:
+    """The hull of a file: the repository files it imports (transitively,
+    lazy imports and `importlib.import_module("x")` included) and the
+    repository paths its text names (`"scripts/lab.py"`,
+    `os.path.join(ROOT, "lab", "x.json")`, `Path(ROOT) / "sets" / "a.json"`) --
+    a named file is followed like an import: a Python file, and every other
+    script (a shell script names `scripts/x.py` bare or behind `$ROOT/`;
+    `SCRIPT_SUFFIXES` or a `#!` line). Every other file is data and a leaf:
+    it is in the hull, so a diff at exactly that file selects the test, but
+    what it names is not followed.
+    A named DIRECTORY without Python below it is data: it holds the files
+    below it (`lab/aufnahmen` -> `lab/aufnahmen/r0c.jsonl`; documentation only
+    by its own name). One that holds Python files may go onto sys.path and is
+    a base for absolute imports in every file
+    (`sys.path.insert(0, ".../lab/aufgaben")`, then `import kolonie`). A name
+    that resolves to a changed path counts even when the file is gone."""
+
+    def __init__(self, root, changed=()):
+        self.root = root
+        self.changed = set(changed)
+        self.files, self.pydirs = set(), set()
+        for cur, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            for f in files:
+                rel = os.path.relpath(os.path.join(cur, f), root).replace(os.sep, "/")
+                self.files.add(rel)
+                if f.endswith(".py"):
+                    self.pydirs.add(os.path.dirname(rel))
+        self.alldirs, self.pytrees = set(), set()
+        for rel in self.files:
+            d = os.path.dirname(rel)
+            while d and d not in self.alldirs:
+                self.alldirs.add(d)
+                d = os.path.dirname(d)
+        for d in self.pydirs:
+            while d and d not in self.pytrees:
+                self.pytrees.add(d)
+                d = os.path.dirname(d)
+        self.bases = set(IMPORT_BASES)
+        self._raw, self._pcache, self._mcache = {}, {}, {}
+        self._refs, self._dirs, self._hull, self._unres = {}, {}, {}, {}
+        self._named = {}
+
+    def _exists(self, rel):
+        return rel in self.files or rel in self.changed
+
+    def _module(self, dotted, here):
+        key = (dotted, here)
+        if key in self._mcache:
+            return self._mcache[key]
+        found = self._mcache[key] = set()
+        parts = dotted.split(".")
+        for base in self.bases | {here}:
+            stem = base
+            for part in parts:
+                stem = stem + "/" + part if stem else part
+                for cand in (stem + ".py", stem + "/__init__.py"):
+                    if self._exists(cand):
+                        found.add(cand)
+        return found
+
+    def _path(self, text, here, dirs):
+        key = (text, here)
+        if key in self._pcache:
+            found, named = self._pcache[key]
+            dirs |= named
+            return found
+        found, named = set(), set()
+        self._pcache[key] = (found, named)
+        for base in ("", here):
+            cand = os.path.normpath(os.path.join(base, text)).replace(os.sep, "/")
+            if cand.startswith("../") or cand in (".", ".."):
+                continue
+            if self._exists(cand):
+                found.add(cand)
+            elif cand in self.alldirs:
+                named.add(cand)  # a base when it holds Python, else its data
+        dirs |= named
+        return found
+
+    def raw(self, rel):
+        """What `rel` names, read once: `[(kind, ...)]`."""
+        if rel in self._raw:
+            return self._raw[rel]
+        out = []
+        self._raw[rel] = out
+        py = rel.endswith(".py")
+        path = os.path.join(self.root, rel)
+        try:
+            if not py and os.path.getsize(path) > TEXT_MAX_B:
+                return out
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            return out
+        if not py and "\0" in text[:4096]:
+            return out  # binary
+        for m in _IMPORT.finditer(text):
+            out += [("mod", n) for n in _names(m.group(1))]
+        for m in _FROM.finditer(text):
+            dots, module, names = len(m.group(1)), m.group(2), _names(m.group(3))
+            if dots:
+                out.append(("rel", dots, module, names))
+            elif module:
+                out.append(("mod", module))
+                out += [("mod", "%s.%s" % (module, n)) for n in names]
+        texts = [m.group(2) for m in _QUOTED.finditer(text)]
+        texts += ["/".join(p.group(2) for p in _PIECE.finditer(m.group(0)))
+                  for m in _RUN.finditer(text)]
+        if not py:
+            for word in set(_BARE.findall(text)):
+                if "/" in word:
+                    parts = word.strip("/").split("/")
+                    texts += ["/".join(parts[i:]) for i in range(len(parts))]
+                elif "." in word:
+                    texts.append(word)
+        for t in dict.fromkeys(texts):
+            if _DOTTED.match(t):
+                out.append(("mod", t))
+            if _PATHISH.match(t):
+                out.append(("path", t))
+        return out
+
+    def is_script(self, rel):
+        """`rel` runs what it names: a script suffix or a `#!` line."""
+        if rel.endswith(SCRIPT_SUFFIXES):
+            return True
+        try:
+            with open(os.path.join(self.root, rel), "rb") as fh:
+                return fh.read(2) == b"#!"
+        except OSError:
+            return False
+
+    def refs(self, rel):
+        """The repository files `rel` names directly (imports and paths)."""
+        if rel in self._refs:
+            return self._refs[rel]
+        out, dirs, unres = set(), set(), set()
+        here = os.path.dirname(rel)
+        pkg = here.split("/") if here else []
+        for item in self.raw(rel):
+            if item[0] == "mod":
+                found = self._module(item[1], here)
+                out |= found
+                if not found:
+                    unres.add(item[1])
+            elif item[0] == "path":
+                out |= self._path(item[1], here, dirs)
+            else:
+                _kind, level, module, names = item
+                up = pkg[:len(pkg) - (level - 1)] if level - 1 <= len(pkg) else []
+                mod = ".".join(up + ([module] if module else []))
+                for name in ([mod] if mod else []) + [mod + "." + n if mod else n for n in names]:
+                    stem = name.replace(".", "/")
+                    found = {c for c in (stem + ".py", stem + "/__init__.py") if self._exists(c)}
+                    out |= found
+                    if not found:
+                        unres.add(name)
+        out.discard(rel)
+        self._refs[rel] = out
+        self._dirs[rel] = dirs
+        self._unres[rel] = unres
+        return out
+
+    def unresolved(self):
+        """The dotted names the files read so far import and no repository
+        file resolves (a sys.path entry the text does not show, a package
+        outside the tree)."""
+        return set().union(*self._unres.values()) if self._unres else set()
+
+    def hull(self, rel):
+        """`(files, dirs)`: `rel` and every repository file it reaches,
+        transitively, and the directories those files name."""
+        if rel in self._hull:
+            return self._hull[rel]
+        seen, dirs, named, todo = set(), set(), set(), [rel]
+        while todo:
+            cur = todo.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            if cur == rel or cur.endswith(".py") or self.is_script(cur):
+                # Python and scripts are followed: a test that runs `scripts/go.sh`
+                # reaches what go.sh names (Review #1605); data is a leaf (Befund #1605)
+                todo += [r for r in self.refs(cur) if r not in seen]
+                dirs |= self._dirs[cur] - self.pytrees
+                named |= self._dirs[cur]
+        self._hull[rel] = (seen, dirs)
+        self._named[rel] = named
+        return seen, dirs
+
+    def named(self, rel):
+        """Every directory the hull of `rel` names, Python trees included
+        (`hull` keeps only the ones without Python below them)."""
+        self.hull(rel)
+        return self._named[rel]
+
+    def settle(self, rels):
+        """Hull every file of `rels`; again while the directories they name
+        grew the import bases (a directory named late reaches imports read
+        early). The parse stays, only the resolution runs again."""
+        while True:
+            for rel in rels:
+                self.hull(rel)
+            named = set()
+            for dirs in self._dirs.values():
+                named |= dirs & self.pydirs
+            if named <= self.bases:
+                return
+            self.bases |= named
+            self._refs, self._dirs, self._hull, self._mcache = {}, {}, {}, {}
+            self._unres, self._named = {}, {}
+
+
+def _reaches(hull, path):
+    files, dirs = hull
+    return path in files or (not is_doc(path) and any(path.startswith(d + "/") for d in dirs))
+
+
+def _is_data(hulls, root, path):
+    """`path` is a readable data file: no documentation, no Python, no script
+    (those have their own fail-safe or nothing below them to read)."""
+    return (not is_doc(path) and not path.endswith(".py")
+            and os.access(os.path.join(root, path), os.R_OK) and not hulls.is_script(path))
+
+
+def _nearest_namers(path, named):
+    """The units whose hull names the deepest named ancestor directory of
+    `path`, Python trees included: a test that names `fixtures/set/` reads
+    what lies below it, built from a variable the text does not show (Review
+    #1618). Every named ancestor would be too broad; none named, none."""
+    d = os.path.dirname(path)
+    while d:
+        owners = {u for u, dirs in named.items() if d in dirs}
+        if owners:
+            return owners
+        d = os.path.dirname(d)
+    return set()
+
+
+def _may_import(path, names):
+    """`path` (a changed Python file) is what one of the unresolved dotted
+    `names` may import: its path ends in the name's module or package."""
+    if not path.endswith(".py"):
+        return False
+    for name in names:
+        stem = name.replace(".", "/")
+        for tail in (stem + ".py", stem + "/__init__.py"):
+            if path == tail or path.endswith("/" + tail):
+                return True
+    return False
+
+
+def select_units(root, todo, changed, guards=(), unit_files=None):
+    """`(picked, reason)`: the units of `todo` (`[(unit, modules)]`) whose
+    files' hull reaches a changed path, plus every unit a `guards` glob
+    matches. A changed data file no hull reaches selects the units whose
+    hull names its deepest named ancestor directory (Review #1618); any
+    other changed file no hull reaches adds no unit (#1618,
+    OR-w1.reichweite.1). Fail-safe, every unit runs, only where a test may
+    reach it unseen: a changed path no hull reaches that cannot be read (gone
+    or unreadable), or a Python file an import of the hulls may name that no
+    repository file resolved. `unit_files(unit)` lists a unit's files
+    (default: the unit itself)."""
+    files_of = unit_files or (lambda unit: [unit])
+    hulls = Hulls(root, changed)
+    hulls.settle([rel for unit, _mods in todo for rel in files_of(unit)])
+    reach, named = {}, {}
+    for unit, _mods in todo:
+        files, dirs, nd = set(), set(), set()
+        for rel in files_of(unit):
+            f, d = hulls.hull(rel)
+            files |= f
+            dirs |= d
+            nd |= hulls.named(rel)
+        reach[unit] = (files, dirs)
+        named[unit] = nd
+    guarded = {u for u, _m in todo if any(_matches(f, guards) for f in [u] + list(files_of(u)))}
+    picked, hit, unknown = set(guarded), set(), []
+    for path in sorted(set(changed)):
+        owners = {u for u, hull in reach.items() if _reaches(hull, path)}
+        if not owners and _is_data(hulls, root, path):
+            owners = _nearest_namers(path, named)
+        if owners:
+            picked |= owners
+            hit.add(path)
+        elif not is_doc(path):
+            unknown.append(path)
+    unread = [p for p in unknown if not os.access(os.path.join(root, p), os.R_OK)]
+    names = hulls.unresolved()
+    unseen = [p for p in unknown if p not in unread and _may_import(p, names)]
+    for paths, why in ((unread, "cannot be read"), (unseen, "may be an unresolved import")):
+        if paths:
+            more = " and %d more" % (len(paths) - 1) if len(paths) > 1 else ""
+            return [u for u, _m in todo], "%s%s %s (all run)" % (paths[0], more, why)
+    n_guard = len(guarded)
+    reason = "imports reach %d of %d changed files, %d %s" % (
+        len(hit), len(set(changed)), n_guard, "guard" if n_guard == 1 else "guards")
+    return [u for u, _m in todo if u in picked], reason
+
+
+def select_files(root, files, changed, guards=()):
+    """`select_units` over plain test files: `(picked files, reason)`."""
+    return select_units(root, [(f, []) for f in files], changed, guards)
+
+
+def _dir_files(root, unit, modules):
+    if modules:
+        return [m.replace(".", "/") + ".py" for m in modules]
+    out = []
+    for cur, dirs, files in os.walk(os.path.join(root, unit)):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        out += [os.path.relpath(os.path.join(cur, f), root).replace(os.sep, "/")
+                for f in sorted(files) if f.endswith(".py")]
+    return out
 
 
 # --- one unit -------------------------------------------------------------------
@@ -424,7 +807,32 @@ def _parser():
     ap.add_argument("--run-id", default="local", help="the run id of the jsonl lines")
     ap.add_argument("--station", default="unit", help="the station of the jsonl lines")
     ap.add_argument("--list", action="store_true", help="print the units, run nothing")
+    ap.add_argument("--select", choices=("imports",), default=None,
+                    help="run only the units whose hull reaches a --changed path")
+    ap.add_argument("--changed", action="append", default=[],
+                    help="a changed path of the diff (repeats)")
+    ap.add_argument("--guard", action="append", default=[],
+                    help="a glob of units that always run under --select")
+    ap.add_argument("--select-all", default=None, metavar="REASON",
+                    help="under --select: run every unit, for this reason (release, ci)")
     return ap
+
+
+def _narrow(root, todo, args):
+    """`(todo, note)`: under `--select imports` the units the diff reaches and
+    the summary's ` -- selected k of n <files|dirs>: <reason>`; else unchanged."""
+    if not args.select:
+        return todo, ""
+    word = "dirs" if args.by == "dir" else "files"
+    if args.select_all is not None:
+        return todo, " -- selected %d of %d %s: %s" % (len(todo), len(todo), word,
+                                                          args.select_all or "every file")
+    picked, reason = select_units(root, todo, args.changed, args.guard,
+                                  lambda u: _dir_files(root, u, dict(todo)[u])
+                                  if args.by == "dir" else [u])
+    keep = set(picked)
+    return [t for t in todo if t[0] in keep], " -- selected %d of %d %s: %s" % (
+        len(keep), len(todo), word, reason)
 
 
 def main(argv=None):
@@ -444,10 +852,11 @@ def main(argv=None):
         return 2
     if args.list:
         todo = units(root, args.by, args.include, args.exclude, args.top)
+        todo, note = _narrow(root, todo, args)
         for unit, _mods in todo:
             print("UNIT %s" % unit)
-        print("UNIT-LIST %d" % len(todo), flush=True)
-        return 0 if todo else 1
+        print("UNIT-LIST %d%s" % (len(todo), note), flush=True)
+        return 0 if todo or note else 1
     slots = [s.strip() for s in args.slots.split(",") if s.strip()] if args.slots else \
         [str(i) for i in range(args.workers)]
     if len(slots) < args.workers:
@@ -459,6 +868,8 @@ def main(argv=None):
         return 2
     t0 = time.monotonic()
     todo = units(root, args.by, args.include, args.exclude, args.top)
+    found = len(todo)
+    todo, note = _narrow(root, todo, args)
     results = run_pool(todo, root, args.python, min(args.workers, max(1, len(todo))),
                        slots, args.slot_env, args.timeout_s, run=args.run,
                        top=args.top) if todo else []
@@ -466,8 +877,12 @@ def main(argv=None):
     for res in results:
         print(line(res))
     text, verdict = summary(results, secs, args.run)
-    if not results:
+    if note and not results and found:
+        # the diff reaches no test: nothing to run is the verdict, not a fault
+        text, verdict = "UNIT-SUMMARY 0/0 %.1fs GREEN" % secs, "GREEN"
+    elif not results:
         text += " -- no unit matched %s" % " ".join(args.include)
+    text += note
     print(text, flush=True)
     for res in results:
         if res["verdict"] == "RED":

@@ -398,13 +398,8 @@ async fn a_window_ending_on_a_bridge_sentence_is_sent_without_a_prefill() {
     );
 }
 
-/// The exact refusal of the Messages wire when a replayed thinking block was
-/// made under another prefix (measured in production, GH #1298).
-const BINDING_REFUSAL: &str = "messages.1.content.0: Invalid `signature` in `thinking` block. \
-The block is bound to a different conversation. Remove the block, or set \
-`thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\". That setting requires the \
-`thinking-binding-controls-2026-08-01` value in the `anthropic-beta` header. The system prompt \
-differs from the one this block was created with.";
+/// The measured binding refusal (GH #1298); one source with the strict mock.
+use mock_openai::BINDING_REFUSAL;
 
 /// GH #1298: a tool round whose system changed after its thinking was made
 /// costs the provider the thinking, never the turn. The mock plays the
@@ -491,14 +486,7 @@ async fn a_tool_round_under_a_changed_system_drops_its_thinking_and_answers() {
             ]);
             MockResponse::ok_json(body.to_string().as_bytes())
         } else {
-            let err = json!({"type": "error", "error": {
-                "type": "invalid_request_error", "message": BINDING_REFUSAL}});
-            MockResponse {
-                status: 400,
-                body: err.to_string().into_bytes(),
-                content_type: "application/json".into(),
-                delay: None,
-            }
+            mock_openai::anthropic_error(400, BINDING_REFUSAL)
         };
         bodies.push((body, beta));
         req.release(response);

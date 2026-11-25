@@ -5,8 +5,8 @@
 //! was answered on a guess -- the stamp fell back to `talk` silently, or the
 //! quick voice spoke before anybody knew what was meant. With a set that
 //! leads the class `clarify`, the route stamps such a turn `clarify`; the
-//! curator gives it to the brain alone (no quick voice, a spec answer
-//! dropped, no tool, so nothing opens a window), with one turn note: ask how
+//! curator gives it to the brain alone (no quick voice, no tool, so nothing
+//! opens a window), with one turn note: ask how
 //! it is meant, guess nothing. The question and the person's next words go to
 //! the affinity as ONE proposal, so the picture of how this person asks grows
 //! from the asking. Beside it the quick voice reads a slot of its own,
@@ -36,35 +36,6 @@ fn curate_on(h: &mut Hive, turn: &str, path: &str, ask: &str, system: Value) {
         body["system"] = system;
     }
     h.lane("in_curate", ctx, hop, body);
-}
-
-/// The collector's early curate of a turn (#1275): `spec` "1", no path.
-fn spec_curate(h: &mut Hive, turn: &str, ask: &str) -> Msg {
-    h.out.clear();
-    let hop = json!({"session_id": "s1", "turn_id": turn, "iter": "0", "phase": "",
-                     "path": "", "spec": "1"});
-    let ctx = json!({"session_id": "s1", "turn_id": turn, "iter": "0",
-                     "channel": "test", "audience_set": ROUND_E, "path": ""});
-    h.lane("in_curate", ctx, hop, json!({"messages": [user(ask)]}));
-    let quick = h.routed("quick");
-    assert_eq!(quick.len(), 1, "one spec call: {:?} {:?}", h.out, h.stderr);
-    quick[0].clone()
-}
-
-/// The quick voice's answer to a spec call on `in_spec_llm`.
-fn spec_answer(h: &mut Hive, call: &Msg, text: &str) {
-    h.out.clear();
-    let mut ctx = call.context.clone();
-    for k in ["curator_call", "turn_id", "session_id", "iter"] {
-        ctx.insert(k.into(), call.hop[k].clone());
-    }
-    ctx.insert("spec".into(), json!("1"));
-    h.lane(
-        "in_spec_llm",
-        Value::Object(ctx),
-        json!({"finish_reason": "stop", "model": "test-model", "tokens_prompt": 10}),
-        json!({"messages": [said(text)]}),
-    );
 }
 
 /// The entry talky's curator node sets for its class `clarify` in the
@@ -146,17 +117,9 @@ fn clarify_stamp_drops_quick_and_opens_no_window() {
     if !shipped() {
         return;
     }
-    let mut h = Hive::with(&[
-        ("policy", "class_notes", talky_class_notes()),
-        ("lead", "spec_ahead", json!("1")),
-        ("lead", "spec_tools", json!("web")),
-    ])
-    .reporting_composite("talky");
+    let mut h =
+        Hive::with(&[("policy", "class_notes", talky_class_notes())]).reporting_composite("talky");
     h.check_emits = true;
-    let spec = spec_curate(&mut h, "t1", "the choir in Dresden, search please");
-    spec_answer(&mut h, &spec, "SPECGUESS the choir sings on Friday");
-    assert!(h.out.is_empty(), "a held answer goes nowhere: {:?}", h.out);
-
     curate_on(
         &mut h,
         "t1",
@@ -173,17 +136,6 @@ fn clarify_stamp_drops_quick_and_opens_no_window() {
         h.stderr
     );
     assert!(h.routed("quick").is_empty(), "no quick voice, no bridge");
-    assert!(
-        h.routed("spec_release").is_empty(),
-        "the spec answer is dropped"
-    );
-    assert!(
-        !h.out
-            .iter()
-            .any(|m| sj::to_string(&m.body).unwrap().contains("SPECGUESS")),
-        "nothing of the guess leaves: {:?}",
-        h.out
-    );
     assert_eq!(
         brain[0].body["tool_scope"],
         json!({"allow": []}),
@@ -202,11 +154,6 @@ fn clarify_stamp_drops_quick_and_opens_no_window() {
         h.state("turn_system:s1:t1").is_empty(),
         "no frozen system part of the turn"
     );
-    let marks = h.rows("SELECT value FROM marks WHERE kind = 'spec'");
-    assert_eq!(marks.len(), 1, "{marks:?}");
-    let m: Value = sj::from_str(marks[0][0].as_str().unwrap()).unwrap();
-    assert_eq!(m["verdict"], json!("dropped"));
-    assert_eq!(m["reason"], json!("path:clarify"));
     assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
 
     // The channel's deny stays on the empty menu.
@@ -310,11 +257,7 @@ fn clarify_answer_becomes_affinity_hint() {
 /// the knob `quick_instructions_slot` "1" did before (OR-d58-2.target.53).
 fn only_on() -> Vec<(&'static str, Value)> {
     let on = json!({"instructions": {"only": true}, "frame": true});
-    vec![
-        ("quick", on.clone()),
-        ("quick_spec", on.clone()),
-        ("quick_bridge", on),
-    ]
+    vec![("quick", on.clone()), ("quick_bridge", on)]
 }
 
 #[test]
@@ -513,14 +456,8 @@ fn quick_instructions_slot_reads_json_true() {
         return;
     }
     let on = json!({"instructions": {"only": true}});
-    let mut on = Hive::with(&[]).reporting_composite_with(
-        "talky",
-        &[
-            ("quick", on.clone()),
-            ("quick_spec", on.clone()),
-            ("quick_bridge", on),
-        ],
-    );
+    let mut on = Hive::with(&[])
+        .reporting_composite_with("talky", &[("quick", on.clone()), ("quick_bridge", on)]);
     curate_on(&mut on, "t1", "simple", "weather in Berlin?", prompts());
     let q = on.routed("quick");
     assert_eq!(q.len(), 1, "{:?} {:?}", on.out, on.stderr);

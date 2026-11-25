@@ -149,11 +149,30 @@ fn the_screen_is_sealed_and_states_five_lanes() {
     // the hive added no lane, and the judge's own lanes never leave it.
     // GH #1061 (#801): the judge asks the member's broker for its key and is
     // answered sealed -- `credential_request` out, `in_sealed` in.
+    // GH #1590: the mutation door's receipt, `mutation_committed`, wakes a cold
+    // curator into its boot, so a born screen serves its pages before any app writes.
     assert_eq!(
         accepts,
-        vec!["in_view", "in_withdraw", "in_notice", "in_sealed"]
+        vec![
+            "in_view",
+            "in_withdraw",
+            "in_notice",
+            "mutation_committed",
+            "in_sealed",
+            // GH #1353: a params-only update for one cell of the screen, and its answer.
+            "in_params"
+        ]
     );
-    assert_eq!(emits, vec!["event", "receipt", "credential_request"]);
+    assert_eq!(
+        emits,
+        vec![
+            "event",
+            "receipt",
+            "credential_request",
+            "params_applied",
+            "params_refused"
+        ]
+    );
 
     // A lane name says what the caller wants, never where it lands inside.
     for cell in ["compose", "views", "web", "clock", "judge"] {

@@ -30,6 +30,10 @@
           "because": "a model package pushed by the llm registry (ADR-0046), params-only; taken by `./summarizer` unless `hop.subscriber` names another cell (the curator's door). Never answered on `answer`; a refusal leaves as `model_refused`"
         },
         {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
+        },
+        {
           "route": "in_schemas",
           "because": "a menu question: body `tools`, the names an asking collector declares (`*` = all). Answered by `./schemas` with exactly one `tool_schemas`"
         },
@@ -90,6 +94,14 @@
             "./embed"
           ],
           "because": "the ask half of the credential lane (GH #801, the form of GH #560): a model cell that holds `credential_grant_id` and no key sends the grant handle out with a fresh recipient key. A V-LANE (GH #559): `params.ports` stays `[]`, and the addresses in `at` are the only ones this sealed rim opens for this one lane. Whoever draws the edge points it at the access hive that grants the cell and stamps `context.requester` on it, because the requester comes from the EDGE and never from the body (R-AC-1)"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -370,7 +382,7 @@
         {
           "from": "./summarizer",
           "to": "./derive",
-          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber)",
+          "condition": "!(has(hop.route) && hop.route == 'credential_request') && !has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'in_summary'"
@@ -385,7 +397,7 @@
         {
           "from": "./summarizer",
           "to": ".",
-          "condition": "has(hop.refused_subscriber)",
+          "condition": "has(hop.refused_subscriber) && !has(hop.params_answer)",
           "modifier": {
             "set_hop": {
               "route": "'model_refused'"
@@ -785,6 +797,98 @@
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'turn'",
           "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./projection",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.matches('/projection/[^/]+$')"
+        },
+        {
+          "from": ".",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/store') && !hop.subscriber.endsWith('/projection/store')"
+        },
+        {
+          "from": ".",
+          "to": "./summarizer",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/summarizer')"
+        },
+        {
+          "from": "./projection",
+          "to": ".",
+          "condition": "has(hop.route) && (hop.route == 'params_applied' || hop.route == 'params_refused')",
+          "modifier": {
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./summarizer",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "cur_origin",
+              "cur_phase",
+              "cur_call",
+              "cur_job"
+            ]
+          }
+        },
+        {
+          "from": "./summarizer",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "cur_origin",
               "cur_phase",

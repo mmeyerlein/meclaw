@@ -98,7 +98,7 @@ fn call(target: Option<&str>, extra: Value) -> Value {
 
 /// The model cells of each composite, by the name its curator knows them.
 const MODEL_CELLS: [(&str, &[&str]); 3] = [
-    ("talky", &["brain", "quick", "quick_spec", "quick_bridge"]),
+    ("talky", &["brain", "quick", "quick_bridge"]),
     ("cogny", &["brain"]),
     ("simple-agent", &["brain", "strong"]),
 ];
@@ -118,7 +118,7 @@ fn d58_target_talky_delivers_each_call_by_its_target() {
     }
     let t = table("talky");
     let mut failures = Vec::new();
-    for cell in ["brain", "quick", "quick_spec", "quick_bridge"] {
+    for cell in ["brain", "quick", "quick_bridge"] {
         let got = reach(&t, "curator", json!({}), call(Some(cell), json!({})));
         if cells(&got) != vec![at(cell)] {
             failures.push(format!("{cell}: {:?}", cells(&got)));
@@ -393,7 +393,7 @@ fn d58_target_the_value_sets_moved_into_the_profiles_alone() {
     // A fast target carries every value its call's cut reads and no value of
     // the wall (OR-d58-2.target.16, .60): the short window, no note, the
     // rest of the call's values as the main target's.
-    for cell in ["quick", "quick_spec", "quick_bridge"] {
+    for cell in ["quick", "quick_bridge"] {
         let p = &read_json(&repo(&format!("templates/talky/{cell}/config.json")))["params"]["window_profile"];
         let mut values: Vec<&String> = p
             .as_object()

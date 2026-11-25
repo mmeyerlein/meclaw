@@ -241,28 +241,30 @@ class TestAdmission(ScheduleCase):
         self.lanes("north")
         self.warm("north", gib=25)
         adm = self.admit(cargo_plan())
-        self.assertEqual(25, adm.expected_g)
-        self.assertEqual(25, adm.dispatch["expected_g"])
+        # d54s lanekit: a warm target reserves its growth, not its 25 G again
+        grow = schedule.WARM_GROWTH_G
+        self.assertEqual(grow, adm.expected_g)
+        self.assertEqual(grow, adm.dispatch["expected_g"])
         budget = adm.dispatch["budget"]
         for key in ("free_min_g", "reserve_g", "max_trees", "export_g", "ws_g", "bench_g", "pool_g"):
             self.assertIn(key, budget)
         # the executor evicts until this much is free, BEFORE the first build
-        self.assertEqual(budget["reserve_g"] + 25, budget["need_free_g"])
+        self.assertEqual(budget["reserve_g"] + grow, budget["need_free_g"])
         self.assertEqual([], adm.dispatch["live_runs"])
         # a second run on the same lane carries the first one's reservation
         second = self.admit(light_plan(), strand="welle-x/b")
         self.assertEqual("north", second.lane)
         self.assertEqual([adm.run], second.dispatch["live_runs"])
-        self.assertEqual(25, second.dispatch["budget"]["reserved_live_g"])
+        self.assertEqual(grow, second.dispatch["budget"]["reserved_live_g"])
         self.assertEqual(schedule.WS_EXPECTED_G, second.expected_g)
-        self.assertEqual(budget["reserve_g"] + 25 + schedule.WS_EXPECTED_G,
+        self.assertEqual(budget["reserve_g"] + grow + schedule.WS_EXPECTED_G,
                          second.dispatch["budget"]["need_free_g"])
 
     def test_the_reservation_counts_the_aux_targets_of_the_plan(self):
         # GH #1419 review o53-r1 M2: crate-isolation and clippy build in
         # `<lane root>/aux/{iso,clippy}` beside the lane's target/; the admission
         # reserved the target/ alone and underestimated the disk of a pass that
-        # books them. A known aux target counts its last bytes, an unknown one
+        # books them. A known aux target counts its growth, an unknown one
         # the cold estimate; a plan without them reserves the target/ alone.
         self.lanes("north")
         self.warm("north", gib=25)
@@ -276,9 +278,16 @@ class TestAdmission(ScheduleCase):
             st["aux_target"] = aux
             plan["stations"].append(st)
         adm = self.admit(plan)
-        self.assertEqual(25 + 7 + schedule.AUX_EXPECTED_G, adm.expected_g)
+        # d54s lanekit: warm rows count their growth, the unknown aux the cold value
+        self.assertEqual(schedule.WARM_GROWTH_G + schedule.AUX_WARM_GROWTH_G + schedule.AUX_EXPECTED_G,
+                         adm.expected_g)
         # the aux rows never count as the lane's target/ itself
-        self.assertEqual(25, schedule._target_g(self.db, "north"))
+        self.assertEqual(schedule.WARM_GROWTH_G, schedule._target_g(self.db, "north"))
+        # w1 leaseklar (#1620, fix round 1): the cold need -- target/ cleared, the aux
+        # rows as they are -- travels beside the warm one for the own-target clearing.
+        budget = adm.dispatch["budget"]
+        self.assertEqual(schedule.DEFAULT_EXPECTED_G - schedule.WARM_GROWTH_G,
+                         budget["cold_need_free_g"] - budget["need_free_g"])
 
     def test_schedule_uses_the_default_reservation_without_a_known_target(self):
         self.lanes("north")
@@ -1668,6 +1677,36 @@ class TestMergeGateHolder(TestLeaseKitFindsWave):
         self.assertEqual("south", member()["lane"])
 
 
+class TestWaiterGone(ScheduleCase):
+    """w2 batchgolden (#1639): the place of `gate --wait-admission` (the lane
+    place of `merge --wait` too) goes once its process ended; the place of a
+    gate that does not wait stays."""
+
+    arm = TestLeaseKitFinds.arm
+    queue = TestLeaseKitFindsWave.queue
+
+    def place(self, wait):
+        """A gate queued behind north's lease by a process that is gone now."""
+        self.arm("north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/x", lane="north", now=T0).code)
+        dead = subprocess.Popen(["true"])
+        dead.wait(kit_time.HANG)
+        with unittest.mock.patch.object(schedule.os, "getpid", return_value=dead.pid):
+            res = schedule.admit(self.db, cargo_plan(), repo="meclaw", mode="strand",
+                                 strand="welle-x/m", wave="welle-x", base=BASE, lane_pref="north",
+                                 now=T0, wait=wait, wait_tree=self._tmp.name)
+        self.assertIsInstance(res, schedule.Queued)
+        self.assertEqual(3, schedule.lease_take(self.db, "welle-x/s", lane="north",
+                                                now=T0 + 60).code)
+        return [h for h, _ in self.queue()]
+
+    def test_the_place_of_a_waiting_gate_goes_with_its_process(self):
+        self.assertEqual(["welle-x/s"], self.place(wait=True))
+
+    def test_the_place_of_a_gate_that_does_not_wait_stays(self):
+        self.assertEqual(["welle-x/m", "welle-x/s"], self.place(wait=False))
+
+
 class TestMergeGoesFirst(TestLeaseKitFindsWave):
     """K14 (16.10., zu #1228): a waiting merge candidate (`MECLAW_GATE_MODE=merge`,
     `merge --wait` -> `gate --wait-admission`) goes ahead of every waiting strand,
@@ -2866,6 +2905,126 @@ class TestNeedsField(unittest.TestCase):
         self.assertEqual(schedule._needs({"name": "old", "cargo": 1})["cargo"], 1)
 
 
+
+class TestFloorPlanNeedsNoLease(ScheduleCase):
+    """w1 fruehrot (#1607): the kit merge of d54s waited 1 013 s in the admission
+    ("all 4 cargo tokens are held") for a 24-s gate whose plan was the floor
+    (`build [lib+bins]`, `tests [t0 floor]`). Such a plan needs no lane lease:
+    it runs as a guest on a pool lane whose build tree is free."""
+
+    def arm(self, *names):
+        TestLeaseKitFinds.arm(self, *names)
+
+    @staticmethod
+    def floor_plan():
+        build = station("build", cpu=8, cargo=1)
+        build["build"] = {"meclaw_bin": False, "workspace": False, "packages": [], "tests": [],
+                          "lib_bins": True, "extra": []}
+        tests = station("tests", cpu=8, after=["build"])
+        tests["select"] = {"binaries": [], "rdeps": [], "all": False, "floor": True, "extra": [],
+                           "minus": [], "filter": "kind(lib) + kind(bin)"}
+        return make_plan(station("precheck"), build, tests)
+
+    def hold_all(self, names):
+        for i, name in enumerate(names):
+            self.assertEqual(0, schedule.lease_take(self.db, "welle-x/h%d" % i, lane=name,
+                                                    now=T0).code)
+
+    def test_a_floor_plan_is_admitted_beside_four_held_leases(self):
+        names = ("n1", "n2", "n3", "n4")
+        self.arm(*names)
+        self.hold_all(names)
+        self.assertIsInstance(self.admit(cargo_plan(), strand="welle-x/full"), schedule.Queued)
+        adm = self.admit(self.floor_plan(), strand="welle-x/floor", queue=False, merge=True)
+        self.assertIn(getattr(adm, "lane", None), names, adm)
+        self.assertFalse(adm.lease_taken)
+        self.assertEqual(sorted("welle-x/h%d" % i for i in range(4)),
+                         sorted(r["holder"] for r in self.db.execute("SELECT holder FROM leases")))
+
+    def test_a_plan_without_a_build_station_is_admitted_beside_held_leases(self):
+        self.arm("n1")
+        self.hold_all(("n1",))
+        adm = self.admit(light_plan(), strand="welle-x/kit", lane_pref=None)
+        self.assertEqual("n1", getattr(adm, "lane", None), adm)
+        self.assertFalse(adm.lease_taken)
+
+    def test_a_floor_plan_waits_while_the_build_tree_runs(self):
+        self.arm("n1")
+        self.hold_all(("n1",))
+        first = self.admit(cargo_plan(), strand="welle-x/h0")
+        self.assertEqual("n1", first.lane)
+        got = self.admit(self.floor_plan(), strand="welle-x/floor", queue=False, merge=True)
+        self.assertIsInstance(got, schedule.Queued)
+        self.assertIn("tree is in use", got.reason)
+
+    def test_more_than_the_floor_needs_a_lease(self):
+        plan = self.floor_plan()
+        plan["stations"][1]["build"]["packages"] = ["meclaw-colony"]
+        self.assertFalse(schedule.floor_only(plan["stations"]))
+        plan = self.floor_plan()
+        plan["stations"][2]["select"]["binaries"] = ["meclaw-colony::misc"]
+        self.assertFalse(schedule.floor_only(plan["stations"]))
+        self.assertFalse(schedule.floor_only(cargo_plan()["stations"]))
+        self.assertTrue(schedule.floor_only(self.floor_plan()["stations"]))
+        self.assertTrue(schedule.floor_only(light_plan()["stations"]))
+
+
+
+class TestOverdueLeaseGoesByItself(ScheduleCase):
+    """w1 leaseklar (#1620, OR-W1-93): `who` showed a lane lease `STALE: last seen
+    N min ago, no live process` and it stayed until someone ran `release --force`.
+    Past its deadline (the hold TTL since it was last seen), with the lane tree
+    probed empty, the kit frees it itself and journals the line; a live process
+    or a probe without an answer keeps it (fail-closed)."""
+
+    def setUp(self):
+        super().setUp()
+        self.probed, self.answer = [], []
+
+        def probe(ln):
+            self.probed.append(ln.name)
+            return self.answer
+        schedule._lane_tree_probe = probe
+        TestLeaseKitFinds.arm(self, "north")
+        self.assertEqual(0, schedule.lease_take(self.db, "welle-x/a", lane="north", now=T0).code)
+        st = schedule._load(self.db)
+        self.overdue = T0 + (st["ttl_min"] + 1) * 60
+
+    def holders(self):
+        return [r["holder"] for r in self.db.execute(
+            "SELECT holder FROM lease_entries WHERE resource IS NOT NULL")]
+
+    def journal(self, event):
+        return [json.loads(r["data"]) for r in self.db.execute(
+            "SELECT data FROM journal WHERE event = ? ORDER BY seq", (event,))]
+
+    def test_who_frees_an_overdue_lease_over_an_empty_lane_tree(self):
+        res = schedule.lease_who(self.db, now=self.overdue)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual([], self.holders())
+        self.assertIn("reclaimed the cargo token of welle-x/a", res.err)
+        self.assertNotIn("STALE", res.out)
+        stale = [d for d in self.journal("lease_released") if d["verb"] == "stale"]
+        self.assertEqual(1, len(stale), stale)
+        self.assertEqual("lane:north", stale[0]["resource"])
+        self.assertIn("no live process", stale[0]["detail"])
+
+    def test_a_live_process_or_no_answer_keeps_the_overdue_lease(self):
+        for answer in ([4242], None):
+            with self.subTest(answer=answer):
+                self.answer = answer
+                res = schedule.lease_who(self.db, now=self.overdue)
+                self.assertEqual(0, res.code, res.err)
+                self.assertEqual(["welle-x/a"], self.holders())
+                self.assertIn("STALE", res.out)
+
+    def test_a_lease_inside_its_deadline_is_neither_probed_nor_freed(self):
+        res = schedule.lease_who(self.db, now=T0 + 60)
+        self.assertEqual(0, res.code, res.err)
+        self.assertEqual(["welle-x/a"], self.holders())
+        self.assertEqual([], self.probed)
+
+
 def setUpModule():
     store_isolation.isolate()
 
@@ -2917,6 +3076,33 @@ class TreeKey(unittest.TestCase):
         self.assertEqual("/t/gate/wave-a--fix",
                          schedule.tree_gate_dir("/t", self.ROOT + "/meclaw-core/wave-a/fix", env=env))
         self.assertEqual("/t/gate/meclaw-core", schedule.tree_gate_dir("/t", "/x/meclaw-core/", env=env))
+
+
+
+class WarmTargetGrowth(ScheduleCase):
+    """d54s lanekit (#1520, Nr. 56): a warm lane target lies on the disk already;
+    the admission reserves its growth, not its bytes once more. Without a row
+    (cold) the full estimate stays (60 + 35 + 10 + 10 = 115)."""
+
+    def plan_with_aux(self):
+        plan = cargo_plan()
+        for name, aux in (("crate-isolation", "iso"), ("clippy", "clippy")):
+            st = station(name, cpu=4, cargo_aux=1, after=["build"])
+            st["aux_target"] = aux
+            plan["stations"].append(st)
+        return plan
+
+    def test_a_warm_target_reserves_its_growth_only(self):
+        self.lanes("north")
+        self.warm("north", gib=48)
+        adm = self.admit(self.plan_with_aux())
+        self.assertEqual(schedule.WARM_GROWTH_G + 2 * schedule.AUX_EXPECTED_G, adm.expected_g)
+        self.assertLessEqual(adm.dispatch["budget"]["need_free_g"], 100)
+
+    def test_a_cold_target_keeps_the_full_estimate(self):
+        self.lanes("north")
+        adm = self.admit(self.plan_with_aux())
+        self.assertEqual(115, adm.dispatch["budget"]["need_free_g"])
 
 
 if __name__ == "__main__":

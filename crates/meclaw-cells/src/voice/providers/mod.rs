@@ -57,9 +57,11 @@ pub fn build_duplex(
     t: ProviderTimeouts,
 ) -> Result<Arc<dyn DuplexProvider>, String> {
     Ok(match p {
-        DuplexParams::Echo(ep) => {
-            Arc::new(duplex_echo::EchoDuplex::new(ep.sample_rate).with_timeouts(t))
-        }
+        DuplexParams::Echo(ep) => Arc::new(
+            duplex_echo::EchoDuplex::new(ep.sample_rate)
+                .with_profile(ep.chunk_ms, ep.late.clone())
+                .with_timeouts(t),
+        ),
         DuplexParams::GptLive(gp) => {
             Arc::new(gpt_live::GptLiveDuplex::new(gp.clone()).with_timeouts(t))
         }

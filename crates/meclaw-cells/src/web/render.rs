@@ -165,10 +165,11 @@ impl Renderer<'_> {
 
 /// How deep the object tree may nest before rendering gives up.
 ///
-/// Nothing stops a patch from making an object its own ancestor. A renderer
-/// that recursed into such a tree would take the cell down with a stack
-/// overflow — which is a crash, not a diagnosis — so the depth is bounded and
-/// the breach is reported with the object named.
+/// `object.create` and `object.move` refuse to make an object its own ancestor
+/// (GH #1264), but nothing proves the stored rows free of such a cycle. A renderer that
+/// recursed into such a tree would take the cell down with a stack overflow —
+/// which is a crash, not a diagnosis — so the depth is bounded and the breach
+/// is reported with the object named.
 const MAX_DEPTH: usize = 64;
 
 /// Why a render did not happen.
@@ -1971,7 +1972,7 @@ fn parse_until_end(
         let Some(close) = after.find("}}") else {
             return Err(TemplateError(format!(
                 "unclosed {{{{ near {:?}",
-                &after[..after.len().min(24)]
+                after.chars().take(24).collect::<String>()
             )));
         };
         let tag = after[..close].trim();
@@ -2466,6 +2467,18 @@ mod tests {
     #[test]
     fn an_unclosed_brace_is_refused() {
         assert!(parse_template("<p>{{body</p>").is_err());
+    }
+
+    /// GH #1264: the refusal quotes the text behind the brace, and cut it at a
+    /// byte count. A multi-byte character across that byte was a panic in the
+    /// cell's database call.
+    #[test]
+    fn gh1264_an_unclosed_brace_before_a_multibyte_char_is_refused_not_a_panic() {
+        for pad in 0..=30 {
+            let template = format!("<p>{{{{{}ä€🦊 und mehr</p>", "a".repeat(pad));
+            let err = parse_template(&template).unwrap_err();
+            assert!(err.0.contains("unclosed"), "{template}: {}", err.0);
+        }
     }
 
     #[test]

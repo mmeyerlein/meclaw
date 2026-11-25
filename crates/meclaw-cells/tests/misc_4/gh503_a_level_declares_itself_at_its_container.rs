@@ -57,6 +57,7 @@ fn grow(params: Value) -> Value {
     // three ride in one manifest — what this file is about is the level, which
     // is the one in front.
     let member = params["level"] == json!("member");
+    let screen = params["level"] == json!("screen") || params["level"] == json!("app");
     let out = emit_all(
         &shipped_script(RECIPES),
         &json!({
@@ -75,9 +76,17 @@ fn grow(params: Value) -> Value {
     let decls = out["manifest"]
         .as_array()
         .unwrap_or_else(|| panic!("no manifest: {out}"));
+    // GH #1597: a screen carries its member's half behind it, a member wish a fourth;
+    // GH #1598: so does an app (the receipt), which in a member wish rides in that fourth.
     assert_eq!(
         decls.len(),
-        if member { 3 } else { 1 },
+        if member {
+            4
+        } else if screen {
+            2
+        } else {
+            1
+        },
         "the level is not the declaration this manifest leads with: {out}"
     );
     decls[0].clone()

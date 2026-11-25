@@ -350,11 +350,7 @@ fn a_family_without_a_place_is_never_named_by_its_code_name() {
         let allow = json!({"allow": class.split(',').collect::<Vec<_>>()});
         let mut h = Hive::with(&[]).reporting_composite_with(
             "talky",
-            &[
-                ("quick", allow.clone()),
-                ("quick_spec", allow.clone()),
-                ("quick_bridge", allow),
-            ],
+            &[("quick", allow.clone()), ("quick_bridge", allow)],
         );
         let (bridge, _) = tool_round(&mut h, "t1", "calendar", "when is my next appointment?");
         let text = bridge_text(&bridge);

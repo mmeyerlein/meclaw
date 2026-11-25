@@ -1,0 +1,5 @@
+{"ts": "2026-11-23T11:34:46Z", "model": "anthropic/claude-sonnet-5.5", "probe": "refusal:reasoning_off", "status": "http 400", "worst": 0.001064, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:46Z", "model": "anthropic/claude-sonnet-5.5", "probe": "refusal:temperature", "status": "http 404", "worst": 0.00103, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:46Z", "model": "anthropic/claude-sonnet-5.5", "probe": "refusal:top_p", "status": "http 404", "worst": 0.001014, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:46Z", "model": "anthropic/claude-sonnet-5.5", "probe": "refusal:tool_choice_named", "status": "http 404", "worst": 0.00186, "cost": 0.0, "cost_source": "none"}
+{"ts": "2026-11-23T11:34:47Z", "model": "anthropic/claude-sonnet-5.5", "probe": "refusal:tool_choice_required", "status": "ok", "worst": 0.001048, "cost": 8.514e-05, "cost_source": "usage.cost"}

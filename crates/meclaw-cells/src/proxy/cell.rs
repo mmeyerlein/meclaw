@@ -72,6 +72,20 @@ pub(crate) struct ProxyCredential {
     pub(crate) wait: CredentialWait,
 }
 
+/// Refuse a params update: on the params lane the shared answer (GH #1353),
+/// otherwise the inbound error every other refusal of this cell is.
+pub(crate) async fn refuse_params(
+    sink: &OutputSink,
+    msg: &Message,
+    push: &crate::params_overlay::ParamsPush,
+    error_code: &str,
+    detail: &str,
+) {
+    if !push.refused(sink, error_code, detail).await {
+        crate::proxy::emit::emit_inbound_error(sink, msg, error_code, detail).await;
+    }
+}
+
 impl ProxyCell {
     /// Constructor. `initial_offset` comes from the factory (sync `load_offset`
     /// from `cell.db`, W9 resume path). `client` is the initially built reqwest
@@ -381,6 +395,13 @@ impl LongRunningCell for ProxyCell {
         reconfig_tx: &'a mpsc::Sender<Self::Reconfig>,
     ) -> impl Future<Output = ()> + Send + 'a {
         async move {
+            // GH #1353: on the params lane an update or nothing -- no send, no
+            // box. Before the sealed token below.
+            let push = crate::params_overlay::ParamsPush::of(&msg, sink);
+            if let Some(detail) = push.lane_refusal() {
+                refuse_params(sink, &msg, &push, "invalid_input", &detail).await;
+                return;
+            }
             // 1. The body must be inline-readable (messages[] extraction below).
             let body_val = match &msg.body {
                 meclaw_core::Body::Inline(v) => v.clone(),
@@ -408,12 +429,19 @@ impl LongRunningCell for ProxyCell {
             // via reconfig_tx; base_url also rebuilds self.client), query_timeout_ms
             // (path C → DbConn). Immutable: bot_token, emit_to. params-only → silent.
             if let Some(params_val) = body_val.get("params") {
+                // GH #1353: a slot addressed to another cell moves nothing.
+                if let Some(detail) = push.foreign_detail() {
+                    crate::proxy::emit::emit_inbound_error(sink, &msg, "invalid_input", &detail)
+                        .await;
+                    return;
+                }
                 let update_obj = match params_val.as_object() {
                     Some(o) => o.clone(),
                     None => {
-                        crate::proxy::emit::emit_inbound_error(
+                        refuse_params(
                             sink,
                             &msg,
+                            &push,
                             "invalid_input",
                             "params slot: not a JSON object",
                         )
@@ -439,9 +467,10 @@ impl LongRunningCell for ProxyCell {
                         match persist {
                             Ok(Ok(())) => {}
                             Ok(Err(e)) => {
-                                crate::proxy::emit::emit_inbound_error(
+                                refuse_params(
                                     sink,
                                     &msg,
+                                    &push,
                                     "invalid_input",
                                     &format!("cell.db params write failed: {e}"),
                                 )
@@ -449,9 +478,10 @@ impl LongRunningCell for ProxyCell {
                                 return;
                             }
                             Err(meclaw_colony::QueryTimeout::Interrupted) => {
-                                crate::proxy::emit::emit_inbound_error(
+                                refuse_params(
                                     sink,
                                     &msg,
+                                    &push,
                                     "query_timeout",
                                     "params write exceeded query_timeout_ms",
                                 )
@@ -481,15 +511,10 @@ impl LongRunningCell for ProxyCell {
                                 long_poll_request_secs: self.long_poll_request_secs,
                             })
                             .await;
+                        push.applied(sink).await;
                     }
                     Err(e) => {
-                        crate::proxy::emit::emit_inbound_error(
-                            sink,
-                            &msg,
-                            "invalid_input",
-                            &e.detail(),
-                        )
-                        .await;
+                        refuse_params(sink, &msg, &push, "invalid_input", &e.detail()).await;
                     }
                 }
                 // Standalone params-update → done (no inbound send in this message).

@@ -387,6 +387,23 @@ test-group = "colony-boot"
 filter = 'binary_id(=meclaw-cells::display) & test(/^gh1210_a_gesture_reaches_the_member_exactly_once::/)'
 test-group = "colony-boot"
 
+# A born screen serves its pages before any app writes (GH #1590): boots a
+# display colony, folded form in the `display` harness.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::display) & test(/^gh1590_a_born_screen_serves_its_pages::/)'
+test-group = "colony-boot"
+
+# A member without a screen, and one without an app, leaves no dead letter
+# (GH #1597, GH #1598): each boots a member colony, folded form in the
+# `display` harness.
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::display) & test(/^gh1597_a_member_without_a_screen_leaves_no_dead_letter::/)'
+test-group = "colony-boot"
+
+[[profile.default.overrides]]
+filter = 'binary_id(=meclaw-cells::display) & test(/^gh1598_a_member_without_an_app_leaves_no_dead_letter::/)'
+test-group = "colony-boot"
+
 # GH #1164 (Z-INT-W § 2): the long tests of `LONG TESTS FIRST` below, at most
 # four at a time. `priority` alone started all 47 together at the head of the
 # station; on build01 (12 slots) twelve of them ran side by side, each 1.5-2.3x

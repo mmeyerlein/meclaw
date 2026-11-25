@@ -62,5 +62,22 @@
       "note": "measured.json + responses/basic,reasoning,tool"
     }
   },
-  "cost_usd": 0.001452
+  "cost_usd": 0.001452,
+  "refusals": [
+    {
+      "rule": "R4",
+      "param": "temperature",
+      "wire": "chat",
+      "status": 404,
+      "body": "{\"error\":{\"message\":\"No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection\",\"code\":404,\"metadata\":{\"routing_funnel\":[{\"step\":\"Initial Endpoints\",\"endpoint_count\":8},{\"step\":\"Filter by Regional Surcharge\",\"endpoint_count\":5},{\"step\":\"Filter by Tier Endpoint Rows\",\"endpoint_count\":3,\"reason\":\"Excluded tier endpoint rows the request did not opt into\"}],\"failed_routing_step\":\"Filter by Parameters\"}}}"
+    },
+    {
+      "rule": "R4",
+      "param": "top_p",
+      "wire": "chat",
+      "status": 404,
+      "body": "{\"error\":{\"message\":\"No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection\",\"code\":404,\"metadata\":{\"routing_funnel\":[{\"step\":\"Initial Endpoints\",\"endpoint_count\":8},{\"step\":\"Filter by Regional Surcharge\",\"endpoint_count\":5},{\"step\":\"Filter by Tier Endpoint Rows\",\"endpoint_count\":3,\"reason\":\"Excluded tier endpoint rows the request did not opt into\"}],\"failed_routing_step\":\"Filter by Parameters\"}}}"
+    }
+  ],
+  "refusals_measured_at": "2026-11-23T11:35:01Z"
 }

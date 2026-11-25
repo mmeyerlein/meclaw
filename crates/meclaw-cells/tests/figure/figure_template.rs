@@ -204,7 +204,7 @@ fn figure_is_three_children_and_refs_simple_agent() {
     let agent = figure("simple-agent/config.json");
     assert_eq!(agent["cell"]["type"], "ref", "the agent is referenced");
     assert_eq!(
-        agent["cell"]["template"], "simple-agent@2.4.5",
+        agent["cell"]["template"], "simple-agent@2.4.6",
         "the agent is the colony's simple-agent@2, never a copy and never the frozen v1"
     );
     // GH #1276: `world` caches its queue, open turn and call book
@@ -245,6 +245,8 @@ fn figure_lanes_are_the_world_and_phone_contract() {
             "answer",
             "tool_result",
             "in_model",
+            // GH #1353: a params-only update for one cell of the agent.
+            "in_params",
             "mutation_committed",
             "in_pack",
             "in_sealed",
@@ -273,7 +275,10 @@ fn figure_lanes_are_the_world_and_phone_contract() {
             "affinity_propose",
             "conversations",
             // D58 note (GH #1477): the curator's answer to a note's sender.
-            "note_receipt"
+            "note_receipt",
+            // GH #1353: the answer of the cell an `in_params` update named.
+            "params_applied",
+            "params_refused"
         ]),
         "V-W out, the handset's turn, an extra tool's call, the contract lanes of simple-agent@2"
     );
@@ -350,8 +355,11 @@ fn figure_lanes_are_the_world_and_phone_contract() {
                 left.insert(r.clone());
             }
             // GH #863: the model door's one way back names no route, it
-            // stamps `model_refused`.
-            if e.from == "./simple-agent" && cond == "has(hop.refused_subscriber)" {
+            // stamps `model_refused` (GH #1353: closed to the answer of a
+            // refused params push, which leaves on its own lane).
+            if e.from == "./simple-agent"
+                && cond == "has(hop.refused_subscriber) && !has(hop.params_answer)"
+            {
                 left.insert("model_refused".to_string());
             }
             if e.from != "./simple-agent" {
@@ -366,6 +374,7 @@ fn figure_lanes_are_the_world_and_phone_contract() {
             assert!(
                 named.iter().all(|r| [
                     "in_model",
+                    "in_params",
                     "mutation_committed",
                     "in_propose_ack",
                     "in_conversations"

@@ -164,16 +164,17 @@ async fn the_door_judges_a_later_entry_against_the_tree_an_earlier_one_grew() {
     let decls = all_declarations(&manifests(member_wish(&member_template()), "0"));
     assert_eq!(
         decls.len(),
-        3,
-        "a member wish is the person, the screen and the app — three \
-         declarations, however many emissions carry them: {decls:?}"
+        4,
+        "a member wish is the person, the screen, the app and the member's edges to \
+         the screen (GH #1597) — four declarations, however many emissions carry \
+         them: {decls:?}"
     );
     let outcome = knock(&h, json!({"manifest": decls})).await;
     assert_eq!(
         applied(&outcome),
-        3,
-        "ONE submission carrying the member and then its two devices did not \
-         apply all three — the door does not judge a later entry against the \
+        4,
+        "ONE submission carrying the member, its two devices and the member's edges \
+         to its screen (GH #1597) did not apply all four — the door does not judge a later entry against the \
          tree an earlier one grew, and the repair for GH #585 is the receipt \
          lane instead: {outcome:?}"
     );

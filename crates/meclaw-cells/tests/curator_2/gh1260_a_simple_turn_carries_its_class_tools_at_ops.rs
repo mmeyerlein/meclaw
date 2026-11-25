@@ -93,11 +93,7 @@ fn a_simple_turn_carries_its_class_tools_at_ops() {
     let empty = json!({"allow": []});
     let mut none = Hive::with(&[]).reporting_composite_with(
         "talky",
-        &[
-            ("quick", empty.clone()),
-            ("quick_spec", empty.clone()),
-            ("quick_bridge", empty),
-        ],
+        &[("quick", empty.clone()), ("quick_bridge", empty)],
     );
     assert_eq!(
         quick_scope_of(&mut none, "t5", "web", Value::Null),

@@ -11,7 +11,7 @@ is tested, not the branch):
 
     1. lease `tree:master@<repo>` (TTL 2 h). Held by somebody else -> the merge
        is `queued` (exit 3); the release OFFERS the lease to the oldest queued
-       merge, which takes it on its next call -- or at once with `--wait`,
+       merge (past a `--wait` whose process ended, `_sweep_gone`), which takes it on its next call -- or at once with `--wait`,
        which blocks on the pool's wake file the release rings and says its
        reason and queue place at the start and on each change (`wait_s` in
        the merge receipt, V2-A10). With `--wait` the candidate gate waits for
@@ -126,6 +126,8 @@ class Refused(Exception):
         self.reason = reason
         self.text = text or reason
         self.reasons = [reason]
+        # every (code, text) on its own -- `merge --check` lists each one (w1 antrag)
+        self.missing = [(reason, self.text)]
 
     @classmethod
     def all_of(cls, missing):
@@ -136,6 +138,7 @@ class Refused(Exception):
         exc = cls(missing[0][0], "%d preconditions missing: %s" % (
             len(missing), " | ".join("[%s] %s" % m for m in missing)))
         exc.reasons = [m[0] for m in missing]
+        exc.missing = list(missing)
         return exc
 
 
@@ -408,6 +411,56 @@ def review_approved(body):
     return bool(verdicts) and verdicts[-1] in ("ja", "yes")
 
 
+def review_problem(body):
+    """None when `review_approved`, else why not, in words. A section without
+    a verdict names the `## ` heading that ended it: in d54s (OR-54s-35) a
+    review wrote `## Critical` ... `## Minor` under `## Review` and
+    `Verdikt: ja` below them -- the section ended at `## Critical`, and the
+    refusal said only "no verdict" (w1 antrag, contract 3)."""
+    body = body or ""
+    heads = list(REVIEW_HEADING.finditer(body))
+    if not heads:
+        return "no `## Review` section"
+    if review_approved(body):
+        return None
+    rest = body[heads[-1].end():]
+    nxt = re.search(r"^## [^\n]*", rest, re.M)
+    section = rest[:nxt.start()] if nxt else rest
+    verdicts = [m.group(1).lower() for m in REVIEW_VERDICT.finditer(section)]
+    if verdicts:
+        return "the last verdict line under the last review heading says `%s`, not " \
+               "`Verdikt: ja`" % verdicts[-1]
+    if nxt:
+        line = body[:heads[-1].end() + nxt.start()].count("\n") + 1
+        return ("the review section ends at `%s` (line %d) before any verdict line -- "
+                "headings inside the review are `###`" % (nxt.group(0).strip(), line))
+    return "the review section has no verdict line `Verdikt: ja`"
+
+
+def edt_problem(s):
+    """None when the report names a known `E-DT-<n>` of the wave's
+    `orga-eingaben.md` or says `E-DT: keine`/`none` -- the rule of
+    `wave close` (`wave.check_edt`), which refused 24 reports at the end of
+    d54s (OR-54s-83). Asked at the merge, the gap costs one line, not a
+    round over every report of the wave (w1 antrag)."""
+    from .wave import EDT_DEFINED, EDT_ID, EDT_NONE
+    body = s.body or ""
+    if EDT_NONE.search(body):
+        return None
+    named = set(EDT_ID.findall(body))
+    try:
+        with open(os.path.join(s.wdir, "orga-eingaben.md"), encoding="utf-8") as fh:
+            defined = set(EDT_DEFINED.findall(fh.read()))
+    except OSError:
+        defined = set()
+    if named & defined:
+        return None
+    if named:
+        return "%s names E-DT-%s, which orga-eingaben.md of the wave does not define" % (
+            s.report, ", E-DT-".join(sorted(named, key=int)))
+    return "%s names no E-DT line -- write `E-DT: keine` or the `E-DT-<n>` it answers" % s.report
+
+
 # GH #1196: the report says what the strand moved into issues -- nothing, or
 # each issue with the owner ruling that allows it. Findings moved into fresh
 # issues to get a strand green only shift the cost to a later reader. The LAST
@@ -499,9 +552,8 @@ def preconditions(s, tip, no_pre=None):
     elif not REVIEW_HEADING.search(s.body):
         missing.append(("no_review", "%s has no `## Review` section" % s.report))
     elif not review_approved(s.body):
-        missing.append(("no_review_verdict", "%s: the last verdict line under the last review "
-                        "heading is not `Verdikt: ja` (regex %s)" % (s.report,
-                                                                     REVIEW_VERDICT.pattern)))
+        missing.append(("no_review_verdict", "%s: %s (regex %s)" % (
+            s.report, review_problem(s.body), REVIEW_VERDICT.pattern)))
     if not title_ok(s):
         missing.append(("strand_title_missing", "%s has no title (empty, or only the strand name "
                         "%s) -- write the English one-line title of the merge commit" % (
@@ -696,6 +748,78 @@ def _queued(db, repo):
         "SELECT * FROM merges WHERE repo=? AND state='queued' ORDER BY at, rowid", (repo,))]
 
 
+def mark_wait(db, repo, mids, wait):
+    """w2 batchgolden (#1639): the queue rows `mids` ({strand: merge id}) belong
+    to this call -- with `wait` its process stands at them (`lease_waiters`)
+    beside every other live one, without it none does: exit 3 ends the call and
+    another one comes back (`schedule.renew_waiters`)."""
+    schedule._ensure(db)
+    res = resource(repo)
+    with store.tx(db):
+        marks = schedule.waiter_marks(db, res)
+        for name, mid in mids.items():
+            db.execute("DELETE FROM lease_waiters WHERE pool=? AND holder=? AND since=?",
+                       (res, name, mid))
+            schedule.enter_waiters(db, res, name, mid, schedule.renew_waiters(
+                marks.get((name, mid)) or [], wait))
+
+
+def unmark_wait(db, repo, mids, err):
+    """The wait ended at its limit, still queued: nobody blocks at the rows any
+    more. A locked store is outlasted (`schedule.while_locked`, RELEASE_WAIT_S);
+    then the mark stays and the place goes with this process -- said, exit 3."""
+    try:
+        schedule.while_locked(lambda: mark_wait(db, repo, mids, False),
+                              end=time.monotonic() + float(RELEASE_WAIT_S),
+                              reset=lambda: schedule._rollback(db))
+    except (sqlite3.OperationalError, store.StoreWriteError) as exc:
+        if not schedule.store_locked(exc):
+            raise
+        err.write("merge: the store stayed locked (%s) -- the queue place goes with this "
+                  "process\n" % exc)
+
+
+def pick_row(db, repo, strand, base, clock, wait):
+    """`(merge id, created)` of the queue row of `strand`: the queued one, else a
+    new one -- marked in the same transaction, so no sweep of another call
+    abandons the row of a dead waiter between the two (review M2)."""
+    schedule._ensure(db)
+    with store.tx(db):
+        row = db.execute("SELECT id FROM merges WHERE repo=? AND strand=? AND state='queued'"
+                         " ORDER BY at DESC LIMIT 1", (repo, strand)).fetchone()
+        mid = row["id"] if row else _new_merge(db, repo, strand, base, "queued", clock())
+        mark_wait(db, repo, {strand: mid}, wait)
+    return mid, not row
+
+
+def _sweep_gone(db, repo, mine):
+    """Inside the caller's tx: abandon the queued rows whose blocking process
+    ended (`merge --wait`); `[(strand, id, base)]`. Never those of `mine` and
+    of the lease holder -- its rows stay queued until its gate. Marks of rows
+    that are queued no more go with them."""
+    res = resource(repo)
+    row = db.execute("SELECT holder FROM leases WHERE resource=?", (res,)).fetchone()
+    mine = mine | _members(row["holder"] if row is not None else "")
+    marks = {since: m for (_, since), m in schedule.waiter_marks(db, res).items()}
+    gone = [(q["strand"], q["id"], q["base"]) for q in _queued(db, repo)
+            if q["strand"] not in mine and schedule.waiters_gone(marks.get(q["id"]))]
+    for _, mid, _ in gone:
+        db.execute("UPDATE merges SET state='abandoned' WHERE id=?", (mid,))
+    db.execute("DELETE FROM lease_waiters WHERE pool=? AND since NOT IN "
+               "(SELECT id FROM merges WHERE repo=? AND state='queued')", (res, repo))
+    return gone
+
+
+def _say_gone(db, gone):
+    for strand, mid, base in gone:
+        _event(db, "merge_abandoned", mid, strand, base, reason="waiter_gone")
+
+
+def _offer_tree(db, res, strand, at):
+    db.execute("UPDATE leases SET holder='', run=NULL, taken_at=?, ttl_s=?, offered_to=? "
+               "WHERE resource=?", (at, OFFER_TTL_S, strand, res))
+
+
 def _members(holder):
     """The strands a holder speaks for: `S1+S2` (a batch) is S1 and S2 -- the
     queue rows and the offer name single strands, never the batch label."""
@@ -703,11 +827,17 @@ def _members(holder):
 
 
 def take_tree(db, repo, holder, at=None):
-    """True when `holder` holds the tree lease now; False = wait in the queue."""
+    """True when `holder` holds the tree lease now; False = wait in the queue.
+
+    A queue row whose blocking process ended goes first (`_sweep_gone`); an
+    offer to it passes on to the oldest row left, or is free without one."""
     at = at or store.now()
     res = resource(repo)
     mine = _members(holder)
+    lapsed, offered, passed, taken = [], None, None, False
+    schedule._ensure(db)
     with store.tx(db):
+        gone = _sweep_gone(db, repo, mine)
         row = db.execute("SELECT * FROM leases WHERE resource=?", (res,)).fetchone()
         live = row is not None and row["holder"] != "" and not store._expired(row, at)
         if live and _members(row["holder"]) & mine:
@@ -715,20 +845,30 @@ def take_tree(db, repo, holder, at=None):
             # first release would free the lease under the second.
             raise Refused("already_merging", "%s is being merged right now (lease holder %s)"
                           % (holder, row["holder"]))
-        if live:
-            return False
-        offered = row["offered_to"] if row is not None and row["holder"] == "" else None
-        if offered and offered not in mine:
-            if not store._expired(row, at):
-                return False
-            lapsed = _abandon(db, repo, offered)
-        else:
-            lapsed = []
+        if not live:
+            offered = row["offered_to"] if row is not None and row["holder"] == "" else None
+            taken = not offered or offered in mine
+            queue = [] if taken else [q["strand"] for q in _queued(db, repo)]
+            if not taken and store._expired(row, at):
+                lapsed, taken = _abandon(db, repo, offered), True
+            elif not taken and offered not in queue and offered in [g[0] for g in gone]:
+                passed = queue[0] if queue and queue[0] not in mine else None
+                taken = passed is None
+        if passed:
+            _offer_tree(db, res, passed, at)
         # The queue speaks only through the offer: a free tree without a live
         # offer is first come -- queued rows nobody will wake (parallel callers
         # that queued each other, a lapsed offer) must not block it for good.
-        db.execute("INSERT OR REPLACE INTO leases VALUES (?,?,?,?,?,NULL)",
-                   (res, holder, None, at, TTL_S))
+        if taken:
+            db.execute("INSERT OR REPLACE INTO leases VALUES (?,?,?,?,?,NULL)",
+                       (res, holder, None, at, TTL_S))
+    _say_gone(db, gone)
+    if passed:
+        events.emit(db, "lease_offered", "note", {"resource": res, "holder": passed, "run": None,
+                                                  "ttl_s": OFFER_TTL_S}, at=at)
+        _ring(db)
+    if not taken:
+        return False
     for mid, base in lapsed:
         _event(db, "merge_abandoned", mid, offered, base, reason="offer_lapsed")
     events.emit(db, "lease_taken", "note", {"resource": res, "holder": holder, "run": None,
@@ -806,20 +946,23 @@ def dequeue(db, repo, strand, at=None):
 
 
 def release_tree(db, repo, holder, at=None):
-    """Free the lease; the oldest queued merge gets it OFFERED (no poll wakes it)."""
+    """Free the lease; the oldest queued merge gets it OFFERED (no poll wakes it),
+    past a row whose blocking process ended (`_sweep_gone`)."""
     at = at or store.now()
     res = resource(repo)
-    nxt = next((q["strand"] for q in _queued(db, repo) if q["strand"] not in _members(holder)),
-               None)
+    schedule._ensure(db)
     with store.tx(db):
         row = db.execute("SELECT * FROM leases WHERE resource=?", (res,)).fetchone()
         if row is None or row["holder"] != holder:
             return False
+        gone = _sweep_gone(db, repo, _members(holder))
+        nxt = next((q["strand"] for q in _queued(db, repo)
+                    if q["strand"] not in _members(holder)), None)
         if nxt:
-            db.execute("UPDATE leases SET holder='', run=NULL, taken_at=?, ttl_s=?, "
-                       "offered_to=? WHERE resource=?", (at, OFFER_TTL_S, nxt, res))
+            _offer_tree(db, res, nxt, at)
         else:
             db.execute("DELETE FROM leases WHERE resource=?", (res,))
+    _say_gone(db, gone)
     events.emit(db, "lease_released", "note", {"resource": res, "holder": holder, "run": None,
                                                "ttl_s": TTL_S}, at=at)
     if nxt:
@@ -1040,6 +1183,182 @@ def lease_resolves(strands, base, no_pre):
         except Refused as exc:
             missing.append((exc.reason, exc.text))
     raise Refused.all_of(missing)
+
+
+# --- the merge request: every gap before any lease (w1 antrag, #1602) -----------------
+#
+# In d54s three merge requests were refused at their first try for form
+# (OR-54s-16, -18, -35: title, verdict line, heading level), two merge gates
+# aborted on a lane's disk reserve (OR-54s-18, -43) and `wave close` refused
+# 24 reports without an E-DT line (OR-54s-83) -- each found one at a time,
+# under the lease. `merge --check` runs the same reads as the merge
+# (`Strand`, `review_first`, `preconditions`, `migration_order`) for every
+# member, plus the E-DT line and the lanes' reserve, without a lease and
+# without the store, and lists every gap at once; the merge starts with it.
+
+GAP_LANES = "lanes"
+# `lane_sync.sh status` says `free 95G` (measured 23.11. on build01)
+LANE_FREE = re.compile(r"\bfree (\d+)G?\b")
+
+
+def lane_status(host=None):
+    """`(rc, text, err)`: one line `<lane>  <lane_sync.sh status line>` per lane
+    of the host file (or the one named), as `lanes status` prints them -- read
+    straight from the lanes, never through the store (`--check` writes
+    nothing; `lanes status` books runner rows)."""
+    from . import lane as lane_mod
+    path = lane_mod.lanes_file()
+    if not os.path.isfile(path):
+        return 2, "", "no lane host file at %s" % path
+    lanes = [ln for ln in lane_mod.load_lanes(path) if not host or ln.name == host]
+    if not lanes:
+        return 2, "", "no lane %s in %s" % (host, path)
+    return 0, "".join("%s  %s\n" % (ln.name, lane_mod.status(ln)) for ln in lanes), ""
+
+
+def _hygiene_cmd(name):
+    try:
+        target = _lane_target(name)
+    except Refused:
+        target = "<ssh target of %s>" % name
+    return "scripts/lane_sync.sh hygiene --kit %s generations" % target
+
+
+def lane_room(host=None):
+    """`(gaps, notes)` of the lanes' disk reserve: the floor a lane run refuses
+    below (`MECLAW_LANE_FLOOR_G`, 60 G; 0 = off, as `lane_sync.sh lane_floor`).
+    A gap only when no lane (or not the one named) holds it -- a lane that does
+    not answer may boot, its floor is judged when it runs (a note)."""
+    raw = os.environ.get("MECLAW_LANE_FLOOR_G", "60")
+    floor = int(raw) if raw.isdigit() else 60
+    if floor == 0:
+        return [], ["lanes: MECLAW_LANE_FLOOR_G=0 -- the reserve is off"]
+    rc, text, errtext = lane_status(host)
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        # no host file: the gate runs here or on what the caller names --
+        # nothing to judge; a named lane the file lacks the merge refuses anyway
+        if host and "host file at" not in errtext:
+            return [(GAP_LANES, "no_lane", errtext or "lane %s answered nothing" % host)], []
+        return [], ["lanes: %s -- the reserve is not checked" % (errtext or "no lanes")]
+    room, low, notes = [], [], []
+    for line in lines:
+        words = line.split()
+        name, m = words[0], LANE_FREE.search(line)
+        if "unreachable" in words[1:2] or not m:
+            notes.append("%s: no free figure (%s) -- its floor is judged when it runs"
+                         % (name, " ".join(words[1:4])))
+            room.append(name)
+        elif int(m.group(1)) >= floor:
+            room.append(name)
+        else:
+            low.append((name, int(m.group(1))))
+            notes.append("%s free %sG < reserve %dG" % (name, m.group(1), floor))
+    if room or not low:
+        return [], notes
+    return [(GAP_LANES, "lane_reserve", "no lane holds the reserve of %dG free (%s) -- %s"
+             % (floor, ", ".join("%s %dG" % lw for lw in low),
+                "; ".join("free %s with `%s`" % (n, _hygiene_cmd(n)) for n, _ in low)))], []
+
+
+def gaps_of(root, strands, base, no_pre=None, host=None):
+    """`[(strand, code, text)]` and notes: every gap a merge of `strands` would
+    be refused at before its candidate, read-only, no lease. The order is the
+    merge's: `review_first`, then plan-only or `preconditions`, then
+    `migration_order` against the open strands; the E-DT line beside them."""
+    gaps, tips = [], {}
+    for s in strands:
+        try:
+            tip = out(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % s.branch)
+            if not tip:
+                raise Refused("no_branch", "no branch %s" % s.branch)
+            review_first(s, base, tip, no_pre)
+            tips[s.name] = tip
+        except Refused as exc:
+            gaps += [(s.name, c, t) for c, t in exc.missing]
+    migrating = open_migrations(root, base) if tips else {}
+    earlier = set()
+    for s in strands:
+        if s.name not in tips:
+            continue
+        tip = tips[s.name]
+        try:
+            if plan_only(s, base, tip):
+                why = review_problem(s.body) if s.head is not None \
+                    and REVIEW_HEADING.search(s.body or "") else None
+                if why:
+                    gaps.append((s.name, "no_review_verdict", "%s: %s" % (s.report, why)))
+                verdict, why = turnaround.owner_check(s.root, "%s..%s" % (base, tip))
+                if verdict != "GREEN":
+                    gaps.append((s.name, "foreign_commits", why))
+            else:
+                preconditions(s, tip, no_pre)
+                migration_order(s.name, s.migrations, {
+                    n: m for n, m in migrating.items() if n != s.name and n not in earlier})
+                earlier.add(s.name)
+        except Refused as exc:
+            gaps += [(s.name, c, t) for c, t in exc.missing]
+    for s in strands:
+        why = edt_problem(s) if s.head is not None else None
+        if why:
+            gaps.append((s.name, "no_edt", why))
+    lane_gaps, notes = lane_room(host)
+    return gaps + lane_gaps, notes
+
+
+def say_gaps(gaps, notes, stream):
+    """The lines of a merge request: `NOTE …`, `GAP <strand> [<code>] <text>`,
+    then `merge request: ready` or `merge request: <n> gap(s)`."""
+    for n in notes:
+        stream.write("NOTE %s\n" % n)
+    for name, code, text in gaps:
+        stream.write("GAP %s [%s] %s\n" % (name, code, text))
+    stream.write("merge request: %s\n" % ("%d gap(s)" % len(gaps) if gaps else "ready"))
+
+
+def contained_strands(root, wdir, branch):
+    """The strands of the wave whose branch head lies below `branch` and is not
+    on master yet -- the members a stack carries (orga-hive `contained_heads`)."""
+    tip = out(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % branch)
+    found = []
+    folder = os.path.join(wdir, "berichte")
+    for fn in sorted(os.listdir(folder)) if tip and os.path.isdir(folder) else []:
+        if not fn.endswith(".md"):
+            continue
+        head, _ = head_block(os.path.join(folder, fn))
+        other = (head or {}).get("branch", "")
+        if not other or other == branch:
+            continue
+        head_of = out(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % other)
+        if head_of and head_of != tip \
+                and git(root, "merge-base", "--is-ancestor", head_of, tip).returncode == 0 \
+                and git(root, "merge-base", "--is-ancestor", head_of, "master").returncode != 0:
+            found.append(fn[:-3])
+    return found
+
+
+def check(names, start=None, wave=None, host=None, no_pre=None, out_=None, err=None,
+          if_stack=False):
+    """`merge --check`: exit 0 when a merge of `names` would be refused at none
+    of the gaps `gaps_of` reads, else 1 with every gap listed. No lease, no
+    store, no candidate: conflicts, versions, goldens and the gate itself stay
+    the merge's. `if_stack` (the end of `strand.sh gate`) speaks only for a
+    branch that carries other strands of the wave."""
+    out_, err = out_ or sys.stdout, err or sys.stderr
+    root = main_root(start or os.getcwd())
+    base = out(root, "rev-parse", "master")
+    strands, gaps = [], []
+    for n in [strand_name(n) for n in names]:
+        try:
+            strands.append(Strand(root, n, wave))
+        except Refused as exc:
+            gaps += [(n, c, t) for c, t in exc.missing]
+    if if_stack and not (strands and contained_strands(root, strands[0].wdir, strands[0].branch)):
+        return 0
+    found, notes = gaps_of(root, strands, base, no_pre, host)
+    gaps += found
+    say_gaps(gaps, notes, out_)
+    return REFUSE_EXIT if gaps else 0
 
 
 def _event(db, name, mid, strand, base, **extra):
@@ -1848,6 +2167,10 @@ def gate_argv(tree, ctx):
     return [os.path.join(tree, "scripts", "gate.sh"), "strand", "--base", base] + own + wait
 
 
+# A station that made the gate red: `GATE tests [<scope>] 2487s RED <reason>`.
+RED_STATION = re.compile(r"GATE (\S+) \[.*\] \S+s ((?:RED|FLAKY|ABORTED)\b.*)$")
+
+
 def run_gate(tree, ctx):
     """The merge gate on the committed candidate: `{verdict, line, secs}`."""
     fake = os.environ.get("MECLAW_PIPELINE_FAKE_GATE")
@@ -1863,7 +2186,8 @@ def run_gate(tree, ctx):
     env.pop("MECLAW_GATE_WAVE", None)
     if ctx.get("wave"):  # the detached merge tree names its wave: full_pass (#1165)
         env["MECLAW_GATE_WAVE"] = ctx["wave"]
-    if ctx.get("strand_run") and len(ctx.get("strands") or []) == 1:
+    # w1 stapelmerge (#1603): a batch whose stack receipt covers it speaks like ONE strand.
+    if ctx.get("strand_run") and (len(ctx.get("strands") or []) == 1 or ctx.get("stack")):
         env["MECLAW_GATE_STRAND_RUN"] = ctx["strand_run"]
     else:
         env["MECLAW_GATE_NARROW"] = "0"
@@ -1900,6 +2224,8 @@ def run_gate(tree, ctx):
     else:
         text = line
     return {"verdict": verdict, "line": text, "secs": secs, "log": log,
+            "red": ["%s %s" % m.groups() for m in map(RED_STATION.match, proc.stdout.splitlines())
+                    if m],
             "lane_wait_s": int(sum(waits)) + adm_s, "admission_wait_s": adm_s,
             "admission_why": (admitted[-1].group(2) or "") if admitted else ""}
 
@@ -2052,18 +2378,24 @@ def write_receipt(wdir, label, sha, doc):
     return d
 
 
-def gate_base(root, base, strands, ctx):
+def gate_base(root, base, strands, ctx, resolved=None):
     """GH #1167 (b): `(rev, why)` the merge gate plans from. One strand whose
-    receipt covers its tip and whose base lies on master: the tip. A batch or
-    any doubt: master -- the full gate. OR-TM-9: a strand whose gate planned no
+    receipt covers its tip and whose base lies on master: the tip. A batch
+    plans the same way from its stack tip when ONE receipt covers every member
+    (`stack_gate_base`, w1 stapelmerge #1603). Any doubt: master -- the full
+    gate. OR-TM-9: a strand whose gate planned no
     cargo station plans from master too -- the candidate's diff is the strand's
     (plus the merge point's edits), its plan the strand gate's; from the tip
     it was master's move since the strand base (K-APPID 4bb6d28c1: 132 files
     of code, 23/23 stations for AGENTS.md and plans/), or nothing, which the
     resolver floors to `build` + t0."""
     if len(strands) != 1:
-        return base, "full: a batch of %d strands" % len(strands)
-    s = strands[0]
+        return stack_gate_base(root, base, strands, ctx, resolved)
+    return _tip_base(root, base, strands[0], ctx)
+
+
+def _tip_base(root, base, s, ctx):
+    """`(rev, why)` of ONE strand `s` whose receipt is `ctx["receipts"][s.name]`."""
     rec = ctx["receipts"][s.name]
     tip = out(root, "rev-parse", "%s^{commit}" % s.branch)
     if not tip or rec.get("no_pre"):
@@ -2071,6 +2403,52 @@ def gate_base(root, base, strands, ctx):
     if _cargo_free(rec):
         return base, "strand diff: the strand gate planned no cargo station (OR-TM-9)"
     return turnaround.merge_gate_base(root, base, tip, rec)
+
+
+def stack_gate_base(root, base, strands, ctx, resolved=None):
+    """`(rev, why)` of a batch (w1 stapelmerge, #1603): the stack tip when ONE
+    GREEN full receipt on it covers every member -- the member whose branch
+    head carries every other member's head (git merges the batch then as the
+    tip alone: same tree), its receipt gated a tree code-equal to that head,
+    no commit of `master..tip` is a revert and the candidate merge resolved
+    no conflict. Then the batch plans like a one-strand merge
+    (`_tip_base`): the diff tip..candidate is what the merge point writes
+    plus master's move since the stack base (over-selection, never under).
+    Every other case: master, the full batch diff. The reason of the
+    reuse names the stage (`stage:merge stack <top> ...`)."""
+    n = len(strands)
+    full = "full: a batch of %d strands, %%s" % n
+    tips = {s.name: out(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % s.branch)
+            for s in strands}
+    if not all(tips.values()):
+        return base, full % "a member without a branch tip"
+    top = [s for s in strands
+           if all(o is s or git(root, "merge-base", "--is-ancestor", tips[o.name],
+                                tips[s.name]).returncode == 0 for o in strands)]
+    if not top:
+        return base, full % "no member carries the others (no stack)"
+    top = top[0]
+    tip = tips[top.name]
+    if resolved:
+        return base, full % "the merge resolved a conflict (%s)" % resolved
+    rec = ctx["receipts"][top.name]
+    gated = rec.get("rev") or ""
+    if gated != tip:
+        same, off = turnaround.code_equal_revs(root, gated, tip, os.path.basename(top.wdir)) \
+            if gated else (False, [])
+        if not same:
+            return base, full % "the receipt of %s gated another tree (%s, tip %s)" % (
+                top.name, gated[:9] or "?", tip[:9])
+    from . import narrow as narrow_mod   # the revert rule of `narrow.merge_decision`
+    log = git(root, "log", "--format=%B%x00", "%s..%s" % (base, tip))
+    if log.returncode != 0 or narrow_mod._REVERT.search(log.stdout):
+        return base, full % ("a revert in %s..%s" % (base[:9], tip[:9]) if log.returncode == 0
+                             else "cannot read the log of the stack")
+    rev, why = _tip_base(root, base, top, ctx)
+    if rev == base:
+        return base, full % ("stack %s: %s" % (top.name, why))
+    others = ", ".join(s.name for s in strands if s is not top)
+    return rev, "stage:merge stack %s carries %s -- %s" % (top.name, others, why)
 
 
 def _cargo_free(rec):
@@ -2186,6 +2564,11 @@ def land_plan_only(db, ctx, s, base):
         close_candidate(root, cand)
     if head != sha:
         ctx["out"].write("release-cut: %s %s %s\n" % (ctx["release"]["version"], head, cut_date))
+    # GH #1592 (d): what the close comment of a plan-only strand is made of --
+    # it has no strand receipt, and `close_info` refused it (#1574, #1580).
+    ctx.setdefault("landed", {})[s.name] = {
+        "plan_only": True, "merge": sha, "files": len(paths),
+        "cut": (ctx["release"]["version"], head, cut_date) if head != sha else None}
     line = "MERGE-PLAN-ONLY %s %s %d files GREEN" % (s.name, sha[:9], len(paths))
     _set_merge(db, mid, state="merged", merge_sha=sha)
     _event(db, "merge_done", mid, s.name, base, merge_sha=sha, plan_only=True)
@@ -2264,7 +2647,14 @@ def land(db, ctx, strands, base, depth=0):
         # (docs/development-rules.md section 7).
         follows = bool((ctx.get("release") or {}).get("gate_follows"))
         if not follows:
-            gctx["gate_base"], gctx["gate_reuse"] = gate_base(root, base, strands, ctx)
+            gctx["gate_base"], gctx["gate_reuse"] = gate_base(root, base, strands, ctx,
+                                                              resolved=resolved)
+            if len(strands) > 1 and gctx["gate_base"] != base:
+                top = next(s for s in strands
+                           if out(root, "rev-parse", s.branch) == gctx["gate_base"])
+                gctx["stack"], gctx["strand_run"] = top.name, ctx["receipts"][top.name]["run"]
+            ctx["err"].write("merge: gate base %s -- %s\n" % (
+                (gctx["gate_base"] or "?")[:9], gctx["gate_reuse"]))
         for s in strands:
             _set_merge(db, mids[s.name], state="gating", versions=result["versions"],
                        pins=result["pins"])
@@ -2303,6 +2693,16 @@ def land(db, ctx, strands, base, depth=0):
             steps.done(verdict["verdict"])
             reason = "gate_aborted" if verdict["verdict"] == "ABORTED" else "gate_red"
             if len(strands) > 1 and depth < MAX_BISECT and verdict["verdict"] == "RED":
+                # w2 batchgolden (#1639): the merge names what was red -- it said
+                # `24/25 RED` alone, and the timed-out test of tuerweg+candlease
+                # went down as a missing golden (the line that came next).
+                red = verdict.get("red") or []
+                ctx["err"].write("merge: the gate of %s was RED (%s) -- the batch is split; log %s\n"
+                                 % (label, "; ".join(red) or verdict["line"],
+                                    verdict.get("log") or "-"))
+                ctx.setdefault("split", []).append(
+                    {"label": label, "line": verdict["line"], "red": red,
+                     "log": verdict.get("log")})
                 close_candidate(root, cand)
                 cand = None
                 half = len(strands) // 2
@@ -2333,6 +2733,8 @@ def land(db, ctx, strands, base, depth=0):
     if cut_date:
         ctx["out"].write("release-cut: %s %s %s\n" % (ctx["release"]["version"], head, cut_date))
     for s in strands:
+        ctx.setdefault("landed", {})[s.name] = {
+            "merge": sha, "cut": (ctx["release"]["version"], head, cut_date) if cut_date else None}
         _set_merge(db, mids[s.name], state="merged", merge_sha=sha)
         _event(db, "merge_done", mids[s.name], s.name, base, merge_sha=sha,
                versions=result["versions"], pins=result["pins"], resolved=resolved)
@@ -2350,6 +2752,9 @@ def land(db, ctx, strands, base, depth=0):
                 "SKIPPED (release gate follows)" if verdict["verdict"] == "SKIPPED" else "GREEN")}
         if goldens is not None:
             doc["goldens"] = goldens
+        split = [x for x in ctx.get("split", ()) if s.name in x["label"].split("+")]
+        if split:
+            doc["split"] = split
         if aside:
             doc["set_aside"] = [list(pair) for pair in aside]
         if cut_date:
@@ -2408,12 +2813,8 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
     try:
         strands = [Strand(root, n, wave) for n in names]
         for s in strands:
-            row = db.execute("SELECT id FROM merges WHERE repo=? AND strand=? AND state='queued'"
-                             " ORDER BY at DESC LIMIT 1", (repo, s.name)).fetchone()
-            if row:
-                mids[s.name] = row["id"]
-            else:
-                mids[s.name] = _new_merge(db, repo, s.name, base, "queued", clock())
+            mids[s.name], new = pick_row(db, repo, s.name, base, clock, wait)
+            if new:
                 created.add(s.name)
         if release_gate_follows and not release:
             raise Refused("release_gate_follows_needs_release",
@@ -2422,6 +2823,27 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
         rel = ({"version": release, "intro": intro, "today": today,
                 "gate_follows": bool(release_gate_follows)} if release else None)
         release_precheck(root, strands, rel)
+        # w1 antrag (#1602): every gap of every member before the lease --
+        # a held tree no longer turns a form gap into a queue place (exit 3).
+        gaps, notes = gaps_of(root, strands, base, no_pre, host)
+        early = set()
+        if gaps or notes:
+            say_gaps(gaps, notes, err)
+        if gaps:
+            env_gap = any(g[0] == GAP_LANES for g in gaps)
+            for s in strands:
+                mine = [g for g in gaps if g[0] == s.name] or (
+                    [g for g in gaps if g[0] == GAP_LANES] if env_gap else [])
+                if mine:
+                    early.add(s.name)
+                    _refuse(db, mids[s.name], s.name, base, mine[0][1],
+                            " | ".join(t for _, _, t in mine), err)
+            strands = [s for s in strands if s.name not in early]
+            if not strands:
+                return REFUSE_EXIT
+            holder = "+".join(s.name for s in strands)
+            mids = {n: m for n, m in mids.items() if n not in early}
+
         def queued():
             for s in strands:
                 _event(db, "merge_queued", mids[s.name], s.name, base)
@@ -2449,6 +2871,7 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
             if first:
                 lease_resolves(strands, base, no_pre)
             give_back_lanes(db, repo, strands, err, lanes_said)
+            mark_wait(db, repo, mids, True)
             if first:
                 _events(db, "merge_queued", [(mids[s.name], s.name) for s in strands], base)
             state = wait_state(db, repo, holder)
@@ -2475,6 +2898,7 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
         steps.done(None if taken else "QUEUED")
         if not taken:
             if wait:
+                unmark_wait(db, repo, mids, err)
                 err.write("merge: no tree lease within %g s (MECLAW_ADMISSION_WAIT_SECS) -- "
                           "still queued\n" % schedule.wait_secs(
                               os.environ, "MECLAW_ADMISSION_WAIT_SECS", "14400"))
@@ -2534,7 +2958,7 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
             base = out(root, "rev-parse", "master")
         results += land(db, ctx, ready, base) if ready else []
         done = len(ready) + len(plans_only)
-        rc = 0 if done and done == len(strands) else REFUSE_EXIT
+        rc = 0 if done and done == len(strands) and not early else REFUSE_EXIT
         if close and any(r[1] == "merged" for r in results):
             steps.at("close")
         for name, state, reason, text in results:
@@ -2548,7 +2972,8 @@ def merge(names, repo="meclaw", start=None, wave=None, host=None, no_pre=None, c
                     # `strand.sh close`, never a refusal of a done merge.
                     s = next(x for x in strands if x.name == name)
                     try:
-                        if close_issues(s, do=True, out_=out_, err=err):
+                        if close_issues(s, do=True, out_=out_, err=err,
+                                        landed=ctx.get("landed", {}).get(name)):
                             err.write("merge: %s merged, the issue close failed -- run "
                                       "strand.sh close\n" % name)
                     except Refused as exc:
@@ -2736,11 +3161,17 @@ def close_info(root, report, archive, name):
     branch = head.get("branch", "")
     issues = list_field(head.get("issues"))
     path, doc, line = latest_strand_receipt(archive)
+    stack = None
     if doc is None or not line:
-        raise Refused("no_strand_receipt", "no strand receipt with a summary under %s" % archive)
+        stack = stack_of(root, report, archive, branch)
+        if stack is None:
+            raise Refused("no_strand_receipt", "no strand receipt with a summary under %s" % archive)
+        line = stack[2]
     if not line.endswith(" GREEN"):
         raise Refused("strand_gate_not_green", "the newest strand gate is %s" % line.split()[-1])
     tip, merged = strand_merge(root, branch, name)
+    if stack and not merged:
+        merged = stack[1]
     if not tip and merged:
         parents = out(root, "rev-list", "--parents", "-n", "1", merged).split()[2:]
         tip = parents[0] if parents else ""
@@ -2766,9 +3197,42 @@ def close_info(root, report, archive, name):
              "Gate: `%s`" % line, "Commits: %s" % ", ".join(commits)]
     if changed:
         lines.append("Changed: %s" % ", ".join("`%s`" % c for c in changed))
+    if stack:
+        lines.append("Gated and merged in the stack `%s`." % stack[0])
     if merged:
         lines.append("Merged as %s." % merged[:9])
     return issues, "\n".join(lines), commits
+
+
+def stack_of(root, report, archive, branch):
+    """`(stack, merge commit, gate line)` of the merged stack whose branch carried
+    `branch`, or None. A stack is gated and merged as ONE strand; its members
+    have no strand receipt of their own, and `close` refused them `no strand
+    receipt` (OR-54s-11: relkit and personaus inside `--batch lanekit`). The
+    stack is another strand of the wave whose branch head contains this one's,
+    which has a merge on master and a GREEN strand receipt (orga-hive
+    `contained_heads`, the other direction)."""
+    tip = out(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % branch) if branch else ""
+    if not tip:
+        return None
+    folder = os.path.dirname(os.path.abspath(report))
+    receipts = os.path.dirname(os.path.abspath(archive))
+    for fn in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        if not fn.endswith(".md") or os.path.join(folder, fn) == os.path.abspath(report):
+            continue
+        head, _ = head_block(os.path.join(folder, fn))
+        other = (head or {}).get("branch", "")
+        if not other or other == branch:
+            continue
+        top = out(root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % other)
+        if not top or top == tip \
+                or git(root, "merge-base", "--is-ancestor", tip, top).returncode != 0:
+            continue
+        _, merged = strand_merge(root, other, fn[:-3])
+        _, doc, line = latest_strand_receipt(os.path.join(receipts, fn[:-3]))
+        if merged and doc is not None and line.endswith(" GREEN"):
+            return fn[:-3], merged, line
+    return None
 
 
 def wave_issues(root, wdir, name, parents=(), mine=None, err=None):
@@ -2851,14 +3315,34 @@ def wave_issues(root, wdir, name, parents=(), mine=None, err=None):
     return found
 
 
-def close_issues(s, do=False, out_=None, err=None, gh=None):
+def landed_comment(name, landed):
+    """The close comment of a plan-only strand (GH #1592 d): no gate, no strand
+    receipt -- the merge commit and, with `--release`, the cut name it."""
+    lines = ["Plan-only strand %s, no gate: merged as %s." % (name, landed["merge"][:9]),
+             "Files: %d, all gate-neutral." % landed.get("files", 0)]
+    return "\n".join(lines + cut_lines(landed))
+
+
+def cut_lines(landed):
+    cut = (landed or {}).get("cut")
+    return ["Release cut %s as %s (%s)." % (cut[0], cut[1][:9], cut[2])] if cut else []
+
+
+def close_issues(s, do=False, out_=None, err=None, gh=None, landed=None):
     """Close the strand's issues on GitHub (`do`) or print the `gh` lines.
 
     An issue another strand of the wave carries too stays open ("left open --
     the wave issue"); a strand that came to master with this same merge is no
-    such carrier (`wave_issues`)."""
+    such carrier (`wave_issues`). `landed` is what the merge just did
+    (`merge` sha, `cut`, `plan_only`): a plan-only strand closes with
+    `landed_comment` instead of `close_info`'s, a release cut adds its line
+    (GH #1592 d)."""
     out_, err = out_ or sys.stdout, err or sys.stderr
-    issues, comment, _ = close_info(s.root, s.report, s.archive, s.name)
+    if landed and landed.get("plan_only"):
+        issues, comment = list(s.issues), landed_comment(s.name, landed)
+    else:
+        issues, comment, _ = close_info(s.root, s.report, s.archive, s.name)
+        comment = "\n".join([comment] + cut_lines(landed))
     gh = gh or os.environ.get("MECLAW_GH", "gh")
     shared = wave_issues(s.root, s.wdir, s.name, merge_parents(s.root, s.report, s.name),
                          issues, err)
@@ -2895,6 +3379,19 @@ def _cmd_merge(args):
         print("merge: name the strand (--strand <S>) or the batch (--batch <S1,S2>)",
               file=sys.stderr)
         return 2
+    if args.if_stack and not args.check:
+        print("merge: --if-stack needs --check", file=sys.stderr)
+        return 2
+    if args.check:
+        if args.no_pre and not args.reason:
+            print("merge: --no-pre needs --reason", file=sys.stderr)
+            return 2
+        try:
+            return check(names, wave=args.wave, host=args.host,
+                         no_pre=args.reason if args.no_pre else None, if_stack=args.if_stack)
+        except Refused as exc:
+            print("merge: refused (%s): %s" % (exc.reason, exc.text), file=sys.stderr)
+            return REFUSE_EXIT
     if args.dequeue:
         db = store.open(args.db) if args.db else store.open()
         try:
@@ -2977,6 +3474,11 @@ def register(sub):
     p.add_argument("--release-gate-follows", action="store_true",
                    help="with --release: skip the candidate gate, the release gate "
                         "(release.sh prepare) follows at once (V8)")
+    p.add_argument("--check", action="store_true",
+                   help="list every gap the merge would be refused at, read-only, no lease "
+                        "(w1 antrag); exit 0 = ready")
+    p.add_argument("--if-stack", action="store_true",
+                   help="with --check: only for a branch that carries other strands")
     p.add_argument("--db")
     p.set_defaults(func=_cmd_merge)
     c = sub.add_parser("close", help="the issue's English close comment (GH #1107)")

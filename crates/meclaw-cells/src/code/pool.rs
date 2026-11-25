@@ -66,9 +66,15 @@ impl PoolHandle {
     }
 }
 
-/// Start a pool of `size` children and return its handle.
+/// The most children one pool has: a slot is an interpreter process and a task
+/// of its own. GH #1627: the size is a plain param, and `u64::MAX` panicked in
+/// the channel below; below that ceiling the slot list alone is sized by it.
+const MAX_POOL_SIZE: usize = 1024;
+
+/// Start a pool of `size` children, at most [`MAX_POOL_SIZE`], and return its
+/// handle. A job beyond that waits in the queue like any other.
 pub(crate) fn spawn_pool(cfg: crate::code::child::ChildConfig, size: usize) -> PoolHandle {
-    let size = size.max(1);
+    let size = size.clamp(1, MAX_POOL_SIZE);
     let (jobs_tx, jobs_rx) = mpsc::channel::<Job>(size);
     tokio::spawn(pool_task(cfg, size, jobs_rx));
     PoolHandle { jobs_tx }
@@ -331,6 +337,20 @@ mod tests {
             ));
         }
         assert_eq!(got, vec!["0", "1", "2", "3", "4"]);
+    }
+
+    /// GH #1627: `max_concurrency` is a plain param, and the pool sized its
+    /// channels, its slot list and its child tasks with it -- `u64::MAX` panicked
+    /// in the caller of the factory. A pool asked for that many still serves.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh1627_a_pool_of_absurd_size_starts_and_answers() {
+        let h = pool(
+            r#"import sys,json; sys.stdout.write(json.dumps({"ok":True}))"#,
+            RunnerMode::Warm,
+            usize::MAX,
+        );
+        let out = h.run(r#"{"body":{}}"#.into(), job_wait()).await;
+        assert_eq!(stdout_of(&out), r#"{"ok": true}"#);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

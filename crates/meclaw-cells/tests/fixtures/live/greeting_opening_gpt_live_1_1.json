@@ -1,0 +1,27 @@
+[
+  {
+    "type": "session.start",
+    "event_id": "start",
+    "session": {
+      "model": "gpt-live-1.1",
+      "instructions": "You are a friendly companion on a phone line. Keep every answer short.",
+      "audio": {
+        "format": { "type": "audio/pcm", "rate": 24000 },
+        "output": { "voice": "marin" }
+      },
+      "delegation": { "type": "client" },
+      "input": [
+        {
+          "type": "message",
+          "role": "developer",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Greet the caller now in English, one sentence. Begin immediately, then pause and listen."
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

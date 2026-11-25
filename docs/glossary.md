@@ -91,7 +91,7 @@ is a real finding, never a flake. [`../CONTRIBUTING.md`](../CONTRIBUTING.md) § 
 | [`curator`](../templates/curator/README.md) | it curates the window of one model: for each call it cuts what that model reads out of a record that is never deleted, by the model's limits and prices |
 | [`door`](../templates/door/README.md) | the door a turn comes in through, where `POST /messages` becomes a message on the ingress lane |
 | [`firewall`](../templates/firewall/README.md) | it screens what passes by size, sender, forbidden literal and rate; every verdict is a comparison, never a model call |
-| [`lead`](../templates/lead/README.md) | it leads each call of a curator: it names the way and the target, decides what is said beside the call and while the person waits, orders the early interrupt of a crisis, and keeps the turn's speculation in its own store |
+| [`lead`](../templates/lead/README.md) | it leads each call of a curator: it names the way and the target, decides what is said beside the call and while the person waits, and orders the early interrupt of a crisis |
 | [`memory-hive`](../templates/memory-hive/README.md) | it is a memory and it is a hive: a member's long-term memory built from ordinary cells |
 | [`operator`](../templates/operator/README.md) | the operator a person addresses the OS through; it adds identity to a request, and no authentication |
 | [`session-keeper`](../templates/session-keeper/README.md) | it keeps a session the way a phone call is held, opening and ending it by arithmetic |

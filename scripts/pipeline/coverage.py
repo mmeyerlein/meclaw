@@ -19,16 +19,18 @@ The map counts red tests too (their path ran), but red tests make its verdict
 RED (welle-tb S1 C-Beleg, KR-TB-1 a): the build on the end tip of a wave is the
 full suite of that wave. `aggregate --nextest-log` reads the names of the red
 tests from the nextest log; `build` writes `process_finding coverage_red` with
-them and exits `RED_EXIT`; `wave close` refuses while the end tip has no GREEN
-map. A map is GREEN only when complete, RED on nextest exit 100 or a named red
+them and exits `RED_EXIT`. A map is GREEN only when complete, RED on nextest exit 100 or a named red
 test, else INCOMPLETE. A build never replaces a GREEN map of the same rev with
 a RED or INCOMPLETE one (GH #1554): the GREEN map stays installed, the run's
 finding and exit are as above, its map lies in `--out-dir` until the next
-build there and no `coverage_built` is journaled for it. Older than 7 days, a map is stale:
-`process_finding coverage_stale`, and `impact` falls back to `rdeps`. With no
-lane up the run switches none on (rulings.md 2): `process_finding
-coverage_skipped_no_lane`. A lane without llvm-tools is `TOOL_EXIT` and
+build there and no `coverage_built` is journaled for it. Older than 7 days, a map is stale
+and `impact` falls back to `rdeps`. With no lane up the run switches none on
+(rulings.md 2) and says so (exit 3), no finding. A lane without llvm-tools is `TOOL_EXIT` and
 `process_finding coverage_tool_missing`, the lane named.
+
+On demand (OR-W1-P-22, owner ruling R-W1-5; it settles the suspension R-79-11):
+the night builds a map only when a Rust path moved on master since the last
+GREEN map, `wave close` judges none, and a build by hand stays as it is.
 """
 
 import argparse
@@ -428,13 +430,10 @@ def age_days(cov, now=None):
 
 
 def check_stale(cov, now=None, db=None, db_path=None):
-    """True when the map is older than 7 days; then journals `process_finding coverage_stale`."""
-    age = age_days(cov, now)
-    if age <= STALE_DAYS:
-        return False
-    _finding("coverage_stale", cov.get("rev") or "?", round(age, 2), STALE_DAYS,
-             cov.get("built_at"), db=db, db_path=db_path)
-    return True
+    """True when the map is older than 7 days. No finding (OR-W1-P-22): a stale
+    map blocks nothing, the narrowing plans wider and says so in one line.
+    `db`/`db_path` are accepted for the callers and read by nothing."""
+    return age_days(cov, now) > STALE_DAYS
 
 
 def _finding(rule, subject, value, threshold, since, db=None, db_path=None, extra=None):
@@ -801,10 +800,52 @@ def _cmd_coverage(args):
     if why:
         return _refused(args, "lane refused: %s" % why, 5)
     if not lane_up(ssh):
-        _finding("coverage_skipped_no_lane", args.lane, 0, 1,
-                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), db_path=args.db)
-        return _refused(args, "lane %s is not up -- skipped (process_finding "
-                              "coverage_skipped_no_lane)" % args.lane, 3)
+        # OR-W1-P-22: a lane that is not up is a skipped build, said in one line, no finding
+        return _refused(args, "lane %s is not up -- skipped" % args.lane, 3)
+    # d54s lanekit (Nr. 59): the lane by lease, never beside a live pass --
+    # 21.11. the night built on build01 beside a soul2me gate, both went red
+    lease, why = _take_lane(args)
+    if lease is None:
+        return _refused(args, why, 3)
+    try:
+        return _build_on_lane(args, ssh, opts, sha)
+    finally:
+        lease()
+
+
+def _lease_holder(args):
+    """The holder of the build's lane lease: its strand, else the night."""
+    return _holder(args) or "night/coverage"
+
+
+def _take_lane(args):
+    """`(release, "")` once `lane:<lane>` is leased to this build, else
+    `(None, why)`: another holder's unexpired lease or a live pass on the lane
+    (the store's workpackages). The lease carries the outer deadline as TTL, so
+    a killed build frees it; `release()` gives it back."""
+    from pipeline import schedule as _schedule, store
+    db = store.open(args.db)
+    resource, holder = "lane:%s" % args.lane, _lease_holder(args)
+    live = [r for r in _schedule._live_runs(db, time.time()) if r["lane"] == args.lane]
+    if live:
+        db.close()
+        return None, "lane %s runs %s -- skipped, never beside a live pass" % (args.lane, live[0]["run"])
+    _host_s, outer_s = lane_deadlines(lane_entry(args.lane)[0])
+    if not store.lease_take(db, resource, holder, ttl_s=int(outer_s)):
+        who = (store.lease_who(db, resource) or {}).get("holder")
+        db.close()
+        return None, "lane %s is leased to %s -- skipped" % (args.lane, who)
+
+    def release():
+        try:
+            store.lease_release(db, resource, holder)
+        finally:
+            db.close()
+    return release, ""
+
+
+def _build_on_lane(args, ssh, opts, sha):
+    """The lane run of `coverage build` under the build's lane lease."""
     # the cargo token of the wave, through the kit (review I1): an armed wave
     # without a token for this strand and lane never starts the build
     tok = subprocess.run(["scripts/strand.sh", "token", "check", "--pid", str(os.getpid()),

@@ -327,17 +327,10 @@ fn gh_d54g_ack_a_heard_turn_still_gets_its_live_tick_once() {
     for errand_outcome in ["0", "1"] {
         let form = [("policy", "errand_outcome", json!(errand_outcome))];
 
-        // The heard turn alone: a speculative curate of it first, which is
-        // no tick, then the turn's own -- one tick, and it finds the handle
-        // (the turn's row was written ahead of it: the facts are read).
+        // The heard turn alone: one tick, and it finds the handle (the
+        // turn's row was written ahead of it: the facts are read).
         let mut h = listening(&form);
         let since = h.ledger_steps.len();
-        turn_path(&mut h, LABEL, "simple", json!({"spec": "1"}));
-        assert_eq!(
-            steps_in(&h, since, "live"),
-            0,
-            "errand_outcome {errand_outcome}: a speculation is no tick"
-        );
         turn_path(&mut h, LABEL, "simple", json!({}));
         assert!(calls(&h).is_empty(), "{:?} {:?}", calls(&h), h.stderr);
         assert_eq!(
@@ -606,24 +599,6 @@ fn gh_d54g_ack_a_heard_crisis_turn_still_sends_its_early_interrupt_once() {
     assert_eq!(feeds_of(&h, "interrupt").len(), 1, "{:?}", h.stderr);
 }
 
-/// A partial of `turn` of the running session: the stamp of its delta, as
-/// the route sends it.
-fn partial(h: &mut Hive, turn: &str) {
-    h.out.clear();
-    let hop = json!({"turn_id": turn, "path": "talk"});
-    let ctx = json!({"session_id": TURN_SESSION, "turn_id": turn, "delta": "1", "live": LIVE,
-                     "audience_set": ROUND_E});
-    h.lane(
-        "in_delta_stamp",
-        ctx,
-        hop,
-        json!({"messages": [], "stamp": {"turn_id": turn, "path": "talk", "p": 0.9,
-                                         "intent": "", "needs": [], "families": [],
-                                         "duration": 5, "text_norm": "is it going to rain",
-                                         "choices": {}, "turn_notes": []}}),
-    );
-}
-
 /// The ledger's writes on the row the turn `turn` is cut by: how many
 /// inserts and how many deletes since the hive was born.
 fn cut_row_writes(h: &Hive, turn: &str) -> (usize, usize) {
@@ -649,32 +624,21 @@ fn gh_d54g_ack_a_heard_turn_leaves_no_turn_state_behind() {
         return;
     }
     clear_of_midnight();
-    // Review 1, M-5: two rows of a turn fall with the answer that closes
-    // it -- the row the turn is cut by (the curator's
+    // Review 1, M-5: the row the turn is cut by (the curator's
     // `pending:turn_cut:<round>:<session>:<turn>`, laid by the turn's first
-    // curate with `recall_in_wall` on) and the stamp of the turn's last
-    // delta (the lead's `delta:<turn>`, with `delta_speculation` on). A
-    // heard turn has no such answer: the cut row stayed until the sweep of
-    // the parked rows, which runs only beside a rebuild probe, and the
-    // delta row for good (the lead's store sweeps nothing). In a session of
-    // heard turns that is two rows per turn. The park of a heard turn takes
-    // both down.
+    // curate with `recall_in_wall` on) falls with the answer that closes the
+    // turn. A heard turn has no such answer: the cut row stayed until the
+    // sweep of the parked rows, which runs only beside a rebuild probe. The
+    // park of a heard turn takes it down. (The lead's delta row of before
+    // left with the speculation, d54s specaus GH #1584.)
     let knobs = [
         ("policy", "recall_in_wall", json!("1")),
         ("policy", "snapshot_window", json!("1")),
-        ("lead", "delta_speculation", json!("1")),
     ];
-    let delta_row = |h: &Hive, turn: &str| h.lead_state(&format!("delta:{turn}"));
 
-    // The control, a called turn: both rows stand while the turn runs and
-    // fall with the answer that closes it.
+    // The control, a called turn: the row stands while the turn runs and
+    // falls with the answer that closes it.
     let mut h = live_hive(&knobs);
-    partial(&mut h, LABEL);
-    assert!(
-        !delta_row(&h, LABEL).is_empty(),
-        "check of the setup: the partial's stamp is kept: {:?}",
-        h.stderr
-    );
     turn_path(&mut h, LABEL, "talk", json!({}));
     let brain = h.routed("brain");
     assert_eq!(
@@ -689,10 +653,6 @@ fn gh_d54g_ack_a_heard_turn_leaves_no_turn_state_behind() {
         "check of the setup: the called turn lays the row it is cut by: {:?}",
         h.stderr
     );
-    assert!(
-        !delta_row(&h, LABEL).is_empty(),
-        "the stamp stands while the turn runs"
-    );
     h.out.clear();
     h.tap(&brain[0], "stop", json!({}), json!([said("It stays dry.")]));
     assert_eq!(
@@ -700,23 +660,12 @@ fn gh_d54g_ack_a_heard_turn_leaves_no_turn_state_behind() {
         Value::Null,
         "the control: the closing answer takes the cut row down"
     );
-    assert_eq!(
-        delta_row(&h, LABEL),
-        "",
-        "the control: the closing answer takes the delta row down"
-    );
 
     // Heard: the same turn, told to only listen. No call, and nothing of
     // the turn stays -- over a run of turns.
     let mut h = listening(&knobs);
     let pending_before = pending_calls(&h);
     for turn in [LABEL, "voice-turn-2", "voice-turn-3"] {
-        partial(&mut h, turn);
-        assert!(
-            !delta_row(&h, turn).is_empty(),
-            "{turn}: check of the setup: the partial's stamp is kept: {:?}",
-            h.stderr
-        );
         turn_path(&mut h, turn, "talk", json!({}));
         assert!(
             calls(&h).is_empty(),
@@ -736,12 +685,6 @@ fn gh_d54g_ack_a_heard_turn_leaves_no_turn_state_behind() {
             Value::Null,
             "{turn}: no cut row stays behind a heard turn"
         );
-        assert_eq!(
-            delta_row(&h, turn),
-            "",
-            "{turn}: no delta row stays behind a heard turn: {:?}",
-            h.stderr
-        );
     }
     assert_eq!(
         marks(&h, "turn_parked").len(),
@@ -758,11 +701,6 @@ fn gh_d54g_ack_a_heard_turn_leaves_no_turn_state_behind() {
         state_keys(&h, "live_turn:").is_empty(),
         "nor a handle row: {:?}",
         state_keys(&h, "live_turn:")
-    );
-    assert!(
-        h.lead_rows("SELECT key FROM state WHERE key LIKE 'delta:%'")
-            .is_empty(),
-        "nor a delta row in the lead's store"
     );
 }
 

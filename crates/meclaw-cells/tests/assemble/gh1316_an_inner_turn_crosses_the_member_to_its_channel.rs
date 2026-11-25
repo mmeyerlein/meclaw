@@ -1204,7 +1204,7 @@ fn gh1320_the_person_and_inner_round_edges_differ_only_in_the_knob() {
     // #1398: the quick voice's siblings carry the pair too; their roads (and
     // `./quick`'s) end in a `hop.spec` test after the knob, so the knob is
     // found inside the condition, not at its end.
-    for to in ["./brain", "./quick", "./quick_spec", "./quick_bridge"] {
+    for to in ["./brain", "./quick", "./quick_bridge"] {
         let pair: Vec<&Value> = edges
             .iter()
             .filter(|e| e["from"] == "./curator" && e["to"] == to)

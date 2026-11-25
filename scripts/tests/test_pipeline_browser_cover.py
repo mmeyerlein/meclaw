@@ -24,7 +24,7 @@ sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import gate_plan  # noqa: E402
-from pipeline import browser_cover, coverage, store, wave  # noqa: E402
+from pipeline import browser_cover, coverage, store  # noqa: E402
 from scripts.tests import kit_time, kit_tree, store_isolation  # noqa: E402
 
 
@@ -452,7 +452,7 @@ class NightLineTest(Base):
 class NightVerdictTest(Base):
     """Point 4, pinning (already true before S1b point 4): a red browser lock makes
     the night's map RED, a timed-out browser call never makes it GREEN, and
-    `wave close` passes only a GREEN map of the end tip."""
+    the night reports it (`wave close` judges no map since OR-W1-P-22)."""
 
     def _map(self, exit_, log):
         path = self.root / "nextest.log"
@@ -460,20 +460,6 @@ class NightVerdictTest(Base):
         return coverage.coverage_map("r1", "lane", self.parts(), 1.0, 14,
                                      run_ok=coverage.run_ok(exit_), nextest_exit=exit_,
                                      red_tests=coverage.red_tests_from_log(path))
-
-    def _close(self, cov):
-        repo = self.root / "repo"
-        repo.mkdir(exist_ok=True)
-        env = dict(os.environ, **GIT_ENV)
-        for args in (["init", "-q", "-b", "master"], ["commit", "-q", "--allow-empty", "-m", "t"]):
-            subprocess.run(["git", "-C", str(repo)] + args, check=True, env=env,
-                           capture_output=True)
-        tip = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
-                             capture_output=True, text=True, env=env).stdout.strip()
-        maps = self.root / "close-maps"
-        maps.mkdir(exist_ok=True)
-        (maps / ("coverage-%s.json" % tip)).write_text(json.dumps(dict(cov, rev=tip)))
-        return wave.check_end_tip_coverage(repo, lambda _l: None, map_dir=maps)
 
     def test_the_host_appends_the_browser_call_and_counts_its_exit(self):
         host = (SCRIPTS / "pipeline" / "coverage_host.sh").read_text()
@@ -498,7 +484,6 @@ class NightVerdictTest(Base):
         finally:
             store.close(db)
         self.assertIn("coverage_red", rules)
-        self.assertEqual((False, "RED"), self._close(cov))
 
     def test_a_timed_out_browser_call_is_never_green(self):
         bid = _bid(LOCK)
@@ -509,7 +494,6 @@ class NightVerdictTest(Base):
             self.assertEqual(verdict, coverage.verdict_of(cov), exit_)
             rc, _out, _maps, _db = _full_build(self.root, cov)
             self.assertNotEqual(0, rc, exit_)
-            self.assertEqual((False, verdict), self._close(cov))
 
 
 if __name__ == "__main__":

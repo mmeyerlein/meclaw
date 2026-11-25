@@ -21,6 +21,7 @@ pub mod gh477_the_second_round_still_knows_the_question;
 pub mod gh485_a_capped_build_says_it_ran_out_of_rounds;
 pub mod gh501_a_repair_does_not_restart_the_round_budget;
 pub mod gh517_a_grown_channel_is_told_the_round_it_speaks_in;
+pub mod gh_d54s_specaus_a_simple_and_a_talk_turn_answer_once;
 #[path = "../mock_openai.rs"]
 pub mod mock_openai;
 #[path = "../round_2/support_fitness.rs"]

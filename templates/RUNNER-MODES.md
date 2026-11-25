@@ -123,6 +123,7 @@ through its ref marker's `override_params` and writes the reason in its own READ
 | `operator/export` | cold | rare | rarely called: an operator's submit, dump or lifecycle; a warm child would stand 30 min after each call (GH #1294) |
 | `operator/intake` | cold | rare | rarely called: an operator's submit, dump or lifecycle; a warm child would stand 30 min after each call (GH #1294) |
 | `operator/lifecycle` | cold | rare | rarely called: an operator's submit, dump or lifecycle; a warm child would stand 30 min after each call (GH #1294) |
+| `operator/params` | cold | rare | rarely called: an operator's params update; a warm child would stand 30 min after each call (GH #1294) |
 | `operator/unknown` | cold | rare | rarely called: an operator's submit, dump or lifecycle; a warm child would stand 30 min after each call (GH #1294) |
 | `presenter/stage` | resident | after | caches its `shows` and `pending` tables; a new child reads them back before it handles anything |
 | `projection/git` | warm | tool | its `git` subprocesses end within the message; their environment is a dict of the run, never `os.environ` |

@@ -377,6 +377,14 @@ pub async fn run_io(
                 Wake::Reconfig(HookReconfig::Credential { secret }) => {
                     open = !secret.expose().is_empty();
                     io.secret_tx.send_replace(Arc::from(secret.expose()));
+                    // GH #1501: the ready line stands behind `send_replace`, so a
+                    // reader of the log that saw it finds the mount open; written
+                    // by the handler before the handover, it came one hop early
+                    // and a POST in between got `503 credential pending`.
+                    if open {
+                        tracing::info!(mount = %io.mount,
+                            "proxy/webhook: secret received sealed and opened in RAM -- the mount opens");
+                    }
                 }
                 Wake::Closed => break,
                 Wake::RoundExpired { round, wait_ms } => {

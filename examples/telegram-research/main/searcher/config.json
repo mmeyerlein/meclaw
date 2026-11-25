@@ -95,7 +95,7 @@
     "purpose": "Queries a generic search endpoint and emits the result list as one tool_result turn.",
     "use_when": "Behind an llm dispatcher (tool_name == 'web_search') or in a research pipeline. The endpoint must speak the generic {results:[...]} shape — front a provider with a shim if it does not.",
     "not_in_scope": "No provider adapters, no result ranking, no pagination. A non-conforming response is not an error (result_count 0, body passed through).",
-    "emits_meaning": "messages[]: one tool_result turn, text = JSON result list (title/url/snippet per hit). hop.result_count: number of hits; error_code only on io_error/timeout/invalid_input.",
+    "emits_meaning": "messages[]: one tool_result turn, text = JSON result list (title/url/snippet per hit). hop.result_count: number of hits; error_code only on io_error/timeout/too_long/invalid_input.",
     "consumes_meaning": "messages[]: a tool_call turn whose text is JSON args {query}.",
     "examples": [
       "{\"query\":\"agetech telephony\"} -> tool_result text '[{\"title\":...}]', hop { operation: 'web_search', result_count: 3 }"

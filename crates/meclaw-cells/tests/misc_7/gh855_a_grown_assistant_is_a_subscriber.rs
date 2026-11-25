@@ -177,7 +177,8 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
     );
     let pushes: Vec<(String, String)> = edges
         .iter()
-        .filter(|e| e["from"] == ".")
+        // GH #1353: the params road's edges stand beside them.
+        .filter(|e| e["from"] == "." && e["modifier"]["set_hop"]["route"] == "'in_model'")
         .map(|e| {
             (
                 e["to"].as_str().unwrap_or_default().to_string(),
@@ -202,9 +203,10 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
         ("talky-chat", "decide"),
     ];
     for ((rim, cell), (to, cond)) in cells.iter().zip(&pushes) {
-        // A summarizer's push rides onto the rim it stands behind; that rim's
-        // `in_model` door hands it on to the curator (OR-KX-P5).
-        assert_eq!(to, &format!("./acme/members/alex/assistants/scribe/{rim}"));
+        // GH #1616 (R-80-5): every push ends on the level's own `in_model`
+        // door, which hands it to the rim; a summarizer's push then rides that
+        // rim's door on to the curator (OR-KX-P5).
+        assert_eq!(to, "./acme/members/alex/assistants/scribe");
         assert!(
             cond.contains("hop.route == 'in_model'")
                 && cond.contains(&format!("hop.subscriber == '{GEN}/{rim}/{cell}'")),
@@ -222,16 +224,15 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
         })
         .cloned()
         .collect();
-    let want: Vec<Value> = ["cogny", "talky", "talky-chat"]
-        .iter()
-        .map(|rim| {
-            json!({"from": format!("./acme/members/alex/assistants/scribe/{rim}"), "to": ".",
-                   "condition": "has(hop.route) && hop.route == 'model_refused'"})
-        })
-        .collect();
+    // GH #1616 (R-80-5): one, off the level's own door -- the rims send their
+    // refusals out through it.
+    let want: Vec<Value> = vec![
+        json!({"from": "./acme/members/alex/assistants/scribe", "to": ".",
+               "condition": "has(hop.route) && hop.route == 'model_refused'"}),
+    ];
     assert_eq!(
         back, want,
-        "one way back per composite, and nothing else on it: {edges:?}"
+        "one way back for the generation, and nothing else on it: {edges:?}"
     );
     let announce: Vec<&Value> = edges
         .iter()
@@ -301,8 +302,9 @@ fn the_recipe_renders_the_registry_road_only_where_a_registry_is() {
 
     // A template that is not the shipped generation names its own brains, and
     // the recipe does not guess them.
-    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.3.0");
-    assert_eq!(other.len(), 1, "{other:?}");
+    let other = render(json!({"model_registry_scope": SCOPE}), "egon@2.3.1");
+    // GH #1353: `egon` is a door hive of the params road, which is not a brain's.
+    assert!(!json!(other).to_string().contains("in_model"), "{other:?}");
     // And a scope the generation does not lie under renders nothing either.
     let elsewhere = render(json!({"model_registry_scope": "/elsewhere"}), &template);
     assert_eq!(elsewhere.len(), 1, "{elsewhere:?}");
@@ -685,20 +687,15 @@ async fn a_generation_and_a_member_grown_in_the_shell_become_subscribers() {
          the member's four memory cells are subscribers, with the start values the substitution resolved, beside the shell's own \
          judge"
     );
-    // GH #863: and each composite has its way back in the edge table -- three
-    // for the generation, one for the member's memory -- at the container the
-    // pushes arrive at.
+    // GH #863: and each composite has its way back in the edge table -- one
+    // for the generation (off its own door since GH #1616), one for the
+    // member's memory -- at the container the pushes arrive at.
     let mut back = ways_back_committed(&h).await;
     back.sort();
-    let mut want_back: Vec<(String, String)> = [
-        format!("{GEN}/cogny"),
-        format!("{GEN}/talky"),
-        format!("{GEN}/talky-chat"),
-        format!("{MEMBER}/memory-hive"),
-    ]
-    .into_iter()
-    .map(|from| (from, SCOPE.to_string()))
-    .collect();
+    let mut want_back: Vec<(String, String)> = [GEN.to_string(), format!("{MEMBER}/memory-hive")]
+        .into_iter()
+        .map(|from| (from, SCOPE.to_string()))
+        .collect();
     want_back.sort();
     assert_eq!(back, want_back, "one way back per composite, and no other");
     h.shutdown().await;
@@ -900,8 +897,9 @@ async fn the_next_call(mock: &MockOpenAI, before: usize, what: &str) -> Value {
 /// Review M-5: a push measured where it lands, on the road the tree ships.
 /// The operator posts `override_set target` at the SHELL's rim; the registry
 /// resolves it, `meclaw-os` restamps its `update` into `./orgs` as `in_model`,
-/// the edge `grow_level assistant` drew carries it onto the generation's
-/// `talky`, and the composite's door hands it to the brain. Nothing on that
+/// the edge `grow_level assistant` drew carries it onto the generation's own
+/// `in_model` door (GH #1616), which hands it to `talky`, and the
+/// composite's door hands it to the brain. Nothing on that
 /// road is drawn by this test. The next provider call of that brain names the
 /// replacement's model, and its prompt block is the first thing in the
 /// system part.

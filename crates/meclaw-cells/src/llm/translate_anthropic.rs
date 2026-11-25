@@ -306,8 +306,12 @@ pub(crate) fn skip_thinking_after_switch(request: &mut Value) -> bool {
 /// end of the stable history -- the block right before the youngest user
 /// text, in wire order, a `tool_result` of the same wire message included
 /// (OR-programm-tm.AN2.5) and never a thinking block, which takes no mark.
-/// Without history before that text only `system` is marked; `off` writes
-/// nothing. `cache_ttl_s` >= 3600 asks for the one-hour mark.
+/// Without history before that text only `system` is marked. A request that
+/// ends on a `tool_result` carries a third mark on the open round
+/// (OR-58-63), which [`replay_thinking`] takes off again when the round gets
+/// its thinking back; `off` writes nothing. `cache_ttl_s` >= 3600 asks for the
+/// one-hour mark. At most three marks, below the provider's limit of four
+/// (cited at `translate::apply_cache_wire`).
 fn apply_cache_marks(body: &mut Map<String, Value>, params: &LlmParams) {
     let mark = cache_control(params.cache_ttl_s);
     match params.cache_mode {
@@ -331,51 +335,62 @@ fn apply_cache_marks(body: &mut Map<String, Value>, params: &LlmParams) {
     }
 }
 
+/// The marks of `breakpoints` inside the messages ([`apply_cache_marks`]):
+/// the end of the stable history, and the end of an open round.
 fn mark_stable_history(messages: &mut [Value], mark: Value) {
-    let block_type = |m: &Value, b: usize| {
-        m.get("content")
-            .and_then(|c| c.get(b))
-            .and_then(|block| block.get("type"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    };
-    let mut positions: Vec<(usize, usize)> = Vec::new();
-    for (m, message) in messages.iter().enumerate() {
-        let len = message
-            .get("content")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        positions.extend((0..len).map(|b| (m, b)));
-    }
     // GH #1579: a system note is neither the youngest user text nor the end
-    // of the stable history -- the mark stays on the block before it, so a
-    // changed note keeps the cached prefix.
-    let is_note = |m: usize, b: usize| {
-        messages[m]["content"][b]["text"]
-            .as_str()
-            .is_some_and(is_system_note)
+    // of the stable history or of the round -- every mark stays on a block
+    // before it, so a changed note keeps the cached prefix.
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    for (m, message) in messages.iter().enumerate() {
+        let content = message.get("content").and_then(Value::as_array);
+        for (b, block) in content.into_iter().flatten().enumerate() {
+            if !block["text"].as_str().is_some_and(is_system_note) {
+                blocks.push((m, b));
+            }
+        }
+    }
+    let block = |&(m, b): &(usize, usize)| &messages[m]["content"][b];
+    let youngest = blocks
+        .iter()
+        .rposition(|at| messages[at.0]["role"] == "user" && block(at)["type"] == "text");
+    let (history, round) = match youngest {
+        Some(y) => (&blocks[..y], &blocks[y + 1..]),
+        None => (&blocks[..0], &blocks[..]),
     };
-    let Some(youngest) = positions.iter().rposition(|&(m, b)| {
-        messages[m]["role"] == "user"
-            && block_type(&messages[m], b).as_deref() == Some("text")
-            && !is_note(m, b)
-    }) else {
-        return;
-    };
-    let target = positions[..youngest].iter().rev().find(|&&(m, b)| {
-        !matches!(
-            block_type(&messages[m], b).as_deref(),
+    let is_thinking = |at: &(usize, usize)| {
+        matches!(
+            block(at)["type"].as_str(),
             Some("thinking" | "redacted_thinking")
-        ) && !is_note(m, b)
-    });
-    if let Some(&(m, b)) = target
-        && let Some(block) = messages
+        )
+    };
+    // A blank result: "Empty text blocks cannot be cached" (Anthropic, prompt
+    // caching guide, read 2026-11-24), so the round's mark goes before it.
+    let is_blank = |at: &(usize, usize)| {
+        block(at)["content"]
+            .as_str()
+            .is_some_and(|c| c.trim().is_empty())
+    };
+    let mut targets: Vec<(usize, usize)> = Vec::new();
+    targets.extend(history.iter().rfind(|at| !is_thinking(at)));
+    // OR-58-63: the mark of the history stands in front of the round, so
+    // without one of its own every call of a tool round paid the round again.
+    // A round that gets its thinking back loses it ([`replay_thinking`]).
+    if round
+        .last()
+        .is_some_and(|at| block(at)["type"] == "tool_result")
+    {
+        targets.extend(round.iter().rfind(|at| !is_thinking(at) && !is_blank(at)));
+    }
+    for (m, b) in targets {
+        if let Some(block) = messages
             .get_mut(m)
             .and_then(|msg| msg.get_mut("content"))
             .and_then(|c| c.get_mut(b))
             .and_then(Value::as_object_mut)
-    {
-        block.insert("cache_control".into(), mark);
+        {
+            block.insert("cache_control".into(), mark.clone());
+        }
     }
 }
 
@@ -431,17 +446,33 @@ pub(crate) fn thinking_of_tool_turn(json: &Value) -> Option<(Vec<String>, Value)
 /// T10-10: put the open round's thinking back in front of its `tool_use`
 /// blocks -- index 0 of the LAST assistant message, the one the round's
 /// results answer. A closed round carries none.
+///
+/// OR-58-63, the limit of the third mark: the round then carries no mark. The
+/// next call sends this answer WITHOUT its thinking, so its prefix differs from
+/// the entry the mark would write: nothing ever reads the entry, and the write
+/// costs 1.25 times (one hour: 2 times) the plain input. The marks of `system`
+/// and of the history stand in front of the round and stay.
 pub(crate) fn replay_thinking(request: &mut Value, blocks: Value) {
     let Value::Array(blocks) = blocks else {
         return;
     };
-    let last = request
-        .get_mut("messages")
+    let Some(messages) = request.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let Some(answer) = messages.iter().rposition(|msg| msg["role"] == "assistant") else {
+        return;
+    };
+    // The round's mark sits on this answer's call or on a result behind it.
+    let open = messages[answer..]
+        .iter_mut()
+        .filter_map(|msg| msg.get_mut("content").and_then(Value::as_array_mut));
+    for block in open.flatten().filter_map(Value::as_object_mut) {
+        block.remove("cache_control");
+    }
+    if let Some(content) = messages[answer]
+        .get_mut("content")
         .and_then(Value::as_array_mut)
-        .and_then(|m| m.iter_mut().rev().find(|msg| msg["role"] == "assistant"))
-        .and_then(|msg| msg.get_mut("content"))
-        .and_then(Value::as_array_mut);
-    if let Some(content) = last {
+    {
         let rest = std::mem::take(content);
         content.extend(blocks);
         content.extend(rest);
@@ -729,8 +760,9 @@ pub(crate) fn parse_messages_response(json: &Value) -> Result<TranslatedResponse
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_replayed_thinking, binds_thinking, build_messages_request, parse_messages_response,
-        require_tool_call, skip_thinking_after_switch, thinking_is_off,
+        bind_replayed_thinking, binds_thinking, build_messages_request, is_system_note,
+        parse_messages_response, replay_thinking, require_tool_call, skip_thinking_after_switch,
+        thinking_is_off,
     };
     use crate::llm::params::LlmParams;
     use crate::llm::translate::{TranslateError, parse_openai_response};
@@ -1363,9 +1395,10 @@ mod tests {
     }
 
     /// GH #1282: a window that ends on a user turn or a tool result is the
-    /// request of before, byte for byte, cache marks included.
+    /// request of before, byte for byte, cache marks included -- but the mark
+    /// the result of an open round carries since OR-58-63.
     #[test]
-    fn a_window_ending_on_user_or_tool_result_stays_byte_identical() {
+    fn a_window_ending_on_user_or_tool_result_has_the_pinned_bytes() {
         let params = anthropic(json!({"cache_mode": "breakpoints", "cache_ttl_s": 300}));
         let mark = json!({"type": "ephemeral"});
         let on_result = [
@@ -1386,7 +1419,8 @@ mod tests {
                     {"role": "assistant", "content": [
                         {"type": "tool_use", "id": "c1", "name": "get", "input": {}}]},
                     {"role": "user", "content": [
-                        {"type": "tool_result", "tool_use_id": "c1", "content": "r1"}]}
+                        {"type": "tool_result", "tool_use_id": "c1", "content": "r1",
+                         "cache_control": mark}]}
                 ]
             })
             .to_string()
@@ -1413,6 +1447,217 @@ mod tests {
             })
             .to_string()
         );
+    }
+
+    /// The request over `turns` with `breakpoints` on.
+    fn breakpoints(turns: &[Value], ttl: u64) -> Value {
+        let params = anthropic(json!({"cache_mode": "breakpoints", "cache_ttl_s": ttl}));
+        build_messages_request(&params, "S", turns, &[], Vec::new()).expect("request")
+    }
+
+    /// The (message, block) of every marked block.
+    fn marked(body: &Value) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for (m, message) in body["messages"].as_array().unwrap().iter().enumerate() {
+            for (b, block) in message["content"].as_array().unwrap().iter().enumerate() {
+                if block.get("cache_control").is_some() {
+                    out.push((m, b));
+                }
+            }
+        }
+        out
+    }
+
+    fn said(origin: &str, text: &str) -> Value {
+        json!({"origin": origin, "type": "text", "text": text})
+    }
+
+    fn result(id: &str, text: &str) -> Value {
+        json!({"origin": "tool", "type": "tool_result", "id": id, "text": text})
+    }
+
+    /// A finished exchange and the person's `c` (message 2), then `tail`.
+    fn round(tail: &[Value]) -> Vec<Value> {
+        let mut turns = vec![said("user", "a"), said("assistant", "b"), said("user", "c")];
+        turns.extend_from_slice(tail);
+        turns
+    }
+
+    /// OR-58-63: a request that ends on a round result marks that result too,
+    /// so the next call of a round without replayed thinking reads what this
+    /// one sent: each call keeps the bytes of the one before up to its mark.
+    /// With thinking: [`or_58_63_the_replayed_thinking_takes_no_mark`].
+    #[test]
+    fn or_58_63_a_tool_round_ends_on_a_third_mark() {
+        let mark = json!({"type": "ephemeral"});
+        let first = [tool_call("c1", "get", "{}"), result("c1", "r1")];
+        let second = [
+            tool_call("c1", "get", "{}"),
+            result("c1", "r1"),
+            tool_call("c2", "get", "{}"),
+            result("c2", "r2"),
+        ];
+        let one = breakpoints(&round(&first), 300);
+        let two = breakpoints(&round(&second), 300);
+        // messages: 0 a, 1 b, 2 c, 3 tool_use, 4 r1, 5 tool_use, 6 r2
+        assert_eq!(marked(&one), vec![(1, 0), (4, 0)], "{one}");
+        assert_eq!(marked(&two), vec![(1, 0), (6, 0)], "{two}");
+        assert_eq!(
+            two["system"],
+            json!([{"type": "text", "text": "S", "cache_control": mark}])
+        );
+        assert_eq!(
+            two["messages"][6],
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "c2", "content": "r2",
+                 "cache_control": mark}]})
+        );
+        assert_eq!(
+            one["messages"].as_array().unwrap()[..4],
+            two["messages"].as_array().unwrap()[..4]
+        );
+        assert_eq!(two.to_string().matches("cache_control").count(), 3);
+
+        // Parallel calls: only the last result of the one user message.
+        let parallel = [
+            tool_call("c1", "get", "{}"),
+            tool_call("c2", "get", "{}"),
+            result("c1", "r1"),
+            result("c2", "r2"),
+        ];
+        let parallel = breakpoints(&round(&parallel), 300);
+        assert_eq!(marked(&parallel), vec![(1, 0), (4, 1)], "{parallel}");
+
+        // GH #1579: a note behind the result never carries the mark; the
+        // result before it does.
+        let mut noted = first.to_vec();
+        noted.push(said("system", "time 10:00"));
+        let noted = breakpoints(&round(&noted), 300);
+        assert_eq!(marked(&noted), vec![(1, 0), (4, 0)], "{noted}");
+        assert!(
+            noted["messages"][4]["content"][1]["text"]
+                .as_str()
+                .is_some_and(is_system_note),
+            "{noted}"
+        );
+
+        // A result without text takes no mark (the provider caches no empty
+        // text): the block before it that can.
+        let empty = [
+            tool_call("c1", "get", "{}"),
+            tool_call("c2", "get", "{}"),
+            result("c1", "r1"),
+            result("c2", ""),
+        ];
+        let empty = breakpoints(&round(&empty), 300);
+        assert_eq!(marked(&empty), vec![(1, 0), (4, 0)], "{empty}");
+        // ... and with none in the round, the call itself.
+        let none = [tool_call("c1", "get", "{}"), result("c1", "")];
+        let none = breakpoints(&round(&none), 300);
+        assert_eq!(marked(&none), vec![(1, 0), (3, 0)], "{none}");
+
+        // A round without a person's turn (no history) is marked all the same.
+        let alone = breakpoints(&first, 300);
+        assert_eq!(marked(&alone), vec![(1, 0)], "{alone}");
+
+        // The mark carries the cell's TTL like the other two.
+        let hour = breakpoints(&round(&first), 3600);
+        assert_eq!(
+            hour["messages"][4]["content"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"})
+        );
+    }
+
+    /// OR-58-63 (T10-10): a round that gets its thinking back takes no mark of
+    /// its own -- neither the thinking nor the round's end. The next call sends
+    /// the same round without that thinking, so it could never read the entry.
+    /// The marks of `system` and of the history stay; without replayed
+    /// thinking there are three.
+    #[test]
+    fn or_58_63_the_replayed_thinking_takes_no_mark() {
+        let blocks = json!([{"type": "thinking", "thinking": "hm", "signature": "s"}]);
+        let redacted = json!([{"type": "redacted_thinking", "data": "o"}]);
+        // messages: 0 a, 1 b, 2 c, 3 tool_use, 4 r1, 5 tool_use, 6 r2
+        let long = [
+            tool_call("c1", "get", "{}"),
+            result("c1", "r1"),
+            tool_call("c2", "get", "{}"),
+            result("c2", "r2"),
+        ];
+        // The mark of a blank result's round sits on the call itself.
+        let blank = [tool_call("c1", "get", "{}"), result("c1", "")];
+        for (tail, end, last_answer, thinking) in [
+            (&long[..], (6, 0), 5, &blocks),
+            (&long[..2], (4, 0), 3, &redacted),
+            (&blank[..], (3, 0), 3, &blocks),
+        ] {
+            let without = breakpoints(&round(tail), 300);
+            assert_eq!(marked(&without), vec![(1, 0), end], "{without}");
+            assert_eq!(without.to_string().matches("cache_control").count(), 3);
+
+            let mut with = without.clone();
+            replay_thinking(&mut with, thinking.clone());
+            assert_eq!(with["messages"][last_answer]["content"][0], thinking[0]);
+            assert_eq!(marked(&with), vec![(1, 0)], "{with}");
+            assert_eq!(with["system"], without["system"], "the system mark stays");
+            assert_eq!(with.to_string().matches("cache_control").count(), 2);
+        }
+    }
+
+    /// OR-58-63, the counter case: a window that ends on the person's text
+    /// carries the two marks of before and nothing else moves -- a finished
+    /// round in the history included, and a trailing note does not count as
+    /// an end of its own.
+    #[test]
+    fn or_58_63_a_window_ending_on_user_text_keeps_two_marks() {
+        let mark = json!({"type": "ephemeral"});
+        let turns = [
+            said("user", "a"),
+            tool_call("c1", "get", "{}"),
+            result("c1", "r1"),
+            said("assistant", "b"),
+            said("user", "c"),
+        ];
+        let body = breakpoints(&turns, 300);
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "a"}]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "c1", "name": "get", "input": {}}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "c1", "content": "r1"}]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "b", "cache_control": mark}]},
+                {"role": "user", "content": [{"type": "text", "text": "c"}]}
+            ])
+        );
+        assert_eq!(body.to_string().matches("cache_control").count(), 2);
+        let mut noted = turns.to_vec();
+        noted.push(said("system", "time 10:00"));
+        let noted = breakpoints(&noted, 300);
+        assert_eq!(marked(&noted), vec![(3, 0)], "{noted}");
+        // The person's words behind the result of the same wire message.
+        let words = breakpoints(
+            &round(&[
+                tool_call("c1", "get", "{}"),
+                result("c1", "r1"),
+                said("user", "and?"),
+            ]),
+            300,
+        );
+        assert_eq!(marked(&words), vec![(4, 0)], "{words}");
+        // An answer behind the round ends it: the closing note (GH #1282) is
+        // the youngest text, the result before it the end of the history.
+        let answered = breakpoints(
+            &round(&[
+                tool_call("c1", "get", "{}"),
+                result("c1", "r1"),
+                said("assistant", "x"),
+            ]),
+            300,
+        );
+        assert_eq!(marked(&answered), vec![(4, 0)], "{answered}");
     }
 
     /// GH #1579: a `system` turn after the first conversational turn no

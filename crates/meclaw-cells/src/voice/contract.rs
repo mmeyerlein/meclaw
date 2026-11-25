@@ -15,7 +15,7 @@
 use meclaw_colony::io_liveness::IoLivenessMark;
 use std::future::Future;
 use std::pin::Pin;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// A boxed, sendable future — the provider traits return these so they stay
 /// object-safe behind `Arc<dyn …>`.
@@ -450,6 +450,73 @@ pub enum DuplexEvent {
     },
 }
 
+/// The lower edges, in ms, of the classes of [`AudioArrivals::lateness`]; a
+/// class reaches up to the next edge, the last one has no upper edge.
+pub const LATENESS_FROM_MS: [u64; 5] = [5, 20, 40, 100, 250];
+
+/// From this lateness on, in ms, a chunk is listed with its time: one 20 ms
+/// frame of the telephone line is the smallest hole a caller can be given.
+pub const LATE_LISTED_FROM_MS: u64 = 20;
+
+/// How many late chunks one session lists. The cap is on the list only, the
+/// classes count every chunk.
+pub const LATE_LISTED_MAX: usize = 256;
+
+/// One chunk of the model's audio that arrived too late to follow on from the
+/// audio before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LateChunk {
+    /// When it arrived, in Unix ms.
+    pub at_epoch_ms: u64,
+    /// How late it was, in ms.
+    pub late_ms: u64,
+}
+
+/// How the model's audio arrived over one duplex session (#1631): numbers and
+/// times only, no audio and no text.
+///
+/// A chunk is late by its arrival minus (the arrival of the first chunk of its
+/// section plus the audio delivered since). A section starts with the first
+/// chunk of the session and again with every listed chunk: after a hole the
+/// audio plays on from there, so one late chunk is listed once and not again
+/// with every chunk behind it. A chunk the provider sends after a pause counts
+/// as late; one that arrives after `session.close` counts in `chunks` and is
+/// never late, also where a renewed session's tail is still played.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AudioArrivals {
+    /// Chunks that arrived.
+    pub chunks: u64,
+    /// The late chunks from [`LATE_LISTED_FROM_MS`] on, oldest first, the
+    /// first [`LATE_LISTED_MAX`] of them.
+    pub late: Vec<LateChunk>,
+    /// How many chunks fell into each class of [`LATENESS_FROM_MS`].
+    pub lateness: [u64; LATENESS_FROM_MS.len()],
+    /// The worst lateness, in ms.
+    pub late_max_ms: u64,
+    /// The longest a chunk was held in the adapter because the connection had
+    /// no room for it, in ms.
+    pub held_max_ms: u64,
+    /// The longest a frame waited for its turn on the provider socket, in ms.
+    pub send_wait_max_ms: u64,
+}
+
+impl AudioArrivals {
+    /// One chunk arrived at `at_epoch_ms`, `late_ms` too late (`0`: in time).
+    pub fn note(&mut self, at_epoch_ms: u64, late_ms: u64) {
+        self.chunks += 1;
+        self.late_max_ms = self.late_max_ms.max(late_ms);
+        if let Some(class) = LATENESS_FROM_MS.iter().rposition(|from| late_ms >= *from) {
+            self.lateness[class] += 1;
+        }
+        if late_ms >= LATE_LISTED_FROM_MS && self.late.len() < LATE_LISTED_MAX {
+            self.late.push(LateChunk {
+                at_epoch_ms,
+                late_ms,
+            });
+        }
+    }
+}
+
 /// What the colony tells a running duplex session.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DuplexControl {
@@ -633,5 +700,28 @@ pub trait DuplexProvider: Send + Sync + 'static {
         liveness: IoLivenessMark,
     ) -> BoxFuture<Result<(), DuplexError>> {
         self.run_session(format, session, liveness)
+    }
+    /// Run one session and hand over how its audio arrived (#1631).
+    ///
+    /// `renewed` chooses between [`Self::run_session`] and
+    /// [`Self::run_renewed_session`]. A provider that measures sends exactly
+    /// one [`AudioArrivals`] before it returns for a session that got as far
+    /// as its start frame, however it ended. One that failed before it (no
+    /// credential, no handshake) and the default of this method drop the
+    /// sender: the receiver's error is a session nobody measured.
+    fn run_metered_session(
+        &self,
+        format: AudioFormat,
+        session: DuplexSession,
+        liveness: IoLivenessMark,
+        renewed: bool,
+        arrivals: oneshot::Sender<AudioArrivals>,
+    ) -> BoxFuture<Result<(), DuplexError>> {
+        drop(arrivals);
+        if renewed {
+            self.run_renewed_session(format, session, liveness)
+        } else {
+            self.run_session(format, session, liveness)
+        }
     }
 }

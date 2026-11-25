@@ -32,14 +32,20 @@ fn a_key_the_adapter_does_not_have_is_named_back() {
     assert!(e.contains("banana"), "the refusal names the typo: {e}");
 }
 
-/// And the loopback knows two keys, deliberately: a knob on a calibration is a
-/// knob on the measurement.
+/// And the loopback knows its rate and its delivery profile (GH #1636),
+/// deliberately nothing of a model: a voice on a calibration is a typo.
 #[test]
-fn the_loopback_knows_its_rate_and_nothing_else() {
+fn the_loopback_knows_its_rate_and_its_profile_and_nothing_else() {
     VoiceParams::parse(&json!({
         "mount": "voice", "duplex": {"provider": "echo", "sample_rate": 24000}
     }))
-    .expect("the rate is the one knob the loopback has");
+    .expect("the loopback has a rate");
+    VoiceParams::parse(&json!({
+        "mount": "voice", "duplex": {
+            "provider": "echo", "chunk_ms": 100, "late": [{"every": 5, "ms": 112}]
+        }
+    }))
+    .expect("the loopback has a delivery profile");
     let e = VoiceParams::parse(&json!({
         "mount": "voice", "duplex": {"provider": "echo", "voice": "marin"}
     }))

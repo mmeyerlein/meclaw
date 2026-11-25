@@ -1486,3 +1486,575 @@ fn every_mark_of_the_push_carries_its_round() {
         "no round, the empty set"
     );
 }
+
+// ======================================================= GH #1600 the gap's echo
+
+/// The memory's answer to a gap's ask as the memory hive builds it at tier 1:
+/// the readable text with its frame (the header, the section heads and the
+/// caveat line), the payload JSON the model reads (`system.memory.bundle`) and
+/// the record of the same candidates in the same order (`recall_diagnostic`),
+/// which carries the session each row was said in. A row is
+/// `(kind, session, who, text)`.
+fn recall_body(rows: &[(&str, &str, &str, &str)]) -> Value {
+    let mut lines = vec!["WHAT THIS MEMORY HOLDS (as of 2026-11-23)".to_string()];
+    let facts: Vec<_> = rows.iter().filter(|r| r.0 == "fact").collect();
+    let said: Vec<_> = rows.iter().filter(|r| r.0 != "fact").collect();
+    if !facts.is_empty() {
+        lines.push("FACTS (extracted, canonical, dated)".into());
+        for r in &facts {
+            lines.push(format!("  {}", r.3));
+        }
+    }
+    if !said.is_empty() {
+        lines.push("WHAT WAS SAID (verbatim, not interpreted)".into());
+        lines.push(
+            "  (an earlier answer claiming something is NOT stored is evidence about \
+             that answer and nothing else -- never a measurement of this memory)"
+                .into(),
+        );
+        for r in &said {
+            lines.push(format!("  {} on 2026-11-23: \"{}\"", r.2, r.3));
+        }
+    }
+    let payload: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            if r.0 == "fact" {
+                json!({"kind": "fact", "text": r.3})
+            } else {
+                json!({"kind": r.0, "text": r.3, "who": r.2, "when": "2026-11-23"})
+            }
+        })
+        .collect();
+    let record: Vec<Value> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            json!({"kind": r.0, "id": format!("row-{i}"), "session_id": r.1,
+                   "sender": r.2, "text": r.3, "legs": ["keyword"], "rank": i + 1})
+        })
+        .collect();
+    let bundle = json!({"answers": "direct", "as_of": "2026-11-23T04:29:42Z",
+                        "beliefs": [], "candidates": payload, "complete": true,
+                        "query": "q", "tier": 1});
+    json!({
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
+                      "text": lines.join("\n")}],
+        "recall_diagnostic": {"as_of": "2026-11-23T04:29:42Z", "candidates": record,
+                              "query": "q", "tier": 1},
+        "system": {"memory": {"bundle": {"text": bundle.to_string()}}},
+    })
+}
+
+/// A gap of a running session's turn, as `gap_in` hands it in, with
+/// `extra` on its context (a delegation's id).
+fn live_gap(h: &mut Hive, session: &str, turn: &str, text: &str, extra: Value) -> Msg {
+    h.out.clear();
+    let mut ctx = json!({"session_id": session, "turn_id": turn, "iter": "0",
+                         "curator_call": "c-1", "channel": "test", "live": "call-9",
+                         "audience_set": test_round()});
+    if let (Some(c), Value::Object(e)) = (ctx.as_object_mut(), extra) {
+        c.extend(e);
+    }
+    h.lane(
+        "in_section",
+        ctx,
+        json!({"section": "gap"}),
+        json!({"messages": [], "section": "gap", "payload": {"payload": text}}),
+    );
+    h.routed("recall")[0].clone()
+}
+
+/// The memory's whole answer to a gap's ask, as the parent's edge delivers it.
+/// `extra` is put on its context too: the memory's answer comes home in the
+/// context the ask left with, which carries a delegation's id (F17 run).
+fn gap_bundle_body(h: &mut Hive, ask: &Msg, extra: Value, body: Value) {
+    h.out.clear();
+    let mut ctx = ask.context.clone();
+    ctx.insert("gap_ask".into(), ask.hop["gap_ask"].clone());
+    if let Value::Object(e) = extra {
+        ctx.extend(e);
+    }
+    h.lane("in_gap_bundle", Value::Object(ctx), json!({}), body);
+}
+
+/// The words a running session's find is said with, one per `fact` sent.
+fn said_facts(h: &Hive) -> Vec<String> {
+    h.routed("sidecar")
+        .iter()
+        .filter(|m| m.hop["section"] == "fact")
+        .map(|m| {
+            m.body["payload"]["payload"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect()
+}
+
+/// GH #1600 (F17): a gap's recall that finds only turns of the running session
+/// -- the answer of this very round, written a moment before the lookup -- found
+/// nothing the window does not hold already: no addendum, nothing said.
+#[test]
+fn a_gap_that_finds_only_its_own_session_adds_nothing() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round(
+        &mut h,
+        "s1",
+        "t1",
+        "is the car ready?",
+        "I asked the garage.",
+    );
+    let ask = live_gap(
+        &mut h,
+        "s1",
+        "t1",
+        "the garage's answer is pending",
+        json!({}),
+    );
+    gap_bundle_body(
+        &mut h,
+        &ask,
+        json!({}),
+        recall_body(&[(
+            "episode",
+            "s1",
+            "assistant",
+            "I asked the garage whether the car is ready.",
+        )]),
+    );
+    assert!(
+        said_facts(&h).is_empty(),
+        "the session's own turn is said: {:?}",
+        h.out
+    );
+    assert!(
+        marks(&h, "addendum").is_empty(),
+        "{:?}",
+        marks(&h, "addendum")
+    );
+    // Review 5: the positive signal -- the push parked it as a recall that
+    // found nothing, and wrote no pending find for it.
+    assert!(
+        h.stderr
+            .iter()
+            .any(|l| l.contains("found nothing") && l.contains("only turns of the running session")),
+        "{:?}",
+        h.stderr
+    );
+    assert_eq!(pending_finds(&h), 0, "a pending find is written");
+}
+
+/// GH #1600 (F17), the counter-test: a find from another session is still
+/// said in a running session's turn -- and only its rows are said, never the
+/// frame of the memory's answer (its header, its section heads, its caveat);
+/// a row of the running session beside it is not said either.
+#[test]
+fn a_find_from_another_session_is_said_without_its_frame() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round(
+        &mut h,
+        "s1",
+        "t1",
+        "is the car ready?",
+        "I asked the garage.",
+    );
+    let ask = live_gap(
+        &mut h,
+        "s1",
+        "t1",
+        "the garage's answer is pending",
+        json!({}),
+    );
+    gap_bundle_body(
+        &mut h,
+        &ask,
+        json!({}),
+        recall_body(&[
+            ("fact", "s0", "", "the car is at the Kessler garage"),
+            ("episode", "s0", "user", "The garage said Thursday."),
+            ("episode", "s1", "assistant", "I asked the garage."),
+        ]),
+    );
+    let said = said_facts(&h);
+    assert_eq!(said.len(), 1, "{:?}", h.out);
+    let words = &said[0];
+    assert!(
+        words.contains("the car is at the Kessler garage")
+            && words.contains("The garage said Thursday."),
+        "{words}"
+    );
+    for frame in [
+        "WHAT THIS MEMORY HOLDS",
+        "FACTS (extracted",
+        "WHAT WAS SAID",
+        "an earlier answer claiming",
+    ] {
+        assert!(
+            !words.contains(frame),
+            "the frame {frame:?} is said: {words}"
+        );
+    }
+    assert!(
+        !words.contains("I asked the garage."),
+        "the own turn is said: {words}"
+    );
+    assert_eq!(marks(&h, "addendum").len(), 1);
+}
+
+/// GH #1600 (F17): a gap in a delegated turn (`context.delegation_id`) keeps
+/// its find as an addendum, but says no `fact`: the delegated answer belongs
+/// to the delegated cell.
+#[test]
+fn a_delegated_gap_keeps_its_find_and_says_no_fact() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round(
+        &mut h,
+        "s1",
+        "t1",
+        "is the car ready?",
+        "I asked the garage.",
+    );
+    let ask = live_gap(
+        &mut h,
+        "s1",
+        "t1",
+        "the garage's answer is pending",
+        json!({"delegation_id": "dl-1"}),
+    );
+    gap_bundle_body(
+        &mut h,
+        &ask,
+        json!({"delegation_id": "dl-1"}),
+        recall_body(&[("episode", "s0", "user", "The garage said Thursday.")]),
+    );
+    assert!(
+        said_facts(&h).is_empty(),
+        "a delegated find is said: {:?}",
+        h.out
+    );
+    assert_eq!(
+        marks(&h, "addendum").len(),
+        1,
+        "the find is kept: {:?}",
+        h.out
+    );
+}
+
+/// The pending finds in the push's state (`pending:push:gap-*`).
+fn pending_finds(h: &Hive) -> i64 {
+    h.rows("SELECT count(*) FROM state WHERE key LIKE 'pending:push:gap-%'")[0][0]
+        .as_i64()
+        .unwrap_or(-1)
+}
+
+/// `body` with `keys` put on the payload candidate `i` of its bundle: the
+/// annotations the memory hands along with a row (`payload_candidate`).
+fn with_payload(mut body: Value, i: usize, keys: Value) -> Value {
+    let text = body["system"]["memory"]["bundle"]["text"]
+        .as_str()
+        .unwrap_or("{}")
+        .to_string();
+    let mut doc: Value = sj::from_str(&text).unwrap_or(json!({}));
+    if let (Some(c), Value::Object(k)) = (doc["candidates"][i].as_object_mut(), keys) {
+        c.extend(k);
+    }
+    body["system"]["memory"]["bundle"]["text"] = Value::String(doc.to_string());
+    body
+}
+
+/// A running session's gap of `t1` in `s1`, asked; the gap's answer is
+/// `body` on the context `extra`. Returns the hive.
+fn live_find(body: Value, extra: Value) -> Hive {
+    let mut h = talky(&[]);
+    round(
+        &mut h,
+        "s1",
+        "t1",
+        "is the car ready?",
+        "I asked the garage.",
+    );
+    let ask = live_gap(
+        &mut h,
+        "s1",
+        "t1",
+        "the garage's answer is pending",
+        extra.clone(),
+    );
+    gap_bundle_body(&mut h, &ask, extra, body);
+    h
+}
+
+/// GH #1600, review 1: a row's annotations are the row, not the frame -- a
+/// superseded statement, an intention, one whose currency is unknown and one
+/// that replaced another are said with their marks, in the memory's words.
+#[test]
+fn a_superseded_or_intended_find_is_said_with_its_mark() {
+    if !push_shipped() {
+        return;
+    }
+    let body = recall_body(&[
+        ("fact", "s0", "", "at the Kessler garage"),
+        ("fact", "s0", "", "sell the car"),
+        ("fact", "s0", "", "blue"),
+    ]);
+    let body = with_payload(
+        body,
+        0,
+        json!({"subject": "car", "predicate": "location", "since": "2026-11-01",
+               "superseded": "at home",
+               "previously": [{"claim": "at home", "until": "2026-11-01"}]}),
+    );
+    let body = with_payload(body, 1, json!({"intent": "intention", "superseded": ""}));
+    let body = with_payload(body, 2, json!({"supersession_unknown": true}));
+    let h = live_find(body, json!({}));
+    let said = said_facts(&h);
+    assert_eq!(said.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    let words = &said[0];
+    for mark in [
+        "car location: at the Kessler garage since 2026-11-01",
+        "(superseded by: at home)",
+        "(previously: at home until 2026-11-01)",
+        "sell the car (intention) (superseded: yes)",
+        "blue (currency unknown: cannot vouch that this still holds)",
+    ] {
+        assert!(words.contains(mark), "{mark:?} is not said: {words}");
+    }
+}
+
+/// GH #1600, review 2: a delegated gap whose marks could not be read is held;
+/// the next message of its round -- not delegated -- keeps the find and says
+/// no `fact`: the gap's own turn decides, never the later message's context.
+#[test]
+fn a_held_delegated_find_stays_unsaid_in_a_later_round() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round(
+        &mut h,
+        "s1",
+        "t1",
+        "is the car ready?",
+        "I asked the garage.",
+    );
+    let extra = json!({"delegation_id": "dl-1"});
+    let asked = live_gap(
+        &mut h,
+        "s1",
+        "t1",
+        "the garage's answer is pending",
+        extra.clone(),
+    );
+    h.ledger_may_refuse = true;
+    h.refuse_legs = vec![("h-marks".into(), "store_error".into())];
+    gap_bundle_body(
+        &mut h,
+        &asked,
+        extra,
+        recall_body(&[("episode", "s0", "user", "The garage said Thursday.")]),
+    );
+    assert!(h.refuse_legs.is_empty(), "the refusal struck");
+    h.ledger_may_refuse = false;
+    assert_eq!(marks(&h, "held").len(), 1, "held: {:?}", h.stderr);
+    ask(&mut h, "s1", "t2", "and when?");
+    assert_eq!(marks(&h, "addendum").len(), 1, "kept: {:?}", h.stderr);
+    assert!(
+        said_facts(&h).is_empty(),
+        "a held delegated find is said: {:?}",
+        h.out
+    );
+}
+
+/// GH #1600, review 2, the other way: a held find of a turn that was not
+/// delegated is said, though the next message of its round is delegated.
+#[test]
+fn a_held_find_is_said_though_a_later_message_is_delegated() {
+    if !push_shipped() {
+        return;
+    }
+    let mut h = talky(&[]);
+    round(
+        &mut h,
+        "s1",
+        "t1",
+        "is the car ready?",
+        "I asked the garage.",
+    );
+    let asked = live_gap(
+        &mut h,
+        "s1",
+        "t1",
+        "the garage's answer is pending",
+        json!({}),
+    );
+    h.ledger_may_refuse = true;
+    h.refuse_legs = vec![("h-marks".into(), "store_error".into())];
+    gap_bundle_body(
+        &mut h,
+        &asked,
+        json!({}),
+        recall_body(&[("episode", "s0", "user", "The garage said Thursday.")]),
+    );
+    assert!(h.refuse_legs.is_empty(), "the refusal struck");
+    h.ledger_may_refuse = false;
+    h.out.clear();
+    h.lane(
+        "in_recall_ask",
+        json!({"session_id": "s1", "channel": "test", "audience_set": test_round(),
+               "delegation_id": "dl-2"}),
+        ask_hop("s1", "t2", "and when?"),
+        json!({"messages": [user("and when?")]}),
+    );
+    let said = said_facts(&h);
+    assert_eq!(said.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    assert!(said[0].contains("The garage said Thursday."), "{}", said[0]);
+}
+
+/// GH #1600, review 3: a find whose kept rows carry no words is kept, and
+/// nothing is said -- never the readable text with its frame and the
+/// session's own turn in it.
+#[test]
+fn a_find_without_words_is_kept_and_not_said() {
+    if !push_shipped() {
+        return;
+    }
+    let h = live_find(
+        recall_body(&[
+            ("fact", "s0", "", ""),
+            ("episode", "s1", "assistant", "I asked the garage."),
+        ]),
+        json!({}),
+    );
+    assert!(said_facts(&h).is_empty(), "said: {:?}", said_facts(&h));
+    assert_eq!(marks(&h, "addendum").len(), 1, "kept: {:?}", h.stderr);
+}
+
+/// GH #1600, review 4: a record that does not line up with the bundle is
+/// said in a line, and the rows are paired by their words -- the session's
+/// own turn is still not said, the other session's row is.
+#[test]
+fn a_misaligned_record_is_named_and_still_filters_the_own_turn() {
+    if !push_shipped() {
+        return;
+    }
+    let mut body = recall_body(&[
+        ("fact", "s0", "", "the car is at the Kessler garage"),
+        ("episode", "s0", "user", "The garage said Thursday."),
+        ("episode", "s1", "assistant", "I asked the garage."),
+    ]);
+    if let Some(recs) = body["recall_diagnostic"]["candidates"].as_array_mut() {
+        recs.remove(0);
+    }
+    let h = live_find(body, json!({}));
+    let said = said_facts(&h);
+    assert_eq!(said.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    assert!(
+        said[0].contains("The garage said Thursday.")
+            && said[0].contains("the car is at the Kessler garage"),
+        "{}",
+        said[0]
+    );
+    assert!(
+        !said[0].contains("I asked the garage."),
+        "the own turn is said: {}",
+        said[0]
+    );
+    assert!(
+        h.stderr
+            .iter()
+            .any(|l| l.contains("WARN") && l.contains("record")),
+        "{:?}",
+        h.stderr
+    );
+}
+
+/// GH #1600, review 4: a tier-0 bundle names no session; its episodes are
+/// the asking session's own (the tier reads that session alone), so they are
+/// not said -- what else it holds is, without its frame, and a line says so.
+#[test]
+fn a_tier_zero_find_says_its_rows_without_the_own_turns() {
+    if !push_shipped() {
+        return;
+    }
+    let bundle = json!({"tier": 0, "beliefs": [{"id": "b1", "statement": "the car is old"}],
+                        "foresight": [{"id": "f1", "subject": "car", "predicate": "ready_on",
+                                       "claim": "Thursday"}],
+                        "episodes": [{"id": "e1", "sender": "assistant",
+                                      "content": "I asked the garage."}],
+                        "query": "q", "token_estimate": 9});
+    let text = "MEMORY (tier 0, deterministic bundle)\n- belief: the car is old\n\
+                - open: Thursday\n- assistant: I asked the garage.";
+    let body = json!({
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "recall", "text": text}],
+        "system": {"memory": {"bundle": {"text": bundle.to_string()}}},
+    });
+    let h = live_find(body, json!({}));
+    let said = said_facts(&h);
+    assert_eq!(said.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    let words = &said[0];
+    assert!(
+        words.contains("the car is old") && words.contains("car ready_on: Thursday"),
+        "{words}"
+    );
+    assert!(
+        !words.contains("MEMORY (tier 0"),
+        "the frame is said: {words}"
+    );
+    assert!(
+        !words.contains("I asked the garage."),
+        "the own turn is said: {words}"
+    );
+    assert!(
+        h.stderr
+            .iter()
+            .any(|l| l.contains("WARN") && l.contains("tier-0")),
+        "{:?}",
+        h.stderr
+    );
+}
+
+/// GH #1600, review 5: a tier-2 answer is said as the one row it is, never
+/// with the frame of the readable text around it.
+#[test]
+fn a_tier_two_answer_is_said_as_its_row() {
+    if !push_shipped() {
+        return;
+    }
+    let body = json!({
+        "messages": [{"origin": "tool", "type": "tool_result", "id": "recall",
+                      "text": "WHAT THIS MEMORY HOLDS (as of 2026-11-23)\n  The garage said Thursday."}],
+        "system": {"memory": {"answer": {"text": json!({"answer": "The garage said Thursday."}).to_string()}}},
+    });
+    let h = live_find(body, json!({}));
+    let said = said_facts(&h);
+    assert_eq!(said.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    assert!(said[0].contains("The garage said Thursday."), "{}", said[0]);
+    assert!(!said[0].contains("WHAT THIS MEMORY HOLDS"), "{}", said[0]);
+}
+
+/// GH #1600, review 5: a running session's find without a session on its
+/// record is no echo -- the filter needs a session to compare with -- and is
+/// said.
+#[test]
+fn a_find_whose_record_names_no_session_is_said() {
+    if !push_shipped() {
+        return;
+    }
+    let h = live_find(
+        recall_body(&[("episode", "", "user", "The garage said Thursday.")]),
+        json!({}),
+    );
+    let said = said_facts(&h);
+    assert_eq!(said.len(), 1, "{:?} {:?}", h.out, h.stderr);
+    assert!(said[0].contains("The garage said Thursday."), "{}", said[0]);
+}

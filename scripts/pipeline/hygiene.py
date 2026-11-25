@@ -829,7 +829,7 @@ def _is_own(path, own):
 
 
 def evict(ctx, dispatch=None, need_g=None, max_trees=None, own_tree=None,
-          live_runs=None, notes=None, reserve_g=None, own_target=None):
+          live_runs=None, notes=None, reserve_g=None, own_target=None, own_last=None):
     """LRU-evict warm targets while free < reserve + need or trees > max.
 
     `own_target` is the target the run will build into (a lane's
@@ -837,6 +837,8 @@ def evict(ctx, dispatch=None, need_g=None, max_trees=None, own_tree=None,
     evicted -- wiping it is the runner's call, on MECLAW_LANE_WIPE_OK only.
     Nor is a neighbour slot's target while its build path lock is held: a
     check without the gate lock would wipe it under a running gate (#1140).
+    `own_last` (G, None = off) is the cold need of the run beyond the reserve:
+    the own target goes last only when that stays covered (`_evict_own_last`).
     """
     notes = notes if notes is not None else []
     s = settings(dispatch, reserve_g=reserve_g, expected_g=need_g,
@@ -847,10 +849,17 @@ def evict(ctx, dispatch=None, need_g=None, max_trees=None, own_tree=None,
         ctx.diag("legacy gate lock held: evict skipped")
         return 0
     want = s["reserve_g"] + s["expected_g"]
+    n = 0
+    # Rank before age (GH #1520, d54s lanekit): worktree copies of merged
+    # strands cost a checkout, never a build -- they go first.
+    if ctx.free_g(ctx.root) < want:
+        n += len(wt_prune(ctx, keep_paths=s["own"]))
     targets = warm_targets(ctx)
     warm = len(targets)
-    n = 0
-    for path in sorted(targets, key=_target_used_at):
+    main = os.path.join(ctx.root, "target")
+    # ... and the lane's main target/ last: it is the warmest cache (the next
+    # gate's), an mtime alone took it first (d59-2 build01: 95.9 G, wt kept).
+    for path in sorted(targets, key=lambda p: (p == main, _target_used_at(p))):
         if ctx.free_g(ctx.root) >= want and warm <= s["max_trees"]:
             break
         if _is_own(path, s["own"]):
@@ -872,7 +881,114 @@ def evict(ctx, dispatch=None, need_g=None, max_trees=None, own_tree=None,
         _ws_changed(ctx, "target", path, "warm", "evicted", nbytes)
         warm -= 1
         n += 1
+    if own_last is not None and own_target:
+        n += _evict_own_last(ctx, s, own_target, want, notes, own_last)
     return n
+
+
+def _evict_own_last(ctx, s, own_target, want, notes, cold_g):
+    """w1 leaseklar (#1620, OR-W1-93): the run's own warm target, after every other
+    one, when free + its size reach the COLD need: reserve + `cold_g` (the cold
+    build, its aux and the live runs, never below `want`) -- without it the run
+    builds cold, and a warm need (growth 15 G) let it tear the reserve (fix round 1).
+    Kept, the check ended "short" and the executor aborted with "only N G free" --
+    9 times cleared by hand. Falls it short even so, it stays: the run aborts as
+    before, warm."""
+    free = ctx.free_g(ctx.root)
+    if free >= want or not os.path.isdir(own_target):
+        return 0
+    want = max(want, s["reserve_g"] + float(cold_g))
+    if s["live_runs"] and _is_main_pass(ctx, own_target):
+        notes.append("main-pass-protected %s" % _rel(ctx, own_target))
+        return 0
+    nbytes = _sidecar_bytes(own_target)
+    if nbytes is None:
+        nbytes = tree_bytes(own_target)
+    if free + nbytes / GIB < want:
+        notes.append("own-target-kept %s %.1f G: free %.1f G + it < %.0f G"
+                     % (_rel(ctx, own_target), nbytes / GIB, free, want))
+        return 0
+    fd = _take_build_path_lock(own_target)
+    if fd is None:
+        notes.append("busy-slot-protected %s" % _rel(ctx, own_target))
+        return 0
+    try:
+        _remove(ctx, own_target)
+    finally:
+        os.close(fd)
+    _ws_changed(ctx, "target", own_target, "warm", "evicted", nbytes)
+    notes.append("own-target-evicted %s %.1f G" % (_rel(ctx, own_target), nbytes / GIB))
+    return 1
+
+
+# --------------------------------------------------------------------------
+# wt-prune: worktree copies of merged or closed strands (GH #1520)
+# --------------------------------------------------------------------------
+
+def _bare_git(ctx, *args):
+    """`git --git-dir=<root>/meclaw.git <args>` -> (rc, out)."""
+    rc, out, _err = ctx.run(["git", "--git-dir=" + os.path.join(ctx.root, "meclaw.git")]
+                            + list(args))
+    return rc, out or ""
+
+
+def _lane_ref_names(ctx):
+    """Names `n` of the refs `refs/heads/lane/<n>` of the lane's bare repo."""
+    rc, out = _bare_git(ctx, "for-each-ref", "--format=%(refname)", "refs/heads/lane/")
+    if rc != 0:
+        return []
+    pre = "refs/heads/lane/"
+    return sorted(ln[len(pre):] for ln in out.split() if ln.startswith(pre))
+
+
+def wt_prune(ctx, done=(), merged_into="master", keep=(), keep_paths=()):
+    """Remove `wt/<name>` and `refs/heads/lane/<name>` of every strand that is
+    merged (its lane ref is a strict ancestor of `merged_into` in the bare repo) or
+    closed (named in `done` by the caller, who knows the pipeline store).
+
+    Never a name in `keep` (a lease the caller sees), never a tree whose
+    `wt/<name>.lock` is held (a running pass), never one inside `keep_paths`
+    (the run's own tree), never a target or cache: only `wt/`. A pruned tree
+    a later pass needs again is checked out anew (lane.push). Dry-run lists
+    the same rows and removes nothing. Returns `[{name, path, bytes, why}]`."""
+    refs = _lane_ref_names(ctx)
+    names = sorted(set(refs) | set(done or ()))
+    # A ref at master's own commit holds nothing of its own: a fresh strand,
+    # not a merged one -- `strand.sh merge` merges --no-ff, so a merged strand
+    # is a strict ancestor (d54s kit F1: a fresh tree went under disk pressure).
+    tip = _bare_git(ctx, "rev-parse", "--verify", "--quiet",
+                    "refs/heads/" + merged_into)[1].strip() if merged_into else ""
+    out = []
+    for name in names:
+        if name in (keep or ()) or not name or ".." in name.split("/"):
+            continue
+        path = os.path.join(ctx.root, "wt", name)
+        if keep_paths and _is_own(path, keep_paths):
+            continue
+        if lock_held(path + ".lock"):
+            continue
+        if name in (done or ()):
+            why = "closed"
+        elif name in refs and tip and _bare_git(
+                ctx, "rev-parse", "refs/heads/lane/" + name)[1].strip() != tip and _bare_git(
+                ctx, "merge-base", "--is-ancestor", "refs/heads/lane/" + name,
+                "refs/heads/" + merged_into)[0] == 0:
+            why = "merged"
+        else:
+            continue
+        has_tree = os.path.isdir(path)
+        if not has_tree and name not in refs:
+            continue
+        nbytes = tree_bytes(path) if has_tree else 0
+        out.append({"name": name, "path": path, "bytes": nbytes, "why": why})
+        if has_tree:
+            _remove(ctx, path)
+            _ws_changed(ctx, "tree", path, "warm", "collected", nbytes, why=why)
+        if not ctx.dry_run and name in refs:
+            _bare_git(ctx, "update-ref", "-d", "refs/heads/lane/" + name)
+    if out and not ctx.dry_run:
+        _bare_git(ctx, "worktree", "prune")
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -1063,7 +1179,7 @@ def _read_state(ctx):
 
 
 def check(ctx, dispatch=None, reserve_g=None, expected_g=None, own_tree=None,
-          live_runs=None, local=False, own_target=None, abort_below_g=None):
+          live_runs=None, local=False, own_target=None, abort_below_g=None, own_last=None):
     """Precheck. Emits workspace_changed per change and one hygiene_checked.
 
     Returns the hygiene_checked data dict; `data["verdict"] == "aborted"`
@@ -1172,7 +1288,7 @@ def check(ctx, dispatch=None, reserve_g=None, expected_g=None, own_tree=None,
                 changes += evict(ctx, dispatch, need_g=s["expected_g"],
                                  reserve_g=s["reserve_g"],
                                  own_tree=own_tree, live_runs=live_runs,
-                                 notes=notes, own_target=own_target)
+                                 notes=notes, own_target=own_target, own_last=own_last)
                 free = ctx.free_g(ctx.root)
         if abort_below_g is not None:
             if free < abort_below_g:
@@ -1878,6 +1994,9 @@ def _build(sp):
     p.add_argument("--own-tree")
     p.add_argument("--own-target")
     p.add_argument("--abort-below-g", type=float)
+    p.add_argument("--own-last", type=float, metavar="COLD_G",
+                   help="the own target goes last when free + it reach reserve + COLD_G "
+                        "(the cold need beyond the reserve)")
     p.add_argument("--live-run", nargs="+", action="extend")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--runner")
@@ -1894,6 +2013,16 @@ def _build(sp):
     _add_root(p)
     p.add_argument("--need-g", type=float)
     p.add_argument("--max-trees", type=int)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--runner")
+
+    p = sp.add_parser("wt-prune", help="remove wt/ copies and lane refs of merged or closed strands")
+    _add_root(p)
+    p.add_argument("--done", nargs="+", action="extend", default=[],
+                   help="closed strands (tree names) to prune as well")
+    p.add_argument("--keep", nargs="+", action="extend", default=[],
+                   help="tree names a lease holds: never pruned")
+    p.add_argument("--merged-into", default="master")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--runner")
 
@@ -1973,7 +2102,7 @@ def dispatch_args(args, ctx=None):
                      expected_g=args.expected_g, own_tree=args.own_tree,
                      live_runs=args.live_run, local=args.local,
                      own_target=args.own_target,
-                     abort_below_g=args.abort_below_g)
+                     abort_below_g=args.abort_below_g, own_last=args.own_last)
         return 2 if data["verdict"] == "aborted" else 0
     if cmd == "collect":
         notes = []
@@ -1996,6 +2125,18 @@ def dispatch_args(args, ctx=None):
               notes=notes)
         for n in notes:
             ctx.diag("NOTE " + n)
+        return 0
+    if cmd == "wt-prune":
+        if legacy_lock_held(ctx):
+            ctx.diag("NOTE legacy-run: wt-prune skipped")
+            return 0
+        stream = ctx.out or sys.stdout
+        rows = wt_prune(ctx, done=args.done, merged_into=args.merged_into, keep=args.keep)
+        for row in rows:
+            stream.write(json.dumps(dict(row, dry_run=ctx.dry_run), sort_keys=True) + "\n")
+        stream.flush()
+        ctx.diag("wt-prune: %d tree(s), %.2f G%s" % (len(rows), _g(sum(r["bytes"] for r in rows)),
+                                                    " (dry-run)" if ctx.dry_run else ""))
         return 0
     if cmd == "generations":
         for r in generations(ctx, target=args.target,

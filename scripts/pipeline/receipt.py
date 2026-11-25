@@ -170,6 +170,8 @@ def project(rows, ledgers=()):
             doc.update(verdict=data["verdict"], finished=at, secs=data["secs"],
                        lane_seconds=data["lane_seconds"],
                        critical_path_s=data["critical_path_s"])
+            if data.get("stopped"):   # w1 fruehrot (#1607): a strand stopped at its first red
+                doc["stopped"] = data["stopped"]
             hits = data["cache_hits"]
         elif event == "process_finding" and data.get("rule") == _events.STORE_LOST_RULE:
             lost = True
@@ -279,8 +281,11 @@ def gate_lines(doc):
         elif st["verdict"] in ("RED", "FLAKY") or st.get("in_total"):
             total += 1
     rev = str(doc.get("rev") or "")[:7]
+    stopped = doc.get("stopped") or {}
+    tail = (f" -- stopped at {stopped.get('station')} after {_secs(stopped.get('after_s'))} s"
+            if stopped.get("station") else "")
     lines.append(f"GATE-SUMMARY {doc['mode']} {rev} {green}/{total} "
-                 f"{_secs(doc.get('secs'))}s {doc['verdict']}")
+                 f"{_secs(doc.get('secs'))}s {doc['verdict']}{tail}")
     return lines
 
 

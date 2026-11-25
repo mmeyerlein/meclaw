@@ -544,7 +544,11 @@ const TEMPLATE_REFERENCES_IN_THE_FIVE: usize = 12;
 /// Moved 112 -> 115 with d54g (GH #1564, the end of the route wait): every
 /// `collector` grew the cell `clock` (3 x 1). Measured in the strand's gate
 /// on build03.
-const TEMPLATE_BORN_ROWS: usize = 115;
+///
+/// Moved 115 -> 113 with d54s (GH #1584, the early answer is gone): every
+/// `talky` lost the cell `quick_spec` (2 x 1). Measured in the strand's
+/// full run (113 against 115).
+const TEMPLATE_BORN_ROWS: usize = 113;
 
 /// Distinct `registry.template` values across those rows. Fewer than the
 /// eleven references above, because three scopes instantiate the same
@@ -1089,7 +1093,30 @@ const REFERENCED_SUB_UNITS: [&str; 5] = [
 /// `./assemble -> ./clock`, the strike `./clock -> ./assemble` and the
 /// clock's error answer `./clock -> ./assemble`), and three collectors are
 /// instantiated (two talkies, one cogny): +9 = 3 x 3.
-const EDGES: usize = 769;
+///
+/// Moved 769 -> 730 with d54s (GH #1584, the early answer is gone): every
+/// `talky` lost twelve edges (`./quick_spec` and its lanes, the curator's
+/// `partial` exit, talky 154 -> 142; 2 x 12) and every `curator` five (the
+/// lanes `in_spec_llm`, `in_spec_partial`, `spec_release`, `spec_tap`,
+/// `partial`; 3 x 5): -39. Measured in the strand's run (730 against 769).
+///
+/// Moved 730 -> 735 with d54s abbruch (GH #1587, the cancel of a superseded
+/// delegation): every `curator` one edge more (the door `. -> ./policy` on
+/// `in_delegation_cancel`; 3 x 1) and every `talky` one more (`. ->
+/// ./curator` on the same lane, talky 142 -> 143; 2 x 1): +5. Measured in the
+/// route stack's run (735 against 730).
+///
+/// Moved 735 -> 737 with w1 fehlerwort (GH #1619, the one sentence of a
+/// failed model call): every `talky` one edge more (`./errors -> .` on
+/// `answer`, talky 143 -> 144; 2 x 1): +2. Measured in the strand's run (737
+/// against 735).
+///
+/// Moved 737 -> 889 with w2 tuerskript (GH #1353, the params doors of the
+/// sealed levels, written by `scripts/hive_doors.py` and by nothing else): per
+/// sealed level one door edge per overlay cell and inner seal and the way back
+/// of their answers -- every `talky` 26 (144 -> 170). Measured in
+/// the strand's run (889 against 737).
+const EDGES: usize = 889;
 
 /// Cells that were on disk before the first declaration — the three seeds' own
 /// cells (`hard-shell`'s `probe`, `never-forgets`'s `replay`,

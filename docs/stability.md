@@ -50,11 +50,16 @@ slow a producer sets the `colony.json` `mailbox_overflow_*` caps lower. The new 
 brings, `mailbox_full`, is additive like any other. So is `sender_out_of_scope` (GH #1231), the
 mutation refusal of a sender without an edge to `/colony/mutations` whose scope lies outside its own
 hive; the behaviour behind it is the breaking part, named in the changelog. A required lane is the
-third kind: since `freeswitch@3.1.7` the telephone channel ships no access of its own and its
+third kind: since `freeswitch@3.2.0` the telephone channel ships no access of its own and its
 `in_sealed` lane is required, so a line grown by hand draws the two credential lanes to the member's
 access and seeds the three grants there (`templates/freeswitch/README.md` § *Wiring it into a
 member*), or grows through the builder recipe, which does both. meclaw
 has no deprecation period and no compatibility flag, so the release note is where you find out.
+
+The road of a params-only update into sealed hives (GH #1353) is additive: the lane `in_params` with
+`params_applied` and `params_refused` on every current shipped hive that holds a cell with a params
+overlay (a frozen version beside it has none), `params_receipt` on `operator`, and the submission code
+`params_push_form` ([overview](meclaw-overview.md), Params into a sealed hive).
 
 Nothing under `crates/` carries a SemVer guarantee. The Rust crates are internals and move
 without notice, which is why the binary and the HTTP API are the interface this file talks about.

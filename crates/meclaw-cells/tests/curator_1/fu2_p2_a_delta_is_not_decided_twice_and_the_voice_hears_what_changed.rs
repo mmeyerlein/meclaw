@@ -1,19 +1,16 @@
-//! #1279 -- the voice hears what changed, a delta's stamp is
-//! not decided twice, and a failed tool is never spoken by the quick voice.
+//! #1279 -- the voice hears what changed, and a failed tool is never spoken
+//! by the quick voice.
 //!
 //! WHY this file exists: a running session (its handle `live`, D58 live)
 //! runs on a provider session with its
 //! own context; after each closed turn the curator tells the voice cell, as
 //! ONE `live_feed` section (way `renew`), only the facts that changed since
 //! the last one -- nothing when nothing changed, nothing for a text turn.
-//! A voice turn is stamped while the person still speaks (`in_delta_stamp`):
-//! when the final text is the delta's text, the turn's spec curate IS its
-//! normal curate under the delta's stamp and the later normal curate makes
-//! no second call; another text fires anew as in #1275. And a tool result
-//! whose structure says it failed (its header code, named by the collector's
-//! `tool_errors` slot of the curate, or an error object as its text) gives
-//! the round to the brain with the note "tool not reachable" -- the quick
-//! voice never speaks the raw error.
+//! And a tool result whose structure says it failed (its header code, named
+//! by the collector's `tool_errors` slot of the curate, or an error object as
+//! its text) gives the round to the brain with the note "tool not reachable"
+//! -- the quick voice never speaks the raw error. (The delta's spec curate of
+//! before left with the speculation, d54s specaus GH #1584.)
 
 // harness_fold: #[path = "support/curator_hive.rs"]
 #[allow(unused_imports)]
@@ -202,148 +199,6 @@ fn live_feed_sends_one_fact_section_after_duplex_turn() {
     assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
 }
 
-fn delta_hive() -> Hive {
-    let mut h = Hive::with(&[
-        ("lead", "spec_ahead", json!("1")),
-        ("lead", "spec_tools", json!("")),
-        ("lead", "delta_speculation", json!("1")),
-    ])
-    .reporting_composite("talky");
-    h.check_emits = true;
-    h
-}
-
-fn delta_stamp(h: &mut Hive, turn: &str, text_norm: &str) {
-    h.out.clear();
-    h.lane(
-        "in_delta_stamp",
-        json!({"session_id": "s1", "turn_id": turn, "delta": "1"}),
-        json!({"turn_id": turn, "path": "simple"}),
-        json!({"messages": [], "stamp": {"turn_id": turn, "path": "simple", "p": 0.9,
-                                         "intent": "", "needs": [], "families": ["web"],
-                                         "duration": 5, "text_norm": text_norm}}),
-    );
-}
-
-fn spec_curate(h: &mut Hive, turn: &str, ask: &str) {
-    seam(h, turn, "", ask, json!({"spec": "1"}));
-}
-
-#[test]
-fn delta_result_reused_when_final_text_equal() {
-    if !shipped() {
-        return;
-    }
-    let mut h = delta_hive();
-    delta_stamp(&mut h, "t1", "what is the weather in berlin");
-    assert_eq!(keys_like(&h, "delta:").len(), 1, "the delta is kept");
-
-    // The spec curate's final text normalises to the delta's: the turn's call.
-    spec_curate(&mut h, "t1", ASK);
-    let quick = h.routed("quick");
-    assert_eq!(quick.len(), 1, "{:?} {:?}", h.out, h.stderr);
-    assert!(
-        !quick[0].hop.contains_key("spec"),
-        "a normal call: {:?}",
-        quick[0].hop
-    );
-    assert_eq!(quick[0].hop["path"], json!("simple"));
-    assert_eq!(quick[0].hop["families"], json!("web"));
-    let m = marks(&h, "delta");
-    assert_eq!(m.len(), 1, "{m:?}");
-    assert_eq!(m[0]["verdict"], json!("reused"));
-    assert_eq!(m[0]["turn_id"], json!("t1"));
-
-    // The normal curate of the turn parks: no second call.
-    seam(&mut h, "t1", "simple", ASK, json!({}));
-    assert!(
-        h.routed("quick").is_empty() && h.routed("brain").is_empty(),
-        "no second call: {:?}",
-        h.out
-    );
-    assert!(
-        keys_like(&h, "spec:").is_empty(),
-        "{:?}",
-        keys_like(&h, "spec:")
-    );
-    assert!(
-        keys_like(&h, "delta").is_empty(),
-        "{:?}",
-        keys_like(&h, "delta")
-    );
-    assert!(h.emit_violations.is_empty(), "{:?}", h.emit_violations);
-}
-
-/// D54g listennote (GH #1538, review M2): a reused delta's call carries the
-/// delta stamp's choices on `hop.choices` like its move (#1506) -- the JSON
-/// text the collector puts on the seam, keys sorted.
-#[test]
-fn delta_result_reused_carries_the_stamps_choices() {
-    if !shipped() {
-        return;
-    }
-    let mut h = delta_hive();
-    let choices = json!({"risk": {"value": "strained", "p": 0.9, "source": "model"},
-                         "depth": {"value": "important", "p": 0.9, "source": "model"}});
-    h.out.clear();
-    h.lane(
-        "in_delta_stamp",
-        json!({"session_id": "s1", "turn_id": "t1", "delta": "1"}),
-        json!({"turn_id": "t1", "path": "simple"}),
-        json!({"messages": [], "stamp": {"turn_id": "t1", "path": "simple", "p": 0.9,
-                                         "intent": "", "needs": [], "families": ["web"],
-                                         "duration": 5, "choices": choices,
-                                         "text_norm": "what is the weather in berlin"}}),
-    );
-    spec_curate(&mut h, "t1", ASK);
-    let quick = h.routed("quick");
-    assert_eq!(quick.len(), 1, "{:?} {:?}", h.out, h.stderr);
-    let carried = quick[0]
-        .hop
-        .get("choices")
-        .and_then(Value::as_str)
-        .map(|t| sj::from_str::<Value>(t).expect("the choices are JSON text"));
-    assert_eq!(
-        carried,
-        Some(choices),
-        "the reused call carries the delta's choices: {:?}",
-        quick[0].hop
-    );
-    assert_eq!(marks(&h, "delta")[0]["verdict"], json!("reused"));
-}
-
-#[test]
-fn delta_result_refired_when_text_differs() {
-    if !shipped() {
-        return;
-    }
-    let mut h = delta_hive();
-    delta_stamp(&mut h, "t1", "what is the weather");
-    spec_curate(&mut h, "t1", ASK);
-    let quick = h.routed("quick");
-    assert_eq!(quick.len(), 1, "{:?} {:?}", h.out, h.stderr);
-    assert_eq!(
-        quick[0].hop["spec"],
-        json!("1"),
-        "#1275 as before: {:?}",
-        quick[0].hop
-    );
-    let m = marks(&h, "delta");
-    assert_eq!(m.len(), 1, "{m:?}");
-    assert_eq!(m[0]["verdict"], json!("refired"));
-    assert!(
-        keys_like(&h, "delta:").is_empty(),
-        "the delta went with its turn"
-    );
-
-    // Without a delta: #1275 unchanged, no mark.
-    spec_curate(&mut h, "t2", ASK);
-    let quick = h.routed("quick");
-    assert_eq!(quick.len(), 1);
-    assert_eq!(quick[0].hop["spec"], json!("1"));
-    assert_eq!(marks(&h, "delta").len(), 1, "no mark without a delta");
-}
-
 /// One quick round with a tool result: the curate of iteration 1 carries the
 /// result `text` and, when given, the collector's `tool_errors` slot. Returns
 /// the hive after it.
@@ -421,34 +276,21 @@ fn fu2_p2_defaults_byte_identical() {
     if !shipped() {
         return;
     }
-    // `delta_speculation` lives in the lead since GH #1447, in the lead hive
-    // (`templates/lead`) since GH #1474.
+    // d54s specaus (GH #1584): `delta_speculation` is gone with the
+    // speculation it fed.
     for (cell, k, v) in [
         ("policy", "live_feed", json!("0")),
         ("policy", "live_feed_section", json!("renew")),
-        ("lead", "delta_speculation", json!("0")),
     ] {
-        let config = if cell == "lead" {
-            lead_config(cell)
-        } else {
-            cell_config(cell)
-        };
+        let config = cell_config(cell);
         assert_eq!(config["params"][k], v, "{k}");
         assert_eq!(config["contract"]["settings"][k]["default"], v, "{k}");
     }
-    // A run with duplex turns and a delta stamp: the same calls with the knobs
-    // shipped and with the knobs absent, and nothing of P2 in the ledger.
+    // A run with duplex turns: the same calls with the knobs shipped and with
+    // the knobs absent, and nothing of P2 in the ledger.
     let run = |over: &[(&str, &str, Value)]| {
         let mut h = Hive::with(over).reporting_composite("talky");
         let mut seen = Vec::new();
-        delta_stamp(&mut h, "t1", "and then");
-        assert!(
-            h.stderr
-                .iter()
-                .any(|l| l.contains("delta_speculation is off")),
-            "parked: {:?}",
-            h.stderr
-        );
         for (turn, path) in [("t1", "talk"), ("t2", "simple"), ("t3", "")] {
             seam(&mut h, turn, path, "and then?", duplex());
             for m in &h.out {
@@ -469,23 +311,20 @@ fn fu2_p2_defaults_byte_identical() {
         assert!(marks(&h, "delta").is_empty());
         seen
     };
-    let shipped_run = run(&[("lead", "spec_ahead", json!("1"))]);
+    let shipped_run = run(&[]);
     let absent_run = run(&[
-        ("lead", "spec_ahead", json!("1")),
         ("policy", "live_feed", Value::Null),
         ("policy", "live_feed_section", Value::Null),
-        ("lead", "delta_speculation", Value::Null),
     ]);
     assert_eq!(shipped_run, absent_run);
 }
 
-/// live-2 #1370: the set writes `live_feed`, `delta_speculation` (and
-/// `spec_ahead`) as JSON `true` (soul2me 0.45 `04-assistant.json`);
-/// `str(True)` is "True", so the feed and the delta stayed off without a word.
+/// live-2 #1370: the set writes `live_feed` as JSON `true` (soul2me 0.45 `04-assistant.json`);
+/// `str(True)` is "True", so the feed stayed off without a word.
 /// One rule for every switch of the wave, the presenter's `knob()`: JSON true,
 /// "1", "true" or "on" is on.
 #[test]
-fn live_feed_and_delta_switches_read_json_true() {
+fn live_feed_switch_reads_json_true() {
     if !shipped() {
         return;
     }
@@ -500,23 +339,6 @@ fn live_feed_and_delta_switches_read_json_true() {
         h.out,
         h.stderr
     );
-
-    let mut h = Hive::with(&[
-        ("lead", "spec_ahead", json!(true)),
-        ("lead", "spec_tools", json!("")),
-        ("lead", "delta_speculation", json!(true)),
-    ])
-    .reporting_composite("talky");
-    delta_stamp(&mut h, "t1", "what is the weather in berlin");
-    assert_eq!(
-        keys_like(&h, "delta:").len(),
-        1,
-        "true is on: the delta is kept"
-    );
-    spec_curate(&mut h, "t1", ASK);
-    let m = marks(&h, "delta");
-    assert_eq!(m.len(), 1, "{m:?}");
-    assert_eq!(m[0]["verdict"], json!("reused"));
 }
 
 /// live-2 #1370 (K5): only the way `renew` is built for the param

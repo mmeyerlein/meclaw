@@ -265,23 +265,20 @@ class TestScenarioStations(LabCase):
         self.assertIn("the port register has %d slots" % ports.SLOT_COUNT, log)
         self.assertNotIn("the port register has 2", log)
 
-    def test_recall_and_persona_stations_pass_booked_width(self):
+    def test_the_recall_station_passes_booked_width(self):
         """Stations that book no colony get no slots -- a value left in the lane's
         environment never reaches them -- and run at their booked thread."""
-        for name in ("recall-harness", "persona-receipt"):
+        for name in ("recall-harness",):
             self.assertNotIn(name, pl.NEEDS)          # one thread, no colony
-        d = self.dispatch([self.lab_station("recall-harness", 0),
-                           self.lab_station("persona-receipt", 0)])
+        d = self.dispatch([self.lab_station("recall-harness", 0)])
         d["+env"][SLOTS] = "0,1,2,3,4,5,6,7"
         rc, evs = self.run_exec(d)
         self.assertEqual(0, rc, self.err_text)
         got = self.lab_lines()
         self.assertEqual(("", "1"), got["recall-harness"])
-        self.assertEqual(("", "1"), got["persona-receipt"])
         st = by_name(gp.plan(["templates/memory-hive/embed/config.json"], "integration",
                              repo=None))
-        for name in ("recall-harness", "persona-receipt"):
-            self.assertIsNone(st[name].parallel, name)
+        self.assertIsNone(st["recall-harness"].parallel)
 
     def test_display_scenarios_run_with_booked_workers(self):
         """`scenarios:display` books four threads; its runner forks that many workers

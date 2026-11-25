@@ -26,8 +26,9 @@ pub const LEAD_TEMPLATE: &str = "templates/lead";
 /// The two cells of the switch inside its hive: the lead and its store.
 pub const LEAD_HIVE_CELLS: [&str; 2] = ["lead", "state"];
 
-/// The three lanes from the curator to the lead.
-pub const TO_LEAD: [&str; 3] = ["lead_ask", "lead_spec", "lead_note"];
+/// The two lanes from the curator to the lead (the speculation's
+/// `lead_spec` left with it, d54s specaus GH #1584).
+pub const TO_LEAD: [&str; 2] = ["lead_ask", "lead_note"];
 
 /// The lane the lead's verdict comes home on.
 pub const FROM_LEAD: &str = "in_lead";
@@ -38,32 +39,21 @@ pub const ORDERS_FROM_LEAD: &str = "in_feed";
 
 /// The knobs that make the choice of a model: they live in the lead and in
 /// no cell of the curator.
-pub const CHOICE_KNOBS: [&str; 15] = [
+pub const CHOICE_KNOBS: [&str; 10] = [
     "path_routes",
     "departures",
     "fallback",
-    "spec_target",
     "bridge_target",
     "errand_family",
     "recall_to_fallback",
     "fast_max_iter",
-    "spec_ahead",
-    "spec_tools",
-    "spec_called_turns",
     "ask_pending_ms",
-    "delta_speculation",
     "interrupt_on_delta",
     "interrupt_questions",
 ];
 
 /// The knobs that name a target or an errand class: shipped empty.
-pub const TARGET_KNOBS: [&str; 5] = [
-    "path_routes",
-    "departures",
-    "fallback",
-    "spec_target",
-    "bridge_target",
-];
+pub const TARGET_KNOBS: [&str; 4] = ["path_routes", "departures", "fallback", "bridge_target"];
 
 /// The config of a cell of the lead hive (`lead` or `state`).
 pub fn lead_hive_cell(name: &str) -> Value {
@@ -159,7 +149,7 @@ pub const ACK_EVENT_TURN: &str = "voice-turn-1~4102444800000~ab12cd34";
 
 /// The keys of a verdict as the lead gives it before this strand: with
 /// fresh knobs it gains none (contract point 8).
-pub const ACK_VERDICT_KEYS: [&str; 16] = [
+pub const ACK_VERDICT_KEYS: [&str; 13] = [
     "deny",
     "departs",
     "escalate",
@@ -171,9 +161,6 @@ pub const ACK_VERDICT_KEYS: [&str; 16] = [
     "reason",
     "side",
     "speak_check",
-    "spec",
-    "spec_held",
-    "spec_row",
     "target",
     "wait",
 ];
@@ -234,11 +221,11 @@ pub fn ack_knobs(extra: Value) -> Value {
 }
 
 /// The head of a call's question to the lead: a first iteration, no handle,
-/// no speculation, no event; `extra` on top.
+/// no event; `extra` on top.
 pub fn ack_head(extra: Value) -> Value {
     let mut h = json!({"channel": "test", "live": "", "session": "s1", "turn": "t1",
                        "call": "c-t1", "iter": "0", "ask_id": "", "ask_class": "",
-                       "spec": "", "escalate": "", "at": "2026-11-12T10:00:00.000000Z"});
+                       "escalate": "", "at": "2026-11-12T10:00:00.000000Z"});
     for (k, v) in obj(extra) {
         h[k.as_str()] = v;
     }
@@ -259,7 +246,7 @@ pub fn ack_verdict(knobs: Value, stamp: Value, head: Value) -> Value {
         knobs,
         "lead_verdict(ARGS[0], ARGS[1], ARGS[2])",
         json!([stamp, head,
-               {"escalated": "", "ask_pending": {}, "spec": {}, "spec_held": {}}]),
+               {"escalated": "", "ask_pending": {}}]),
     );
     assert!(v.is_object(), "a verdict: {v} {err}");
     v

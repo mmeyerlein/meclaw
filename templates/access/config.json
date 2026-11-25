@@ -19,6 +19,10 @@
             "requester"
           ],
           "because": "spend a grant: perform one operation the broker already said yes to; same promotion, because a grant belongs to somebody"
+        },
+        {
+          "route": "in_params",
+          "because": "a params-only update for one cell of this hive or of a sealed hive in it (GH #1353): `hop.subscriber` is the cell's absolute path, the body carries `params` and nothing else. The inner edges carry it to that cell by the end of the path; a cell of another path applies nothing. Answered by exactly one `params_applied` or `params_refused`. Draw it only from the operator's road"
         }
       ],
       "emits": [
@@ -37,6 +41,14 @@
         {
           "route": "error",
           "because": "a lane failed; which cell inside produced it is not the caller's business, and a parent that drains nothing loses every refusal"
+        },
+        {
+          "route": "params_applied",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update merged it into its live params (GH #1353)"
+        },
+        {
+          "route": "params_refused",
+          "because": "the cell named by `hop.subscriber` of an `in_params` update refused it whole: `hop.refused_subscriber` is its path, `hop.error_code` the code and the body the detail (GH #1353)"
         }
       ]
     },
@@ -193,6 +205,80 @@
           "to": ".",
           "condition": "has(hop.route) && hop.route == 'error'",
           "modifier": {
+            "delete_context": [
+              "access_origin",
+              "access_lane",
+              "ac_phase",
+              "ac_carry"
+            ]
+          }
+        },
+        {
+          "from": ".",
+          "to": "./clock",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/clock')"
+        },
+        {
+          "from": ".",
+          "to": "./store",
+          "condition": "has(hop.route) && hop.route == 'in_params' && has(hop.subscriber) && hop.subscriber.endsWith('/store')"
+        },
+        {
+          "from": "./clock",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "access_origin",
+              "access_lane",
+              "ac_phase",
+              "ac_carry"
+            ]
+          }
+        },
+        {
+          "from": "./clock",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
+            "delete_context": [
+              "access_origin",
+              "access_lane",
+              "ac_phase",
+              "ac_carry"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_applied'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_applied'"
+            },
+            "delete_context": [
+              "access_origin",
+              "access_lane",
+              "ac_phase",
+              "ac_carry"
+            ]
+          }
+        },
+        {
+          "from": "./store",
+          "to": ".",
+          "condition": "has(hop.params_answer) && hop.params_answer == 'params_refused'",
+          "modifier": {
+            "set_hop": {
+              "route": "'params_refused'"
+            },
             "delete_context": [
               "access_origin",
               "access_lane",

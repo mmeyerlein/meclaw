@@ -9,6 +9,7 @@ pub mod curator_errand;
 pub mod curator_hive;
 #[path = "../support/curator_profiles.rs"]
 pub mod curator_profiles;
+pub mod gh1619_a_failed_model_call_says_one_sentence;
 pub mod gh_d54g_b3err_a_failed_bridge_call_reaches_errors;
 pub mod gh_d58_errand_a_failed_errand_leaves_its_outcome_in_the_window;
 pub mod gh_d58_errand_a_late_answer_still_arrives;

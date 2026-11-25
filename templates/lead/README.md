@@ -1,30 +1,29 @@
-# `lead@2.0.0`
+# `lead@3.0.0`
 
 The switch of a composite that chooses between targets, as a hive of its own (GH #1474, R-58-9 Nr. 5). For each call of
 the curator beside it the lead names the way the call leaves on, its target, the target it falls back to, whether it
-leaves the composite as an errand and what the window is built on; it keeps the turn's speculation, the pending errand
+leaves the composite as an errand; it keeps the pending errand
 and the turn the quick voice gave up in its own store, and decides and orders the early interrupt of a delta stamp. Until GH #1474
 the two cells sat inside the curator (`curator/lead`, `curator/lead_state`, GH #1447), so every composite with a curator
 carried a model choice; now the curator holds none, and a composite without a choice (cogny, simple-agent) runs its
 curator without a lead and names its target at the curate (`hop.target`).
 
 The lead names no target by itself. Every target and errand class is a knob of the composite (`path_routes`,
-`departures`, `fallback`, `spec_target`, `bridge_target`), shipped empty: without a path, with an unknown one or with
+`departures`, `fallback`, `bridge_target`), shipped empty: without a path, with an unknown one or with
 `path_routes` empty the verdict's `target` stays empty and the curator takes the curate's `hop.target`.
 
 ## Lanes (into the hive path, on `hop.route`)
 
 | Lane | From | Carries |
 |---|---|---|
-| `lead_ask` | the curator's `./policy`, through the composite | the question of one call, sent in the same emission as the curator's ledger reads: `ask` the route stamp (`path`, `needs`, `families`) and the turn's head (call, turn, iteration, `spec`, the consult it answers, the scope, the folded tools, `live` -- the handle of the running session the turn belongs to, "" without one; `event` -- the kind of an event round, today only `delegation`, read off the round's structure (its event key and the `delegation_id` at the seam, never its words), absent on a turn's own round, GH #1504; `text_norm` -- the person's words of the curate, normalised as the route stamps a delta, GH #1529); with `read: "errand"` the rebuild's bundle, given back unread with the session's errand state. Answered by one `lead_verdict` |
-| `lead_spec` | the curator's `./policy`, through the composite | an event of the turn's speculation (`event`: a spec answer or partial, a stored fallback, a delta stamp, and what a spec call's window showed, `spec_go`, D58 note); a stored call carries the ledger writes that go with its sends (`go_ops`), returned with them; the lead moves its rows by compare-and-set and answers on `lead_verdict` with `spec_act`, what the move means for the curator's ledger and sends; on a delta stamp with a crisis value it orders the early interrupt on `in_feed` |
-| `lead_note` | the curator's `./policy`, through the composite | a note of what only the window saw (`note`: an escalation the wall showed, an errand the model started, a round a side call's condition held for, the end of a turn and of its round); it lands in `./state`, no answer |
+| `lead_ask` | the curator's `./policy`, through the composite | the question of one call, sent in the same emission as the curator's ledger reads: `ask` the route stamp (`path`, `needs`, `families`) and the turn's head (call, turn, iteration, the consult it answers, the scope, the folded tools, `live` -- the handle of the running session the turn belongs to, "" without one; `event` -- the kind of an event round, today only `delegation`, read off the round's structure (its event key and the `delegation_id` at the seam, never its words), absent on a turn's own round, GH #1504; `text_norm` -- the person's words of the curate, normalised as the route stamps a delta, GH #1529); with `read: "errand"` the rebuild's bundle, given back unread with the session's errand state. Answered by one `lead_verdict` |
+| `lead_note` | the curator's `./policy`, through the composite | a note of what only the window saw (`note`: an escalation the wall showed, an errand the model started, a round a side call's condition held for, the end of a turn and of its round, the delta stamp of a voice turn -- kind `delta_stamp`, on which a crisis value orders the early interrupt on `in_feed`); it lands in `./state`, no answer |
 
 ## Routes (out of the hive path, on `hop.route`)
 
 | Route | To | Carries |
 |---|---|---|
-| `lead_verdict` | the curator, as `in_lead` (the composite's edge sets the lane) | the verdict of one `lead_ask` or the act of one `lead_spec`, `hop.call` the call it answers, `hop.handle_ms` the lead's own time: `verdict`, `spec_act`, `fwd`/`errand` (the rebuild's bundle and the errand state), `again` |
+| `lead_verdict` | the curator, as `in_lead` (the composite's edge sets the lane) | the verdict of one `lead_ask`, `hop.call` the call it answers, `hop.handle_ms` the lead's own time: `verdict`, `fwd`/`errand` (the rebuild's bundle and the errand state), `again` |
 | `in_feed` | the curator's own lane `in_feed`, passed on unchanged (D58 moveout, GH #1476) | an order of the lead -- the early interrupt: `hop.section` `interrupt`, `hop.once` `interrupt`, `hop.sender` `lead`, `hop.live`, `hop.session_id`, `hop.turn_id`, `hop.audience_set`, the question as the assistant's text, `mark {delta_n}`. The curator sends it once per turn and books it (its README, "A feed on order") |
 
 The rim deletes the station keys of the lead (`cur_origin`, `cur_phase`, `cur_call`, `cur_reason`) on the way out. The
@@ -33,11 +32,11 @@ curator.
 
 ## Wiring
 
-Inside the hive (`config.json` `params.graph`): `. -> ./lead` on the three lanes, `./lead -> ./state` on `lstore`
+Inside the hive (`config.json` `params.graph`): `. -> ./lead` on the two lanes, `./lead -> ./state` on `lstore`
 (the station keys set from the hop), `./state -> ./lead` on `cur_origin` `lead`, `./lead -> .` on `lead_verdict` and
 on `in_feed` (the lead's orders, D58 moveout).
 
-A composite that wires a lead draws, beside its curator, `./curator -> ./lead` on `lead_ask`, `lead_spec` and
+A composite that wires a lead draws, beside its curator, `./curator -> ./lead` on `lead_ask` and
 `lead_note`, `./lead -> ./curator` on `lead_verdict` setting the route `in_lead` and `./lead -> ./curator` on `in_feed`
 (passed on as it is), and sets the curator's `./policy` `lead_wired` "1" -- and `feed_in` "1" when the lead orders
 (`interrupt_on_delta`): the curator takes no order on a shut lane; it sets its targets at the lead
@@ -52,13 +51,13 @@ speaks to it. Per call the curator's `./policy` sends `lead_ask` in the same emi
 reads its rows, decides `lead_verdict(stamp, head, state)` -- a pure function of its input -- and answers with the
 verdict. The curator builds the window once its ledger legs and the verdict are both in, whichever comes first; the
 call's `lead` mark carries the lead's `handle_ms`. Events only the window sees -- the quick voice gave the turn up, the
-speaking model started a consult, a speculation's answer, partial or stored fallback, a delta stamp -- come as
-`lead_note`/`lead_spec`. The lead never reads the curator's ledger or wall.
+speaking model started a consult, a delta stamp -- come as
+`lead_note`. The lead never reads the curator's ledger or wall.
 
 The verdict: `target`, `fallback`, `departs` (`{class, wait_ms}` of an errand that leaves the composite, empty
 otherwise), `side`, `reason`, `spec`, `escalate` and the target it fell `from`,
-`speak_check`, `pending`, `pending_end` (the lead's own: which consult mark its store drops), `deny`, `spec_row`,
-`spec_held`; beside it what the window is built on (`spec_raw`, `delta` -- the turn's delta stamp with the lead's word on it, `verdict` `reused`, `refired` or `""` (the spec curate's claim no longer holds: nothing to decide) and `why` (`""` or `memory`), GH #1529 --, `shown`, `spec_tools`, `spec_ahead`;
+`speak_check`, `pending`, `pending_end` (the lead's own: which consult mark its store drops), `deny` (`spec`, `spec_row`,
+`spec_held` and what the window was built on beside them went with the speculation, GH #1584;
 `interrupt_on_delta` no more since D58 moveout -- the curator reads nothing of the interrupt). Since 1.0.0 the verdict carries no `spec_allow` and no `wait_ms` of its own: neither had a
 reader, and the wait of an errand travels in `departs.wait_ms`. Nor does it carry `live` (D58 live, GH #1482): the
 question brings the handle of the running session, and the curator keeps the turn's handle itself. `listen` (GH #1504)
@@ -66,7 +65,7 @@ stands in the verdict only when it is true: the turn is only heard (`live_turn`,
 field.
 
 **The side calls (D58 moveout, GH #1476).** `side` lists the calls that go beside the main call, each
-`{when, target, window, text, fill?, first}`. The lead decides whether one goes, to which target and with which text;
+`{when, target, window, text, fill?, first, fallback?}`. The lead decides whether one goes, to which target and with which text;
 the curator only evaluates the condition and builds the window. `when` is `external` (the main call leaves the
 composite: an errand of `departures`) or `must_call` (the curator's cut gives the call its required tool round -- only
 the cut knows the tools a call has open, so the lead names the entry on a fast target's first iteration of a turn whose
@@ -77,7 +76,8 @@ alone) for the forms `tool` and `soon`, `wall` (the target's window) for `later`
 `bridge_texts` with the class's wait put in; `fill` (the tool round only) carries `bridge_places`; `first` is true on
 `must_call` -- the side call and the required call go to the same voice, one `handle()` at a time, so the sentence
 leaves first; `slot` (from `side_slot`) is the slot the text stands under when the target has reported no profile
-yet. Before the move this was the curator's bridge (`side_target`, `bridge` in the verdict, the wording in
+yet; `fallback` (from `bridge_fallback`, only when set) is the target the same side call tries once more when it ends
+in an error or its timeout. Before the move this was the curator's bridge (`side_target`, `bridge` in the verdict, the wording in
 `curator/policy`). The knob `side_when` (GH #1504) lists the conditions the lead orders a side call for; a condition it
 does not list gets no entry in `side`, and everything else of the verdict stays. A composition drops one where its
 surface shows the work itself: a turn that needed a tool got two messages in a text chat, the side call's sentence
@@ -87,7 +87,7 @@ tells no channel from another.
 **The bridge: what talky's lead makes of a side call (T4-12, GH #1248; moved here from the curator's README by D58 moveout, GH #1476).** A `consult` or `research` errand never leaves the person in silence (R-WP-4, R-TR-27): beside it `./policy` sends the quick voice -- the `target` of the verdict's `side` entry under `external`, from the lead's `bridge_target` -- ONE call on `model_call` with `hop.call_kind` `side` (the composite lifts it into `context.call_kind`, by which `./policy`, `./intake` and the collector know it) and the leaf `instructions.bridge` -- an instruction, never a fixed sentence; the model says it in its own words (R-WP-4 a). On both ways the instruction tells the voice that it is handling the request for the person right now, in its own voice, and that it never refuses the request or says it cannot do something (GH #1258): told only that a backend was working, it once denied in its own name the very request the backend was answering. For `complex` (way `consult`) it says one short bridge sentence and the answer follows in the same turn within about the class's wait (`departures`, R-WP-9); for `research` it names the waiting time (its wait in `departures`) and keeps the conversation going, and the result comes in a later turn as a round with `consult_id` that leaves on `brain`. The bridge calls no tool and carries no consult id; the errand carries its mark as `hop.consult_wait_ms` -- read by no cell, a mark for whoever reads the message log -- and the state row `ask_pending:<session>` keeps it as `wait_ms`. The bridge is a model call of its own with its own `calls` row (`trigger` `side` since D58 moveout, `bridge` before; GH #1260), so its tap books its usage. **The tool round has a bridge too (GH #1260, OR-WG-6).** A `simple` turn whose stamp needs a `tool` sends its quick call with `tool_scope.require` -- in the wave's lab the fast model called its tool in 0 of 5 turns and 7 of 10 probe calls, 10 of 10 only when the call was required, and then said nothing beside it -- so the bridge (the form `tool`, under `must_call`) says the sentence the person hears while the lookup runs, told not to answer yet. It carries `hop.round_open` "1" (`hop.interim` "1" before D58 moveout), which talky's edges lift onto `context.interim` "1" of the quick call and the dispatcher puts on its sentence: an interim answer leaves the round open for the tool result, a final one would end it at the fan-in. The bridge leaves BEFORE the required call (the entry's `first`), on the same edge: both go to the one `./quick`, a stateful `llm` cell that takes its mailbox one call at a time (`max_concurrency` is a knob of stateless cells), so the two cannot run side by side, and in this order the person hears the bridge after one model call, not two. A bridge keeps no copy of its parked turn: its errand answers the turn. Every bridge states no content: its instruction forbids facts, numbers, results and guesses (a lab bridge stated a rain forecast before any lookup); the tool round's says only that it is looking it up, the consult's that the answer is still coming, and research names its wait. The tool round's bridge also names the lookup that runs beside it: the tools its `tool_scope` allows at the ops stage (not the hint stage), a family once, in words: where each looks ("on the web and at the weather service"; a family without words for its place is never named by its tool name -- beside named ones it adds "in other places", alone the sentence names no place), and it is told to write no tool call, JSON, code or command -- told the `code` name of its tool, the fast model wrote the call out as text and made weather up beside it in a probe. And every bridge is told never to speak of missing access, missing abilities or limits and to ask nothing about the request itself (GH #1260, OR-WG-13): a lab bridge, not knowing a tool worked for it, said it had no access to weather data and asked which day, while the `weather` call ran. The tool round's one sentence asks the person nothing at all, the consult's asks nothing about the request itself, and research keeps the conversation going while it waits (R-TR-27) -- on another subject, never on the request: told only that anything else was fine, it asked in a probe what mattered to the person in the request. Its window carries no `tool_call` or `tool_result` of earlier turns; on a consult and on a tool round it is the person's turn alone -- every text of the person since the last message that is not theirs, so a request sent in two messages stays whole, and never a pin standing as a message (`broadcast_mode` tail), which the window can put behind the turn (research keeps the quick window): an earlier answer in the window is a pattern the fast model follows -- in a probe it answered a consult in the bridge itself and said tonight's degrees on a tool round, and with the person's turn alone it did neither. The curator does not see the menu of the quick model: when the channel's scope names tools that menu does not carry, the `llm` cell drops the requirement (its `WARN` line), and the answer of that round comes without its sidecar block, after the bridge's interim sentence.
 
 **The waiting time (GH #1400; moved from `curator/policy` by D58 moveout, GH #1476).** With `horizon_feed` on, a
-running session's first call of a turn (its question carries `live`; no spec curate) that leaves the composite or gets
+running session's first call of a turn (its question carries `live`) that leaves the composite or gets
 its required tool round is told how long the answer takes: the verdict's `feed` carries ONE entry `{when, section
 "horizon", body, mark}` under the side call's condition (`external` with the errand class as the way, `must_call` with
 the fast target). The body is numbers only -- `section`, `seconds` (rounded up), `way`, `family`, never words; the
@@ -116,18 +116,17 @@ again and the claim keeps it silent. An order without a handle is booked by the 
 turn's row `interrupt:<session>#<turn>` says it: the reason (`skip` `fallback:<value>`) or `at`, `delta_n` and
 `live` of the order. A row without an order (a fallback, or an order without a handle) gives way to the turn's first
 real order, which reads the row first and writes by compare-and-set; a real order's row stays. The turn's first normal
-ask (iteration 0, no spec curate) adds `turn_end_at` and `ms_before_turn_end`: how early the order went before the
+ask (iteration 0) adds `turn_end_at` and `ms_before_turn_end`: how early the order went before the
 turn's end -- the order, not the sending; whether the curator sent it (its lane open, its claim taken) is its mark
 `feed`. As many runs as before the move: policy ->
-lead -> policy -> store -> policy. Before the move the lead handed the finished feed to the curator (`spec_act` "ie"),
+lead -> policy -> store -> policy. Before the move the lead handed the finished feed to the curator,
 which claimed, sent and booked it (marks `interrupt_skipped`, `interrupt_early`).
 
 **A turn that is only heard (`live_turn`, GH #1504).** In a running session whose own model speaks, that model has
 answered the person's turn already; a target the lead named answered it a second time. With `live_turn` `listen` the
 verdict for the question of such a turn -- a handle `live`, no event round (neither an `event` nor a key of the form
 `<label>~<deadline_ms>~<hex8>`) and no `ask_id` -- names no target: `target` "", `listen: true`, `side` and
-`feed` empty, no waiting-time plan, no escalation, `reason` `listen`; a speculation of the turn still standing ends as
-at a drop (`spec` `dropped:listen`), and a speculative ask of the turn parks (`spec` `parked`). The mark of an open
+`feed` empty, no waiting-time plan, no escalation, `reason` `listen`. The mark of an open
 errand (`pending`) runs on. The curator then sends no call (its README, "A turn that is only heard"). An event round
 and the round that answers an errand are always called: a delegation or an advice would otherwise stay without an
 answer. The stamp and the early interrupt run on (the interrupt is an order on `in_feed`, not a part of the verdict).
@@ -158,10 +157,6 @@ is a broken set. A kind without an entry goes as before.
 |---|---|
 | `escalated:<session>` | the turn the quick voice gave up |
 | `ask_pending:<session>` | the pending errand (`ask_id`, `until`) |
-| `spec:`, `spec_held:`, `spec_fb:`, `spec_shown:<session>#<turn>` | the turn's speculation (#1275); `./intake` reads a copy of `spec_shown:` in the ledger |
-| `spec_go:<session>#<turn>` | what the spec call's window showed -- the use of its `once` notes and their receipts (D58 note, GH #1477); handed to the curator with a kept answer, ended with the turn's row otherwise |
-| `spec_called:<session>` | the session's last `spec_called_turns` turns with the call of each one's normal verdict; a later spec curate of one of them parks |
-| `delta:<turn>`, `delta_fb:<session>#<turn>` | the kept delta stamp of a voice turn and its reused call until `delta-send` (#1279) |
 | `verdict:<session>` | the last verdict, so an ask again of the same call gets the verdict given, never a second one |
 | `horizon_plan:<session>`, `horizon_turn:<session>` | tables `{turn: row}`, the newest 8 turns: the waiting-time plan of each turn's call and the clock of its round, until booked (`horizon_feed`) |
 | `horizon_rounds` | the booked durations of the rounds per family (ms, the newest 20) |
@@ -175,8 +170,8 @@ is a broken set. A kind without an entry goes as before.
 | `lead` | `path_routes` | "" | D58 target (contract point 9): the target of a turn by the path it was stamped with (`hop.path`, else `context.path`, GH #1247): `path:name` pairs, comma separated. A name is a target the composite wires (the call's `hop.target`, route `model_call`) or an errand class `departures` lists (the call leaves the composite, route `errand`). `*:name` names the target of every other turn: no path, an unknown one (a class the route stamps without its own entry: the lead names no class of its own, GH #1478), the round that answers an errand. Empty (shipped): the lead names no target, the curate's `hop.target` decides. Every call with a path leaves one `route` mark (`{call, path, way}`, `way` the target or the errand's class) |
 | `lead` | `departures` | "" | D58 target (contract point 9): the errand classes that leave the composite, `class:wait_ms` or `class:wait_ms:pending_ms` pairs, comma separated. The verdict says `departs` `{class, wait_ms}`; the errand carries `hop.consult_class` and `hop.consult_wait_ms` (the mark the side call says, GH #1248); its pending mark stands `pending_ms` longer (else `ask_pending_ms` alone). Empty: no path leaves the composite |
 | `lead` | `fallback` | "" | D58 target (contract point 9): `target:target` pairs, comma separated -- the target a round goes to when the first one gives it up (an unspeakable tool result, a failed answer, `fast_max_iter`, `recall_to_fallback`); the `escalate` mark names both (`from`, `to`). A target with a fallback is a fast one; a verdict without one hands nothing on |
-| `lead` | `spec_target` | "" | D58 target: the target of a speculative call (`hop.spec` "1", `spec_ahead`); empty parks every spec curate |
-| `lead` | `bridge_target` | "" | D58 target (OR-d58-2.target.14, .38): the target of the side call beside an errand or a tool round (`target` of each `side` entry): one name, or `*:name,spec:name` -- `spec` while the lead speculates, `*` otherwise; a verdict that names none sends no bridge (OR-d58-2.target.71) |
+| `lead` | `bridge_target` | "" | D58 target (OR-d58-2.target.14, .38): the target of the side call beside an errand or a tool round (`target` of each `side` entry): one name, or `*:name` pairs (only `*` is read); a verdict that names none sends no bridge (OR-d58-2.target.71) |
+| `lead` | `bridge_fallback` | "" | d54s bruecke (GH #1586): the target a side call tries once more when it ends in an error or its own timeout (`fallback` of each `side` entry, left out when it names the entry's own target). The curator sends the same call, same window and text, once to this target under its own `calls` row; if that one fails too, the error goes on to the composite's errors like the first and there is no third try. Never a fixed sentence (R-TR-27). Empty (shipped) = no second try, as before |
 | `lead` | `bridge_wording` | "" | D58 moveout (GH #1476; the curator's knob of D58 target, contract point 14, moved here): the form of the side call beside an errand, per class of `departures`: `<class>:<form>` pairs, comma separated. `soon`: the answer follows in this turn within the class's wait, the side call sees the person's turn alone (`window` `turn`); `later`: the result comes in a later turn, the side call keeps its target's window (`window` `wall`). A class the knob does not name speaks `later` |
 | `lead` | `bridge_texts` | neutral sentences | D58 moveout (GH #1476, contract point 5): the text of a side call per form, a JSON object `{tool, soon, later}`. The curator puts it as the leaf of the target's side slot (the profile's `instructions.side_slot`, talky `instructions.bridge`). `{seconds}`/`{minutes}` take the class's wait; `{fill}` is the gap the curator fills with the places of the tools the cut left open. A form without a text sends no side call. The shipped sentences carry the measurements of GH #1258 and GH #1260 (one voice, no content, no talk of missing access, the tool round asks nothing); d58-3 namen (GH #1525): the shipped sentences name no speaking surface, a composition sets its own wording |
 | `lead` | `bridge_places` | "" | D58 moveout (GH #1476, contract point 1, `fill`): the words of the places a running lookup looks, `{places: {family or tool: words}, rest, before, join}`, carried as `fill` on the tool round's side call. The curator names each open tool once (a family with a row by its family name, the hint stage not counted), adds `rest` beside named ones when some have no row, joins with `join` and puts `before` + the phrase into `{fill}`; nothing named: the gap goes empty; d58-3 namen (GH #1525, N9a): "" = no `fill`, the composition sets the words of its places |
@@ -187,13 +182,9 @@ is a broken set. A kind without an entry goes as before.
 | `lead` | `errand_tool` | "" | D58 target (contract point 9): the tool a speaking model starts an errand with (GH #1280); denied in the `tool_scope` of every speaking call of the session while an errand stands |
 | `lead` | `errand_family` | "" | D58 target: the family of `errand_tool` on a folded menu (`context.tools_folded`), denied with it |
 | `lead` | `ask_pending_ms` | 120000 | GH #1247 (renamed by d58-3 namen, GH #1525): how long a pending ask (an errand of `departures`, and since GH #1280 a call of `errand_tool` by the speaking model) stays pending without its answer -- the backstop: the mark ends with the answer (the round under its `ask_id`). The mark `ask_pending:<session>` carries `until` = the ask's stamp + this value, or the class's own `pending_ms` in `departures` (GH #1260), and while it stands every speaking call of the session carries the policy's pending note and denies `errand_tool` in its `tool_scope` (GH #1280); the first call past it deletes the mark (by key and the value read) and the speaking model may ask again. The default is three times the measured answer time (38-42 s, GH #1280; 30000 before, which let the mark lapse while the first ask still ran); null, empty or below 1 = 120000 |
-| `lead` | `spec_called_turns` | 16 | GH #1447: how many turns of a session the lead keeps as decided in `spec_called:<session>` (`./state`, the newest last, the oldest beyond it dropped): a spec curate of one of them that comes after the turn's normal verdict parks (`parked:called`) and calls no quick voice. Written only with `spec_ahead` on; null, empty, unparsable or below 1 = 16 |
-| `lead` | `spec_ahead` | `0` | Named `quick_speculative` before GH #1529. GH #1275: `1` or true = a curate with `hop.spec` "1" (the collector's early curate, before the route stamp) calls the quick voice at once under `spec_tools` and holds its answer for the normal curate; `0` = such a curate is parked (said on stderr), nothing else changes |
-| `lead` | `spec_tools` | "" | GH #1275: the tools a spec call may call, names after the collector's fold; empty = none. Inside the channel's allow, its deny kept; never `require`, never the profile's `allow`, no hint stage |
-| `lead` | `recall_to_fallback` | `0` | GH #1435 (renamed by d58-3 namen, GH #1525): `1` or true = a turn whose path leaves on a fast target (one `fallback` names) and whose route stamp names a need of `recall_needs` leaves on that target's fallback instead; `reason` and `way_reason` are the need it named, a speculative answer of the turn is dropped for it, and a delta stamp of it is refired (`delta.recall_leg` names the need, the policy's refire reason); other paths and the answer of an errand change nothing |
-| `lead` | `recall_needs` | `[]` | d58-3 namen (GH #1525, O6, R-583-1 form B): the needs of the route stamp that call for the recall, a list (or its JSON text, or a comma string); with `recall_to_fallback` on, a turn of a fast target whose stamp names one leaves on the fallback, `reason` is the name it named and its delta is refired (`delta.recall_leg`). `[]` = no need calls for the recall; the composition sets its names |
-| `lead` | `delta_speculation` | `0` | GH #1279: `1` or true (with `spec_ahead`) = a delta stamp (`in_delta_stamp`) is kept per turn, and the turn's spec curate with the same normalised text (`ask.text_norm` against the stamp's `text_norm`; the lead's word `delta.verdict`, GH #1529) is the turn's normal curate under the delta's stamp (the later normal curate parks); another text: #1275 as before. One mark `delta` per spec curate that found a delta. `0` = a delta stamp is parked |
-| `lead` | `interrupt_on_delta` | `0` | GH #1404: `1` or true = the first delta stamp of a voice turn whose `choices.risk` value (the route's own judgement; `hop.fallback` empty or `unsure`, GH #1407) has a question in `interrupt_questions` orders the interrupt at once on `in_feed` (the curator sends ONE `live_feed` section `interrupt`, no `hop.at_turn_end`, at most one per turn; without a handle `live` it books `feed {reason: no_live}`); another fallback is never ordered, its reason kept in `interrupt:<session>#<turn>`, where the turn's end adds `ms_before_turn_end`. Needs the composite's edge `./lead -> ./curator` on `in_feed` and the curator's `feed_in` "1". Works with or without `delta_speculation`. `0` = nothing read or written |
+| `lead` | `recall_to_fallback` | `0` | GH #1435 (renamed by d58-3 namen, GH #1525): `1` or true = a turn whose path leaves on a fast target (one `fallback` names) and whose route stamp names a need of `recall_needs` leaves on that target's fallback instead; `reason` and `way_reason` are the need it named; other paths and the answer of an errand change nothing |
+| `lead` | `recall_needs` | `[]` | d58-3 namen (GH #1525, O6, R-583-1 form B): the needs of the route stamp that call for the recall, a list (or its JSON text, or a comma string); with `recall_to_fallback` on, a turn of a fast target whose stamp names one leaves on the fallback, `reason` is the name it named. `[]` = no need calls for the recall; the composition sets its names |
+| `lead` | `interrupt_on_delta` | `0` | GH #1404: `1` or true = the first delta stamp of a voice turn whose `choices.risk` value (the route's own judgement; `hop.fallback` empty or `unsure`, GH #1407) has a question in `interrupt_questions` orders the interrupt at once on `in_feed` (the curator sends ONE `live_feed` section `interrupt`, no `hop.at_turn_end`, at most one per turn; without a handle `live` it books `feed {reason: no_live}`); another fallback is never ordered, its reason kept in `interrupt:<session>#<turn>`, where the turn's end adds `ms_before_turn_end`. Needs the composite's edge `./lead -> ./curator` on `in_feed` and the curator's `feed_in` "1". `0` = nothing read or written |
 | `lead` | `interrupt_questions` | `{}` | GH #1404: JSON object crisis value -> question: its keys ARE the `choices.risk` values that interrupt, the question is what the voice says; an entry without words is said on stderr and left out. `{}` = no value interrupts |
 | `lead` | `interrupt_section` | "" | d58-3 namen (GH #1525): the feed section the interrupt is ordered under on `in_feed`, the name the speaking surface reads it by; also the order's `once`. "" = no interrupt is ordered; the composition sets its surface's section |
 | `lead` | `fast_max_iter` | `2` | Named `quick_max_iter` before GH #1529. GH #1248 (T4-10): how many iterations past its first call a quick round keeps the quick voice after a tool result |
@@ -205,8 +196,8 @@ is a broken set. A kind without an entry goes as before.
 
 Numeric knobs take numeric strings; `null` or empty means the default. talky sets the targets at its lead:
 `path_routes` `talk:brain,simple:quick,complex:consult,research:research,*:brain`, `departures`
-`consult:10000,research:120000:240000`, `fallback` `quick:brain`, `spec_target` `quick_spec`, `bridge_target`
-`*:quick,spec:quick_bridge`, `bridge_wording` `consult:soon,research:later`, `errand_tool` `consult_cogny`,
-`errand_family` `consult`. What the ways, the speculation,
+`consult:10000,research:120000:240000`, `fallback` `quick:brain`, `bridge_target`
+`*:quick`, `bridge_wording` `consult:soon,research:later`, `errand_tool` `consult_cogny`,
+`errand_family` `consult`. What the ways
 and the side calls do with these values is told in the curator's README
 ([`curator`](../curator/README.md), The ways of a call), where the window is built on them.

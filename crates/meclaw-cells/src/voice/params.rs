@@ -89,6 +89,16 @@ const MAX_RELEASE_GRACE_MS: u64 = 10_000;
 /// rather than sent at a phone.
 const MAX_AUDIO_OUT_FRAME_MS: u64 = 1000;
 
+/// Default lead of the model's audio at the edge, in milliseconds: none. The
+/// edge that needs a stock is the telephone's; a browser keeps its own buffer,
+/// and a lead it did not ask for is only latency.
+pub const DEFAULT_AUDIO_OUT_LEAD_MS: u32 = 0;
+
+/// The longest lead this cell will hold audio back for. Every spoken section
+/// begins that much later, so more than a second is a typo (`2000` for `20`)
+/// and refused by name.
+const MAX_AUDIO_OUT_LEAD_MS: u64 = 1000;
+
 /// How long the model's timeline may stay quiet before a user turn is closed,
 /// in milliseconds (R-25-9). Measured on the reference run: the overlap of the
 /// two transcript streams is about 400 ms, and the shortest real pause between
@@ -262,6 +272,7 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "external_timeout_ms",
     "provider_idle_timeout_ms",
     "audio_out_frame_ms",
+    "audio_out_lead_ms",
     "speak_plain",
     "speak_partials",
     "release_grace_ms",
@@ -275,6 +286,7 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "x_title",
     "http_referer",
     "emit_first_audio",
+    "emit_audio_report",
 ];
 
 /// Everything a `voice` cell needs to serve one WebSocket endpoint.
@@ -327,6 +339,13 @@ pub struct VoiceParams {
     /// See [`DEFAULT_AUDIO_OUT_FRAME_MS`] for why the default is 20 and not
     /// "whatever the provider chose".
     pub audio_out_frame_ms: u32,
+    /// How long the model's audio is held back, in milliseconds, when it finds
+    /// nothing left to play at the edge (duplex only).
+    ///
+    /// The stock at the edge that swallows a late chunk: see
+    /// [`crate::voice::out_lead`]. `0` is off and the default
+    /// ([`DEFAULT_AUDIO_OUT_LEAD_MS`]): every chunk leaves as it arrives.
+    pub audio_out_lead_ms: u32,
     /// Whether an assistant turn is turned into speech text before synthesis.
     ///
     /// **On by default** ([`DEFAULT_SPEAK_PLAIN`]). The handler runs
@@ -426,6 +445,15 @@ pub struct VoiceParams {
     /// `duplex` block to carry it. Settled at birth: the I/O half reads it
     /// once per life.
     pub emit_first_audio: bool,
+    /// Whether a duplex call reports how its audio went on the
+    /// `audio_report` lane (#1637): one emission at the end of the call, after
+    /// its `final` usage, with the late chunks, the holes at the way out and the
+    /// longest waits. Times and numbers only, no audio and no word of the call.
+    ///
+    /// **Off by default**, the rule of `emit_first_audio`: without an edge that
+    /// drains it every report would dead-letter. Settled at birth: the I/O half
+    /// reads it once per life.
+    pub emit_audio_report: bool,
 }
 
 /// GH #1059: the three provider slots of a voice cell that can spend a
@@ -523,7 +551,7 @@ pub enum TtsParams {
 /// `#[allow(clippy::large_enum_variant)]`, the same trade-off
 /// `meclaw_colony::factory::SpawnedCellKind` and `ColonyMsg` already take: the
 /// hosted adapter carries a credential, an instruction text, a fallback
-/// sentence and ten numbers, the loopback carries a rate, and the three
+/// sentence and ten numbers, the loopback a rate and a delivery plan, and the three
 /// params of R-L7/R-L9 pushed the difference past the threshold. Boxing would
 /// only move the allocation — one of these is parsed per spawn and held once
 /// per cell, never sent and never in a hot path — while touching every match
@@ -588,7 +616,10 @@ pub struct GptLiveParams {
     /// the life of the session, and refused empty: a live model with nothing
     /// said to it answers as whoever it was trained to be.
     pub instructions: String,
-    /// Said once, right after the session opened, so the model speaks first.
+    /// The greeting instructions: the last message of the session's start
+    /// input (`session.input`), with the role `developer`, so the model speaks
+    /// first (GH #1628). It follows a seed or `start_input`, is never cut, and
+    /// a renewed session carries none.
     ///
     /// Empty ships nothing and the model waits for the caller. It is an
     /// INSTRUCTION rather than a script — a live model paraphrases what it is
@@ -662,9 +693,10 @@ pub struct GptLiveParams {
     /// `now_utc`.
     #[serde(default)]
     pub fault_close_at_ms: u64,
-    /// The sentence a curator's `horizon` advise becomes (GH #1400): an
-    /// instruction to the model, `{seconds}` replaced by the advise's number,
-    /// appended at once, or at the end of the model's open spoken section.
+    /// The sentence a curator's `horizon` advise becomes (GH #1400): a
+    /// comment to the model, a request to speak (GH #1635), `{seconds}`
+    /// replaced by the advise's number, appended at once, or at the end of the
+    /// model's open spoken section.
     /// `""` (the default) drops every `horizon` section with a warning, and
     /// the cell is the one it was. The words are the set's; the curator sends
     /// numbers only (R-LS-2).
@@ -714,7 +746,7 @@ pub struct GptLiveParams {
     /// [`crate::voice::providers::gpt_live::SEED_MAX_TOKENS`], the provider's
     /// bound of a start input. It is the ceiling of the `start_budget` the
     /// `seed_ask` lane names, and the seed is cut to that budget: to this
-    /// value, or to less where the instructions and the greeting leave less
+    /// value less the greeting, or to less where the instructions leave less
     /// (wave d54g, strand kprofil: it was a constant no set could move).
     #[serde(default = "GptLiveParams::default_seed_max_tokens")]
     pub seed_max_tokens: u64,
@@ -758,7 +790,9 @@ pub struct GptLiveParams {
     #[serde(default)]
     pub safety_identifier: Option<String>,
     /// The history the session opens with (`session.input`) when no seed
-    /// arrives; a seed wins. Empty texts stay out, as in a seed.
+    /// arrives; a seed wins. Empty texts stay out, as in a seed. A `greeting`
+    /// follows as its last message, and the two share the provider's 128
+    /// messages.
     #[serde(default)]
     pub start_input: Vec<StartInputMessage>,
     /// Whether the `delegation` lane carries the call so far (closed turns,
@@ -1006,12 +1040,11 @@ fn check_gpt_live_opening(g: &GptLiveParams) -> Result<(), String> {
             crate::voice::providers::gpt_live::SEED_MAX_MESSAGES
         ));
     }
-    // The three texts that travel as ONE append each. Checked here, where a
+    // The two texts that travel as ONE append each. Checked here, where a
     // spawn still fails loudly: over the ceiling the provider refuses the
     // append whole, in the middle of a call.
     let limit = g.append_limit_chars();
     for (key, text) in [
-        ("greeting", &g.greeting),
         ("horizon_text", &g.horizon_text),
         ("responses_superseded_note", &g.responses_superseded_note),
     ] {
@@ -1023,11 +1056,11 @@ fn check_gpt_live_opening(g: &GptLiveParams) -> Result<(), String> {
             ));
         }
     }
-    if g.start_input.len() > crate::voice::providers::gpt_live::SEED_MAX_MESSAGES {
-        return Err(format!(
-            "duplex.start_input: at most {} entries",
-            crate::voice::providers::gpt_live::SEED_MAX_MESSAGES
-        ));
+    // GH #1628: the greeting is one message of the same input.
+    let most =
+        crate::voice::providers::gpt_live::SEED_MAX_MESSAGES - usize::from(!g.greeting.is_empty());
+    if g.start_input.len() > most {
+        return Err(format!("duplex.start_input: at most {most} entries"));
     }
     if let Some(bad) = g
         .start_input
@@ -1178,14 +1211,76 @@ impl GptLiveParams {
     }
 }
 
-/// Settings of the `echo` duplex adapter: the rate, and deliberately nothing
-/// else. A knob here would be a knob on the calibration itself.
+/// The shortest chunk `duplex.chunk_ms` may ask the echo loopback for.
+pub const MIN_ECHO_CHUNK_MS: u64 = 10;
+
+/// The longest chunk `duplex.chunk_ms` may ask the echo loopback for.
+pub const MAX_ECHO_CHUNK_MS: u64 = 1_000;
+
+/// The longest delay one pair of `duplex.late` may plan.
+pub const MAX_ECHO_LATE_MS: u64 = 5_000;
+
+/// Settings of the `echo` duplex adapter: the rate, and how the way back is
+/// delivered (GH #1636). The profile is off by default -- the calibration is
+/// the loopback without it -- and never touches a byte, only its moment.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EchoDuplexParams {
     /// The rate the loopback declares; default [`DEFAULT_DUPLEX_SAMPLE_RATE`].
     #[serde(default = "GptLiveParams::default_sample_rate")]
     pub sample_rate: u32,
+    /// Bundles the way back to chunks of this much sound, in milliseconds
+    /// ([`MIN_ECHO_CHUNK_MS`] to [`MAX_ECHO_CHUNK_MS`]); not set: one item back
+    /// per item in.
+    #[serde(default)]
+    pub chunk_ms: Option<u64>,
+    /// The plan of the late chunks, deterministic; empty: no chunk is late.
+    /// Where several pairs meet one chunk, the longest delay counts.
+    #[serde(default)]
+    pub late: Vec<EchoLate>,
+}
+
+impl EchoDuplexParams {
+    /// Refuses a profile that names nothing, by its key.
+    fn check(&self) -> Result<(), String> {
+        if !crate::voice::providers::duplex_echo::ECHO_DUPLEX_RATES.contains(&self.sample_rate) {
+            return Err(format!(
+                "duplex.sample_rate: the echo loopback serves {}, got {}",
+                crate::voice::providers::duplex_echo::ECHO_DUPLEX_RATES
+                    .map(|r| r.to_string())
+                    .join(", "),
+                self.sample_rate
+            ));
+        }
+        if let Some(ms) = self.chunk_ms
+            && !(MIN_ECHO_CHUNK_MS..=MAX_ECHO_CHUNK_MS).contains(&ms)
+        {
+            return Err(format!(
+                "duplex.chunk_ms: must be between {MIN_ECHO_CHUNK_MS} and {MAX_ECHO_CHUNK_MS}, \
+                 got {ms}"
+            ));
+        }
+        for EchoLate { every, ms } in &self.late {
+            if *every == 0 || !(1..=MAX_ECHO_LATE_MS).contains(ms) {
+                return Err(format!(
+                    "duplex.late: `every` must be at least 1 and `ms` between 1 and \
+                     {MAX_ECHO_LATE_MS}, got every {every}, ms {ms}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One pair of the echo loopback's delivery plan: every `every`-th chunk goes
+/// out `ms` milliseconds after it was ready.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EchoLate {
+    /// Which chunks, counted from 1 over the session.
+    pub every: u64,
+    /// How much later, in milliseconds (1 to [`MAX_ECHO_LATE_MS`]).
+    pub ms: u64,
 }
 
 /// Settings of the Deepgram Flux speech-to-text adapter.
@@ -1564,6 +1659,7 @@ impl VoiceParams {
         let external_timeout_ms = read_positive_u64(obj, "external_timeout_ms", 5000)?;
         let provider_idle_timeout_ms = read_positive_u64(obj, "provider_idle_timeout_ms", 30000)?;
         let audio_out_frame_ms = read_frame_ms(obj, "audio_out_frame_ms")?;
+        let audio_out_lead_ms = read_lead_ms(obj, "audio_out_lead_ms")?;
         let speak_plain = read_bool(obj, "speak_plain", DEFAULT_SPEAK_PLAIN)?;
         let speak_partials = read_flag01(obj, "speak_partials")?;
         let x_title = read_opt_string(obj, "x_title")?;
@@ -1752,6 +1848,7 @@ impl VoiceParams {
 
         let emit_usage = read_bool(obj, "emit_usage", false)?;
         let emit_first_audio = read_bool(obj, "emit_first_audio", false)?;
+        let emit_audio_report = read_bool(obj, "emit_audio_report", false)?;
         let call_marks = read_call_marks(obj)?;
 
         for key in obj.keys() {
@@ -1769,6 +1866,7 @@ impl VoiceParams {
             external_timeout_ms,
             provider_idle_timeout_ms,
             audio_out_frame_ms,
+            audio_out_lead_ms,
             speak_plain,
             speak_partials,
             release_grace_ms,
@@ -1784,6 +1882,7 @@ impl VoiceParams {
             x_title,
             http_referer,
             emit_first_audio,
+            emit_audio_report,
         };
         parsed.check_secrets()?;
         // Whether the duplex block NAMED a rate: the parsed struct cannot say,
@@ -1883,16 +1982,8 @@ impl VoiceParams {
                 ));
             }
         }
-        if let Some(DuplexParams::Echo(p)) = &self.duplex
-            && !crate::voice::providers::duplex_echo::ECHO_DUPLEX_RATES.contains(&p.sample_rate)
-        {
-            return Err(format!(
-                "duplex.sample_rate: the echo loopback serves {}, got {}",
-                crate::voice::providers::duplex_echo::ECHO_DUPLEX_RATES
-                    .map(|r| r.to_string())
-                    .join(", "),
-                p.sample_rate
-            ));
+        if let Some(DuplexParams::Echo(p)) = &self.duplex {
+            p.check()?;
         }
         Ok(())
     }
@@ -2088,6 +2179,27 @@ fn read_frame_ms(
     }
 }
 
+/// Read the lead of the model's audio: `0` is legal and means "none", anything
+/// above [`MAX_AUDIO_OUT_LEAD_MS`] is refused.
+fn read_lead_ms(
+    obj: &meclaw_core::serde_json::Map<String, JsonValue>,
+    key: &str,
+) -> Result<u32, String> {
+    match obj.get(key) {
+        None => Ok(DEFAULT_AUDIO_OUT_LEAD_MS),
+        Some(v) => v
+            .as_u64()
+            .filter(|n| *n <= MAX_AUDIO_OUT_LEAD_MS)
+            .map(|n| n as u32)
+            .ok_or_else(|| {
+                format!(
+                    "{key}: must be an integer in 0..={MAX_AUDIO_OUT_LEAD_MS} \
+                     (0 sends each chunk as it arrives), got {v}"
+                )
+            }),
+    }
+}
+
 /// Read the release grace: `0` is legal and means "cut on the `release` frame",
 /// anything above [`MAX_RELEASE_GRACE_MS`] is refused.
 ///
@@ -2209,6 +2321,8 @@ fn read_positive_u64(
 ///   params of the life about to start, and no message in this cell rebuilds a
 ///   live one. The value is written down at once and the next life frames on
 ///   it.
+/// - `audio_out_lead_ms` reaches the line on the next respawn, as the frame
+///   length does.
 /// - `release_grace_ms` is read at the next `release`, a call in progress
 ///   included. A boundary that is already draining keeps the deadline it was
 ///   armed with: the timer is asleep in the other half, and a turn cut by a
@@ -2252,6 +2366,9 @@ pub struct VoiceOverlay {
     /// the value its life was built with, so a new one takes effect on the next
     /// respawn.
     pub audio_out_frame_ms: u32,
+    /// Lead of the model's audio in milliseconds. Mutable, and in effect on the
+    /// next respawn, as the frame length is.
+    pub audio_out_lead_ms: u32,
     /// Whether markdown is turned into speech text before synthesis. Mutable,
     /// and in force from the next `in_speak` on: the handler is the half that
     /// does the work, so nothing has to be rebuilt for it.
@@ -2312,6 +2429,10 @@ pub struct VoiceOverlay {
     /// orders it stores the same overlay bytes as before the key existed.
     #[serde(skip_serializing_if = "switch_is_off")]
     pub emit_first_audio: bool,
+    /// Whether the `audio_report` lane is ordered (#1637), carried, refused by
+    /// an update and not written while off, all as `emit_first_audio` is.
+    #[serde(skip_serializing_if = "switch_is_off")]
+    pub emit_audio_report: bool,
 }
 
 /// The wire form of a `"0"` | `"1"` switch.
@@ -2341,6 +2462,7 @@ impl OverlayParams for VoiceOverlay {
         "external_timeout_ms",
         "provider_idle_timeout_ms",
         "audio_out_frame_ms",
+        "audio_out_lead_ms",
         "speak_plain",
         "speak_partials",
         "release_grace_ms",
@@ -2350,7 +2472,8 @@ impl OverlayParams for VoiceOverlay {
     /// The credential rounds' ceiling (GH #1059), the three D48 call
     /// settings (`emit_usage`, `call_marks_s`, `call_mark_every_s`, GH #1379)
     /// the app attribution (`x_title`, `http_referer`, GH #1455) and the
-    /// `first_audio` lane's switch (`emit_first_audio`, d54g callseam),
+    /// `first_audio` and `audio_report` lanes' switches (`emit_first_audio`,
+    /// d54g callseam; `emit_audio_report`, #1637),
     /// all read once per life. Nothing else is refused here for being the key
     /// it is; the provider blocks — grants included — are out of reach because they
     /// are not *known* keys, which is a different sentence and a better one —
@@ -2364,6 +2487,7 @@ impl OverlayParams for VoiceOverlay {
         "x_title",
         "http_referer",
         "emit_first_audio",
+        "emit_audio_report",
     ];
 
     fn parse(raw: &JsonValue) -> Result<Self, String> {
@@ -2386,6 +2510,7 @@ impl OverlayParams for VoiceOverlay {
             external_timeout_ms,
             provider_idle_timeout_ms,
             audio_out_frame_ms,
+            audio_out_lead_ms,
             speak_plain,
             speak_partials,
             release_grace_ms,
@@ -2408,6 +2533,7 @@ impl OverlayParams for VoiceOverlay {
             x_title,
             http_referer,
             emit_first_audio,
+            emit_audio_report,
         } = VoiceParams::parse(raw)?;
         let obj = raw.as_object().ok_or("params: must be object")?;
         Ok(Self {
@@ -2419,6 +2545,7 @@ impl OverlayParams for VoiceOverlay {
             external_timeout_ms,
             provider_idle_timeout_ms,
             audio_out_frame_ms,
+            audio_out_lead_ms,
             speak_plain,
             speak_partials: flag01(speak_partials),
             release_grace_ms,
@@ -2432,6 +2559,7 @@ impl OverlayParams for VoiceOverlay {
             x_title,
             http_referer,
             emit_first_audio,
+            emit_audio_report,
         })
     }
 }
@@ -2467,12 +2595,14 @@ mod tests {
             !p.emit_first_audio,
             "and again: the first_audio lane is ordered, not assumed"
         );
+        assert!(!p.emit_audio_report, "and the audio_report lane");
         assert_eq!(p.external_timeout_ms, 5000);
         assert_eq!(p.provider_idle_timeout_ms, 30000);
         assert_eq!(
             p.audio_out_frame_ms, DEFAULT_AUDIO_OUT_FRAME_MS,
             "20 ms outbound frames, because a phone edge dies on a long one"
         );
+        assert_eq!(p.audio_out_lead_ms, 0, "no lead unless it is asked for");
         assert!(
             p.speak_plain,
             "markdown becomes speech text unless a config says otherwise"
@@ -3216,6 +3346,37 @@ mod tests {
         assert_eq!(overlay, vec![("audio_out_frame_ms".to_string(), json!(40))]);
     }
 
+    /// The lead is a number of milliseconds, `0` being none, and a typo is
+    /// refused by name.
+    #[test]
+    fn audio_out_lead_ms_takes_a_lead_and_refuses_a_typo() {
+        for lead in [0, 20, 1000] {
+            let mut raw = minimal();
+            raw["audio_out_lead_ms"] = json!(lead);
+            let parsed = VoiceParams::parse(&raw).expect("a lead parses");
+            assert_eq!(parsed.audio_out_lead_ms, lead);
+        }
+        for wrong in [json!(1001), json!(-1), json!("20"), json!(0.5)] {
+            let mut raw = minimal();
+            raw["audio_out_lead_ms"] = wrong.clone();
+            let err = VoiceParams::parse(&raw).expect_err("not a lead");
+            assert!(err.starts_with("audio_out_lead_ms:"), "{wrong}: got {err}");
+            assert!(err.contains("1000"), "the refusal names the bound: {err}");
+        }
+    }
+
+    /// And on the update surface, beside the frame length.
+    #[test]
+    fn audio_out_lead_ms_is_mutable() {
+        use crate::params_overlay::apply_update;
+        let current = <VoiceOverlay as OverlayParams>::parse(&minimal()).expect("parses");
+        let mut update = meclaw_core::serde_json::Map::new();
+        update.insert("audio_out_lead_ms".into(), json!(20));
+        let (merged, overlay) = apply_update(&current, &update).expect("an accepted update");
+        assert_eq!(merged.audio_out_lead_ms, 20);
+        assert_eq!(overlay, vec![("audio_out_lead_ms".to_string(), json!(20))]);
+    }
+
     /// `0` is a value here — cut on the frame — and the upper bound is what
     /// turns a typo into a refusal instead of a call that goes quiet.
     #[test]
@@ -3300,6 +3461,7 @@ mod tests {
             ("x_title", json!("other")),
             ("http_referer", json!("https://example.org")),
             ("emit_first_audio", json!(true)),
+            ("emit_audio_report", json!(true)),
         ] {
             let mut update = meclaw_core::serde_json::Map::new();
             update.insert(key.into(), value);
@@ -3472,6 +3634,12 @@ mod tests {
             .collect();
         let err = live_with(json!({ "start_input": many })).expect_err("129 entries");
         assert!(err.starts_with("duplex.start_input:"), "{err}");
+        // GH #1628: a greeting takes one of the 128.
+        live_with(json!({ "start_input": many[..127], "greeting": "Greet." }))
+            .expect("127 entries and the greeting fit");
+        let err = live_with(json!({ "start_input": many[..128], "greeting": "Greet." }))
+            .expect_err("128 entries and the greeting do not");
+        assert!(err.starts_with("duplex.start_input:"), "{err}");
     }
 
     /// POC gpt-live-1 round 2 (A75-A78, A83, A94): the three delegation
@@ -3516,14 +3684,14 @@ mod tests {
 
     /// Wave d54g, strand deleg: the ceiling of one append is counted in
     /// tokens -- `advise_max_tokens` (500) times `chars_per_token` (2.4), less
-    /// a tenth, 1 080 characters as shipped -- and the three fixed texts that
+    /// a tenth, 1 080 characters as shipped -- and the two fixed texts that
     /// travel as ONE append each are held to it where the params are read: a
     /// text over it is a parse error that names its key and both lengths, not
     /// a refusal in the middle of a call.
     #[test]
     fn a_fixed_text_over_the_append_limit_is_a_parse_error() {
         let responses = json!({"type": "responses", "responses": {"model": "gpt-6-luna"}});
-        for key in ["greeting", "horizon_text", "responses_superseded_note"] {
+        for key in ["horizon_text", "responses_superseded_note"] {
             let block = |chars: usize| {
                 let mut extra = json!({"delegation": responses});
                 extra[key] = json!("x".repeat(chars));
@@ -3544,19 +3712,24 @@ mod tests {
             json!({
                 "advise_max_tokens": 100,
                 "chars_per_token": 2.0,
-                "greeting": "x".repeat(chars),
+                "horizon_text": "x".repeat(chars),
             })
         };
         live_with(moved(180)).expect("180 fits the moved ceiling");
         let err = live_with(moved(181)).expect_err("over the moved ceiling");
-        assert!(err.starts_with("duplex.greeting:"), "{err}");
+        assert!(err.starts_with("duplex.horizon_text:"), "{err}");
         assert!(err.contains("181") && err.contains("180"), "{err}");
 
         // `advise_split_chars` lowers the cut of an append that is split; it
         // is not the provider's ceiling, so a fixed text between the two
         // still parses.
-        live_with(json!({"advise_split_chars": 400, "greeting": "x".repeat(900)}))
-            .expect("a greeting under the provider's ceiling parses");
+        live_with(json!({"advise_split_chars": 400, "horizon_text": "x".repeat(900)}))
+            .expect("a fixed text under the provider's ceiling parses");
+
+        // GH #1628: the greeting is a message of the start input, no append,
+        // and its length is not held to the ceiling of one append.
+        live_with(json!({"greeting": "x".repeat(1_081)}))
+            .expect("a greeting over the append ceiling parses");
 
         let err = live_with(json!({"advise_max_tokens": 0})).expect_err("zero tokens");
         assert!(err.starts_with("duplex.advise_max_tokens:"), "{err}");
@@ -3566,14 +3739,14 @@ mod tests {
         }
     }
 
-    /// Wave d54g, strand deleg: the three fixed texts are held to the token
+    /// Wave d54g, strand deleg: the two fixed texts are held to the token
     /// ceiling (`advise_max_tokens` times `chars_per_token`, less a tenth) and
     /// to nothing else. `advise_split_chars` is where an append is cut, not
     /// what the provider refuses: a fixed text over it alone still parses.
     #[test]
     fn a_fixed_text_is_held_to_the_token_ceiling_not_to_advise_split_chars() {
         let responses = json!({"type": "responses", "responses": {"model": "gpt-6-luna"}});
-        for key in ["greeting", "horizon_text", "responses_superseded_note"] {
+        for key in ["horizon_text", "responses_superseded_note"] {
             let block = |chars: usize| {
                 let mut extra = json!({"delegation": responses, "advise_split_chars": 400});
                 extra[key] = json!("x".repeat(chars));

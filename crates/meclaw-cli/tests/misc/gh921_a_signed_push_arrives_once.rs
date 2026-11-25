@@ -24,13 +24,10 @@
 use crate::vault_grant; // harness_fold: mod vault_grant;
 
 use meclaw_cli::{Cli, run_with_hooks};
+use meclaw_testing::deadline;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
-
-/// The 30-second convention: a failure marker, never a budget.
-const RECV: Duration = Duration::from_secs(30);
 
 const HOOK_SECRET: &str = "probe-secret-921-xq";
 const TOKEN_SECRET: &str = "probe-token-921-zv";
@@ -99,7 +96,7 @@ struct Colony {
 impl Colony {
     async fn stop(self) {
         let _ = self.shutdown.send(());
-        let _ = tokio::time::timeout(RECV, self.join).await;
+        let _ = deadline::hang("the colony stops", self.join).await;
     }
 }
 
@@ -128,9 +125,8 @@ async fn boot(granted: &[vault_grant::Granted]) -> Colony {
     let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
     let join =
         tokio::spawn(async move { run_with_hooks(cli, Some(addr_tx), Some(shutdown_rx)).await });
-    let addr = tokio::time::timeout(RECV, addr_rx)
+    let addr = deadline::boot_hang("the colony binds HTTP", addr_rx)
         .await
-        .expect("the colony must bind HTTP within 30s")
         .expect("addr hook");
     vault_grant::wait_opened(&captured_logs(), granted.len()).await;
     Colony {
@@ -147,27 +143,27 @@ struct Row {
     body: Value,
 }
 
-async fn rows(addr: &SocketAddr, prefix: &str) -> Vec<Row> {
-    let url = format!("http://{addr}/colony/messages?to_path_prefix={prefix}&limit=1000");
+/// The rows under `prefix` from `GET /colony/trace`, and the log's commit
+/// counter as it stood before the read. With `after_seq` the colony holds the
+/// read until its log committed past it (GH #1099), so a wait is an event,
+/// never a clock.
+async fn trace(addr: &SocketAddr, prefix: &str, after_seq: Option<u64>) -> (Vec<Row>, u64) {
+    let wait = after_seq
+        .map(|s| format!("&after_seq={s}&wait_ms={}", deadline::HANG_MS))
+        .unwrap_or_default();
+    let url = format!("http://{addr}/colony/trace?path_prefix={prefix}&limit=1000{wait}");
     let page: Value = reqwest::get(&url)
         .await
         .expect("GET")
         .json()
         .await
         .expect("json");
-    assert_eq!(
-        page["scan_truncated"],
-        json!(false),
-        "a truncated scan reads as 'nothing matched' -- {url}"
-    );
-    // K8 (tv-bn M7b17): a full page has a cursor, the log goes on past one read.
+    let entries = page["trace"].as_array().expect("trace");
     assert!(
-        page["next"].is_null(),
-        "a full page read as the whole -- {url}"
+        entries.len() < 1000,
+        "a capped read read as the whole -- {url}"
     );
-    page["messages"]
-        .as_array()
-        .expect("messages")
+    let rows = entries
         .iter()
         .map(|e| {
             let h: Value =
@@ -181,25 +177,49 @@ async fn rows(addr: &SocketAddr, prefix: &str) -> Vec<Row> {
                 body,
             }
         })
-        .collect()
+        .collect();
+    (rows, page["log_seq"].as_u64().expect("log_seq"))
 }
 
-/// Reads `rows` every 50 ms until at least `n` are there. The test is a client
-/// outside the substrate, so polling is its to do.
+/// The rows under `prefix` as they stand now.
+async fn rows(addr: &SocketAddr, prefix: &str) -> Vec<Row> {
+    trace(addr, prefix, None).await.0
+}
+
+/// Waits until at least `n` rows stand under `prefix`: every read after the
+/// first is held until the log commits again. The deadline is the hang mark,
+/// never a verdict.
 async fn wait_for_rows(addr: &SocketAddr, prefix: &str, n: usize) -> Vec<Row> {
-    let deadline = tokio::time::Instant::now() + RECV;
-    loop {
-        let r = rows(addr, prefix).await;
-        if r.len() >= n {
-            return r;
+    let desc = format!("{n} row(s) under {prefix}");
+    deadline::hang(&desc, async {
+        let mut seq = None;
+        loop {
+            let (r, s) = trace(addr, prefix, seq).await;
+            if r.len() >= n {
+                return r;
+            }
+            seq = Some(s);
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{n} row(s) under {prefix} within 30s -- saw {}",
-            r.len()
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    })
+    .await
+}
+
+/// GH #1501: the order the test needs, held by the log capture. When the
+/// `probe-hook` mount's ready marker is written, the writing task is held
+/// until the test released it -- after its first signed POST was answered.
+/// The marker therefore has to stand where the mount is already open: a
+/// marker written one hop before the secret reaches the mount answers that
+/// POST `503 credential pending` every time, not only under load.
+fn hold_on_open() -> &'static Mutex<Option<std::sync::mpsc::Receiver<()>>> {
+    static HOLD: OnceLock<Mutex<Option<std::sync::mpsc::Receiver<()>>>> = OnceLock::new();
+    HOLD.get_or_init(|| Mutex::new(None))
+}
+
+/// Arms [`hold_on_open`] once; sending on (or dropping) the sender releases it.
+fn arm_hold_on_open() -> std::sync::mpsc::Sender<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    *hold_on_open().lock().expect("hold") = Some(rx);
+    tx
 }
 
 /// One POST to a mount; the status code.
@@ -239,6 +259,17 @@ impl std::io::Write for LogWriter {
             v.extend_from_slice(b);
         }
         vault_grant::log_written().notify_waiters();
+        // GH #1501: held after the line is in the capture and the waiter woke,
+        // with no lock taken, so the rest of the process logs on.
+        if find(b, b"received sealed and opened in RAM") && find(b, b"probe-hook") {
+            let held = hold_on_open().lock().ok().and_then(|mut h| h.take());
+            if let Some(release) = held {
+                // Blocks the tokio worker that logs the line: the test runs
+                // on four workers and the mount serves on its own tasks, so
+                // the POST still gets through; the wait is only a hang mark.
+                let _ = release.recv_timeout(deadline::scaled(deadline::HANG));
+            }
+        }
         Ok(b.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -300,6 +331,7 @@ fn receipts<'a>(all: &'a [Row], lane: &str, event: &str) -> Vec<&'a Row> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_signed_push_arrives_once_and_an_unsigned_one_nowhere() {
     let _ = captured_logs();
+    let release = arm_hold_on_open();
     let c = boot(&[HOOK, TOKEN]).await;
     let a = c.addr;
     let sig = format!("sha256={SIGNATURE}");
@@ -313,7 +345,12 @@ async fn a_signed_push_arrives_once_and_an_unsigned_one_nowhere() {
         ("X-Probe-Delivery", "d-921-1"),
         ("X-Probe-Other", "not-allowed"),
     ];
-    assert_eq!(post(&a, "/probe-hook/", &signed, SIGNED_BODY).await, 202);
+    let first = post(&a, "/probe-hook/", &signed, SIGNED_BODY).await;
+    drop(release);
+    assert_eq!(
+        first, 202,
+        "the ready marker stands where the mount is open"
+    );
     // Unsigned, wrongly signed, signed over other bytes: 401 each.
     assert_eq!(post(&a, "/probe-hook/", &[json_ct], SIGNED_BODY).await, 401);
     let wrong = format!("sha256={}", "0".repeat(64));
@@ -353,7 +390,7 @@ async fn a_signed_push_arrives_once_and_an_unsigned_one_nowhere() {
     }
 
     // The arrivals: exactly one per lane, and nothing of a refused request.
-    let sink = rows(&a, "/sink").await;
+    let sink = wait_for_rows(&a, "/sink", 2).await;
     assert_eq!(sink.len(), 2, "one arrival per verified request, no more");
     let hook: Vec<&Row> = sink
         .iter()

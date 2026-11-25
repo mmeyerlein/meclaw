@@ -1679,6 +1679,10 @@ fn write_surface_violation(
 /// no cell type has to know the operation exists, and none can accidentally
 /// shadow it with a slot of its own.
 ///
+/// One lane is left out: on `in_params` (GH #1353) the slot is not answered
+/// here, and the message goes on to the consumes gate and the cell, which
+/// refuses whatever is no params-only update.
+///
 /// `bounds` are the cell's own three declarations about this seam
 /// (`contract.write_surface`, GH #260; `contract.transfer`, GH #314;
 /// `params.transfer.base_path`, GH #555). They are the reason the position
@@ -1698,6 +1702,12 @@ pub(crate) async fn handle_transfer_slot(
     let Some(slot) = body.get(TRANSFER_SLOT) else {
         return false;
     };
+    // GH #1353: the params lane crosses every seal by its door and carries an
+    // update or nothing. Ahead of every answer below, the refusals included:
+    // the cell's own refusal of the lane is the one answer there.
+    if meclaw_core::on_params_lane(&msg.headers) {
+        return false;
+    }
     let started = tokio::time::Instant::now();
     let reply_to = msg.reply_to.clone();
     let target = reply_to.clone().unwrap_or_else(|| msg.target.clone());
@@ -1757,7 +1767,8 @@ pub(crate) async fn handle_transfer_slot(
     // GH #260: the substrate half of `write_surface`, checked between the args
     // and the dispatch — after the operation name is real, and BEFORE the DB
     // task starts, so a refused import touches nothing. `store`'s cell-level
-    // check cannot reach here: a transfer never gets to `handle()`.
+    // check cannot reach here: a transfer never gets to `handle()` (the params
+    // lane, GH #1353, returned above).
     if let Some(detail) = write_surface_violation(
         bounds.write_surface,
         sink.sender_path(),
@@ -2004,6 +2015,81 @@ mod tests {
             })
             .await;
         assert_eq!(body, "first", "the target wins, on the live path too");
+    }
+
+    /// GH #1353: on the params lane the slot is not answered here at all -- no
+    /// row in, no row out, no reply. The lane crosses every seal by its door and
+    /// the cell refuses whatever is no params-only update; a slot answered above
+    /// the cell never met that refusal. Off the lane the same slot runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gh1353_the_params_lane_carries_no_transfer() {
+        let import = json!({"operation": "import", "table": "notes",
+                            "schema": {"id": "text", "body": "text"},
+                            "rows": [{"id": "b", "body": "through the door"}]});
+        let export = json!({"operation": "export", "table": "notes"});
+        // The two refusals that run before the dispatch answer too, and the
+        // lane is ahead of both.
+        let exempt = meclaw_core::TransferBounds::exempt();
+        for (body, bounds) in [
+            (json!({"transfer": import}), Default::default()),
+            (
+                json!({"transfer": import, "params": {"query_timeout_ms": 1}, "messages": []}),
+                Default::default(),
+            ),
+            (json!({"transfer": export}), Default::default()),
+            (json!({"transfer": "no object"}), Default::default()),
+            (json!({"transfer": export}), exempt),
+            (json!({"transfer": import}), sealed()),
+        ] {
+            for (route, answered) in [
+                (Some("in_params"), false),
+                (Some("in_model"), true),
+                (None, true),
+            ] {
+                let td = tempfile::TempDir::new().unwrap();
+                let conn =
+                    crate::persist::open_or_create_cell_db(&td.path().join("cell.db")).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);
+                     INSERT INTO notes VALUES ('a', 'first');",
+                )
+                .unwrap();
+                let mut db = crate::DbConn::wrap(conn, None);
+                let (otx, mut orx) = tokio::sync::mpsc::channel(8);
+                let caller = meclaw_core::Path::new("/caller");
+                let sink = meclaw_core::OutputSink::new(
+                    otx,
+                    meclaw_core::Path::new("/hive/cell"),
+                    meclaw_core::Uuid::now_v7(),
+                    meclaw_core::Uuid::now_v7(),
+                    64,
+                    meclaw_core::Headers::new(),
+                    Some(caller.clone()),
+                );
+                let mut b = meclaw_core::MessageBuilder::new(meclaw_core::Path::new("/hive/cell"))
+                    .body(meclaw_core::Body::Inline(body.clone()))
+                    .reply_to(caller);
+                if let Some(route) = route {
+                    let hop = json!({"route": route, "subscriber": "/hive/cell"});
+                    b = b.hop(hop.as_object().unwrap().clone());
+                }
+                let got = handle_transfer_slot(&b.build(), &sink, &mut db, &bounds).await;
+                drop(sink);
+                assert_eq!(got, answered, "{route:?}: {body}");
+                let reply = orx.recv().await;
+                assert_eq!(reply.is_some(), answered, "{route:?}: {body}");
+                let rows: i64 = db
+                    .call(|c| {
+                        c.query_row("SELECT count(*) FROM notes", [], |r| r.get(0))
+                            .unwrap()
+                    })
+                    .await;
+                let imported = answered
+                    && body["transfer"]["operation"] == "import"
+                    && bounds == meclaw_core::TransferBounds::default();
+                assert_eq!(rows, if imported { 2 } else { 1 }, "{route:?}: {body}");
+            }
+        }
     }
 
     // ------------------------------------------------- GH #260, the write half

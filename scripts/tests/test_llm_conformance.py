@@ -651,6 +651,74 @@ class TestMessagesWire(ConformanceCase):
                 self.assertNotIn(field, b)
 
 
+
+class TestRefusals(ConformanceCase):
+    """GH #1609: the tool keeps status and body of each refused form; the fake
+    answers from those recordings (the mocks of GH #1283 read the same files)."""
+
+    def test_refusals_extend_a_recording_and_old_recordings_stay_readable(self):
+        record = pathlib.Path(self.tmp.name) / "rec"
+        self.run_tool("fake/strict-no-temperature", "--record", str(record))
+        path = record / "fake__strict-no-temperature" / "measured.json"
+        before = json.loads(path.read_text())
+        code, report, out = self.run_tool(
+            "fake/strict-no-temperature", "--record", str(record), "--refusals")
+        self.assertEqual(code, 0, out)
+        after = json.loads(path.read_text())
+        for key in MEASURED_KEYS:
+            self.assertEqual(after[key], before[key], key)
+        refusals = conformance.load_refusals(path)
+        self.assertEqual([(r["rule"], r["param"], r["wire"], r["status"]) for r in refusals],
+                         [("R4", "temperature", "chat", 404), ("R4", "top_p", "chat", 404)])
+        self.assertIn("No endpoints found", refusals[0]["body"])
+        self.assertIsInstance(json.loads(refusals[0]["body"]), dict, "body kept verbatim")
+        old = REPO / ("crates/meclaw-cells/tests/fixtures/conformance/"
+                      "fake__strict-no-temperature/measured.json")
+        self.assertNotIn("refusals", json.loads(old.read_text()))
+        self.assertEqual(conformance.load_refusals(old), [])
+
+    def test_refusals_need_a_recording_to_extend(self):
+        code, _, out = self.run_tool(
+            "fake/strict-no-temperature", "--record", self.tmp.name, "--refusals")
+        self.assertEqual(code, 2, out)
+        self.assertEqual(self.fake.calls, 0)
+
+    def test_a_200_for_a_form_every_model_refuses_stops_the_run(self):
+        # The fake does not refuse text before a tool_result (R13).
+        code, report, out = self.run_tool(
+            "claude-fake-ok", "--wire", "messages", "--refusals",
+            "--price-in", "1", "--price-out", "1", endpoint_class="anthropic")
+        self.assertEqual(code, 1, out)
+        self.assertIn("text_before_tool_result", report["abort"])
+        self.assertNotIn("unknown_field", [r["param"] for r in report["refusals"]])
+
+    def test_the_fake_answers_from_the_recording(self):
+        root = pathlib.Path(self.tmp.name) / "recordings"
+        (root / "some__model").mkdir(parents=True)
+        recorded = '{"error":{"message":"recorded: reasoning stays on","code":400}}'
+        (root / "some__model" / "measured.json").write_text(json.dumps({
+            "model_id": "some/model", "params": {}, "refusals": [{
+                "rule": "R3", "param": "reasoning_off", "wire": "chat",
+                "status": 400, "body": recorded}]}))
+        (root / "old__model").mkdir()
+        (root / "old__model" / "measured.json").write_text(json.dumps({"params": {}}))
+        body = json.dumps({"model": "fake/reasoning-mandatory",
+                           "messages": [{"role": "user", "content": "Ping."}],
+                           "reasoning": {"enabled": False}}).encode()
+        answers = []
+        for recordings in (root, None):
+            fake = fake_provider.FakeProvider(models=["fake/reasoning-mandatory"],
+                                              recordings=recordings)
+            base = fake.start()
+            self.addCleanup(fake.stop)
+            resp = conformance.http("POST", base + "/chat/completions",
+                                    json.loads(body))
+            answers.append((resp.status, resp.text))
+        self.assertEqual(answers[0], (400, recorded))
+        self.assertEqual(answers[1][0], 400)
+        self.assertIn(fake_provider.MANDATORY, answers[1][1])
+
+
 class TestProviderOrder(ConformanceCase):
     """`--provider-order`: one model measured on a pinned OpenRouter provider.
 
