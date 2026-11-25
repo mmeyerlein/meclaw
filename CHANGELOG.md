@@ -12,6 +12,14 @@ crates are internals and move without notice.
 
 ## [Unreleased]
 
+## [0.90.1] — 2026-11-25
+
+0.90.1 replaces 0.90.0: a test that asserted an order the contract does not give is corrected ([#1644](https://github.com/mmeyerlein/meclaw/issues/1644)); no product change since 0.90.0. It carries the content of 0.90.0: it removes the quick voice's speculation and opens params doors into sealed hives. The early answer before the route stamp (`spec_ahead`) is gone from the template surface; a set that still sets one of its params drops those keys (**Breaking**, [#1584](https://github.com/mmeyerlein/meclaw/issues/1584)). A running cell inside a sealed hive takes a params-only update through a declared door instead of a rebirth ([#1353](https://github.com/mmeyerlein/meclaw/issues/1353)). The live voice opens on `gpt-live-1.1` by default, keeps the model's audio flowing when one side is stuck, and a call can report how its audio went ([#1632](https://github.com/mmeyerlein/meclaw/issues/1632), [#1634](https://github.com/mmeyerlein/meclaw/issues/1634), [#1637](https://github.com/mmeyerlein/meclaw/issues/1637)).
+
+### Fixed
+
+- Tests: the gh45 warm pool test no longer asserts an order across deliveries ([#1644](https://github.com/mmeyerlein/meclaw/issues/1644)). A consume mark stands behind the emissions of its own handler, and nothing more; the test wanted the marks in the order of the messages and was red whenever a loaded machine let the next message overtake the mark. It now books every answer and mark on the message it names, reads to the end of the output channel, and is red on an unknown message, a second mark, an answer after its own mark, and a message without exactly one answer and one mark. No product change.
+
 ## [0.90.0] — 2026-11-25
 
 This release removes the quick voice's speculation and opens params doors into sealed hives. The early answer before the route stamp (`spec_ahead`) is gone from the template surface; a set that still sets one of its params drops those keys (**Breaking**, [#1584](https://github.com/mmeyerlein/meclaw/issues/1584)). A running cell inside a sealed hive takes a params-only update through a declared door instead of a rebirth ([#1353](https://github.com/mmeyerlein/meclaw/issues/1353)). The live voice opens on `gpt-live-1.1` by default, keeps the model's audio flowing when one side is stuck, and a call can report how its audio went ([#1632](https://github.com/mmeyerlein/meclaw/issues/1632), [#1634](https://github.com/mmeyerlein/meclaw/issues/1634), [#1637](https://github.com/mmeyerlein/meclaw/issues/1637)).

@@ -29,9 +29,10 @@ async fn warm_cell(
         "runner_mode": "warm",
         "max_concurrency": 1
     });
-    // 32 > the 24 emissions of the test: the consume mark goes out through a
-    // spawned task (`WorkGuard::drop`), so a full channel could let it lose the
-    // race against the next message's answer (review stille, Minor 1).
+    // 32 > the 24 emissions of the test, so a mark goes out at the drop of its
+    // own delivery and never through the task `WorkGuard::drop` spawns for a
+    // full channel. Either way it stands behind its own handler's emissions; the
+    // contract says nothing about its place among other deliveries (#1644).
     let (otx, orx) = tokio::sync::mpsc::channel(32);
     let td = tempfile::TempDir::new().unwrap();
     let (itx, _irx) = tokio::sync::mpsc::channel(8);
@@ -138,30 +139,42 @@ async fn every_message_gets_exactly_one_answer() {
     }
     // GH #1589: absence by a marker, not by a silence. The cell task closes
     // every handled delivery with its consume mark on the same FIFO output
-    // channel, after every emission the handler made for it (GH #1015). So the
-    // answers of message n are exactly what arrives before the mark carrying
-    // n's id; a second answer, however late, lands before that mark. The old
-    // proof was 300 ms of quiet after the twelfth answer, which passed any
-    // duplicate slower than that. The wait carries only the hang mark.
-    for (n, id) in ids.iter().enumerate() {
-        let mut answers = 0;
-        loop {
-            let what = format!("the consume mark of message {n}");
-            let em = meclaw_testing::deadline::hang(&what, rx.recv())
-                .await
-                .unwrap_or_else(|| panic!("the cell dropped its output channel at message {n}"));
-            if let Some(closed) = em.consumed_mark_id() {
-                assert_eq!(
-                    closed, *id,
-                    "message {n} was closed by the mark of another delivery"
-                );
-                break;
-            }
-            answers += 1;
+    // channel, after every emission its OWN handler made (GH #1015,
+    // `CellEmission::consumed_mark`, `WorkGuard`). Across deliveries there is
+    // no order: the worker frees its slot before it drops its guard, so the
+    // answer and the mark of n+1 may overtake the mark of n. The form that
+    // wanted mark n first was red in 355 of 1000 runs under 24 busy loops
+    // (#1644). So every emission is booked on the delivery it names, and the
+    // order is judged within one delivery only.
+    //
+    // The read ends when the output channel closes: without its mailbox the
+    // dispatcher returns, and the last worker takes the last sender with it.
+    // So nothing can follow unseen, not even behind the last mark. The wait
+    // carries only the hang mark.
+    drop(tx);
+    let mut answers = vec![0_usize; ids.len()];
+    let mut closed = vec![false; ids.len()];
+    while let Some(em) =
+        meclaw_testing::deadline::hang("the end of the output channel", rx.recv()).await
+    {
+        let parent = em.parent_message_id;
+        let n = ids
+            .iter()
+            .position(|id| Some(*id) == parent)
+            .unwrap_or_else(|| panic!("an emission names no sent message: {em:?}"));
+        if em.consumed_mark_id().is_some() {
+            assert!(!closed[n], "message {n} was closed by a second mark");
+            closed[n] = true;
+        } else {
+            assert!(!closed[n], "message {n} got an answer after its own mark");
+            answers[n] += 1;
         }
+    }
+    for (n, (got, closed)) in answers.into_iter().zip(closed).enumerate() {
         assert_eq!(
-            answers, 1,
-            "message {n} got {answers} answers -- exactly one per message"
+            got, 1,
+            "message {n} got {got} answers -- exactly one per message"
         );
+        assert!(closed, "message {n} was never closed by its mark");
     }
 }

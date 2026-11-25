@@ -101,6 +101,8 @@ worked examples listed in [`templates/README.md`](templates/README.md), where
 One line per release. Details in [CHANGELOG.md](CHANGELOG.md) and the
 [GitHub releases](https://github.com/mmeyerlein/meclaw/releases).
 
+- v0.90.1: 0.90.1 replaces 0.90.0: a test that asserted an order the contract does not give is corrected; no product
+  change since 0.90.0.
 - v0.90.0: this release removes the quick voice's speculation and opens params doors into sealed hives.
 - v0.89.6: this release makes the window the `llm` cell sends portable to every provider and keeps its cached prefix
   stable.
