@@ -1,4 +1,4 @@
-# `voice@2.12.0`
+# `voice@2.12.1`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -88,7 +88,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.12.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.12.1",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -241,7 +241,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.12.0",
+{"name": "channels/voice", "template": "voice@2.12.1",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -275,7 +275,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.12.0",
+{"name": "channels/voice", "template": "voice@2.12.1",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -546,7 +546,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.12.0",
+{"name": "channels/voice", "template": "voice@2.12.1",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -611,7 +611,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.12.0",
+{"name": "channels/voice", "template": "voice@2.12.1",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -623,7 +623,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.12.0",
+{"name": "channels/voice", "template": "voice@2.12.1",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -695,7 +695,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.12.0",
+{"name": "channels/voice", "template": "voice@2.12.1",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "credential_grant_id": "<grant of the live model's key>",
                                 "instructions": "<who the model is for this session>",
@@ -721,8 +721,11 @@ rate makes the start window smaller). The start budget is the smaller of
 `seed_max_tokens` less the estimated `greeting` and what the estimated
 `instructions` and `greeting` leave of 16,384; the seed is cut to it and to
 `seed_max_messages` (127 at most beside a `greeting`), oldest first -- in front
-of a `greeting` the oldest turns first, their tokens counted as the one message
-they become (#1641) -- and the `greeting` is never cut. With
+of a `greeting` counted as sent, without the turns of the seed and what stands
+between them, which a greeted start does not carry (#1654; logged as
+`seed_dropped`, and a seed this leaves empty still wins over `start_input`) --
+and the `greeting`
+is never cut. With
 `seed_wait_ms` set, every `seed_ask` names these limits in `hop.limits`:
 `model`, `start_budget`, `feed_budget` (`advise_max_tokens`), `chars_per_token`
 and `profile` (`window_profile`), so the curator cuts the window by the same
@@ -838,7 +841,7 @@ grants and the edges in the same mutation (`seed_rows` writes through the mutati
       },
       {
         "name": "voice",
-        "template": "voice@2.12.0"
+        "template": "voice@2.12.1"
       }
     ],
     "seed_rows": [
@@ -999,7 +1002,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.12.0",
+{"name": "channels/voice", "template": "voice@2.12.1",
  "override_params": {"tts": {"provider": "cartesia",
                              "credential_grant_id": "grant:cartesia@template-voice/tts",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -1014,7 +1017,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.12.0",
+{"name": "channels/voice", "template": "voice@2.12.1",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "credential_grant_id": "<grant of the elevenlabs key>",
                              "voice": "${ELEVENLABS_VOICE}"}}}

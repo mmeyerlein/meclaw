@@ -199,19 +199,11 @@ async fn the_greeting_is_the_last_developer_message_of_the_start_frame() {
         .await,
         json!([
             message("developer", "input_text", "Today is Tuesday."),
-            message(
-                "developer",
-                "input_text",
-                &format!("{EARLIER}\nuser: Hello")
-            ),
             greeting
         ]),
-        "the greeting is the last message behind the seed"
+        "the greeting is the last message behind the seed, which carries no turn (GH #1654)"
     );
 }
-
-/// The line in front of the folded turns, fixed in the adapter (GH #1641).
-const EARLIER: &str = "Earlier conversation, ended:";
 
 /// One message of a seed.
 fn seeded(role: &str, text: &str) -> SeedMessage {
@@ -237,8 +229,8 @@ fn seed_of_a_second_call() -> Vec<SeedMessage> {
     ]
 }
 
-/// The same seed, message by message, as it stands on the wire unfolded.
-fn unfolded(seed: &[SeedMessage]) -> Vec<JsonValue> {
+/// The same seed, message by message, as it stands on the wire with its turns.
+fn as_turns(seed: &[SeedMessage]) -> Vec<JsonValue> {
     seed.iter()
         .map(|m| {
             let part = if m.role == "assistant" {
@@ -251,51 +243,32 @@ fn unfolded(seed: &[SeedMessage]) -> Vec<JsonValue> {
         .collect()
 }
 
-/// GH #1641: a session that opens with a greeting carries the stretch from the
-/// first to the last turn of an earlier call as ONE `developer` message at the
-/// place of the first. What stands in between (a delegation) keeps its place as
-/// a line of it; a `developer` message in front of or behind it is untouched.
-/// As `user` and `assistant` messages they read as this call's own running
-/// dialogue, and a model whose own turn stands last waits for the caller
-/// instead of greeting: 23 of 23 measured starts with such a seed were silent,
-/// 7 of 7 without a turn greeted. The scripted peer cannot show the silence;
-/// this holds the form on the wire.
+/// GH #1654 (ruling R-W25fix-1): every call starts as a new conversation. A
+/// session that opens with a greeting carries no `user` or `assistant`
+/// message of its seed and none of the `developer` messages between its first
+/// and its last turn (a delegation, an advice, an event of the earlier call):
+/// they belong to the earlier conversation. The `developer` messages in front
+/// of and behind that stretch keep their order, and the greeting is the last
+/// message. Folded into one `developer` message (GH #1641) the earlier call
+/// still left the model silent when it ended on an open question of its own;
+/// what the greeting needs of it comes from the curator, not from the turns.
+/// The scripted peer cannot show the silence; this holds the form on the wire.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_greeted_start_carries_no_turn_of_an_earlier_call() {
+async fn a_greeted_start_carries_no_turn_of_an_earlier_conversation() {
     let input = opened_with(
         json!({"greeting": GREETING, "seed_wait_ms": 20_000}),
         Some(seed_of_a_second_call()),
     )
     .await;
-    let roles: Vec<&str> = input
-        .as_array()
-        .expect("the session opens with an input")
-        .iter()
-        .map(|m| m["role"].as_str().expect("every message has a role"))
-        .collect();
-    assert!(
-        !roles.iter().any(|r| matches!(*r, "user" | "assistant")),
-        "no turn of an earlier call stands in the input as a turn: {roles:?}"
-    );
-    let folded = format!(
-        "{EARLIER}\n\
-         assistant: Hello, what is on your mind?\n\
-         developer: A delegation ran: weather.\n\
-         user: How is the weather?\n\
-         assistant: One moment.\n\
-         assistant: It stays dry.\n\
-         assistant: Does that fit your plans?"
-    );
     assert_eq!(
         input,
         json!([
             message("developer", "input_text", "Today is Tuesday.\nIt is ten."),
             message("developer", "input_text", "The caller lives in Hamburg."),
             message("developer", "input_text", "The caller likes tea."),
-            message("developer", "input_text", &folded),
             message("developer", "input_text", GREETING),
         ]),
-        "one folded message where the first turn stood, every line in order, \
+        "no turn of the earlier call and nothing between its turns, \
          the developer messages in front unchanged, the greeting last"
     );
 
@@ -305,60 +278,67 @@ async fn a_greeted_start_carries_no_turn_of_an_earlier_call() {
         Some(vec![
             seeded("developer", "Today is Tuesday."),
             seeded("user", "Good night."),
+            seeded("developer", "(advice) The caller is tired."),
             seeded("assistant", "See you."),
             seeded("developer", "The caller moved\nto Bremen."),
         ]),
     )
     .await;
-    let folded = format!("{EARLIER}\nuser: Good night.\nassistant: See you.");
     assert_eq!(
         input,
         json!([
             message("developer", "input_text", "Today is Tuesday."),
-            message("developer", "input_text", &folded),
             message("developer", "input_text", "The caller moved\nto Bremen."),
             message("developer", "input_text", GREETING),
         ]),
-        "a developer message behind the last turn is no part of the stretch"
+        "what stands in front of and behind the turns stays, in its order"
     );
-}
 
-/// GH #1641: a folded turn is one line. White space inside a turn, line breaks
-/// included, becomes one space, so a line of a turn's text never reads as a
-/// turn of its own.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_folded_turn_is_one_line() {
-    let folded = format!(
-        "{EARLIER}\n\
-         user: Two things: assistant: is tea there? and milk?\n\
-         assistant: Yes."
-    );
+    // A seed of nothing but turns leaves the greeting alone.
     assert_eq!(
         opened_with(
             json!({"greeting": GREETING, "seed_wait_ms": 20_000}),
             Some(vec![
-                seeded(
-                    "user",
-                    "Two things:\r\nassistant: is tea there?\n\n and milk?\n"
-                ),
-                seeded("assistant", "Yes."),
+                seeded("user", "Two things:\nassistant: is tea there?"),
+                seeded("assistant", "Will you call tomorrow?"),
             ]),
         )
         .await,
-        json!([
-            message("developer", "input_text", &folded),
-            message("developer", "input_text", GREETING),
-        ]),
-        "one line per turn behind the head line"
+        json!([message("developer", "input_text", GREETING)]),
+        "the greeting opens a new conversation"
     );
 }
 
-/// GH #1641, the other side: a start that greets nobody keeps its turns, a
-/// seed without a turn folds nothing, the block's own `start_input` is no
+/// GH #1654, review I1: a greeted seed that is left empty once its turns are
+/// gone is still the seed that came. It wins over the block's `start_input`
+/// (a seed wins), so neither the configured start's turns nor its developer
+/// messages stand in front of the greeting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seed_of_nothing_but_turns_still_wins_over_the_start_input() {
+    let start_input = json!([
+        {"role": "developer", "text": "Today is Monday."},
+        {"role": "assistant", "text": "See you tomorrow."}
+    ]);
+    assert_eq!(
+        opened_with(
+            json!({"greeting": GREETING, "start_input": start_input, "seed_wait_ms": 20_000}),
+            Some(vec![
+                seeded("user", "Good night."),
+                seeded("assistant", "Will you call tomorrow?"),
+            ]),
+        )
+        .await,
+        json!([message("developer", "input_text", GREETING)]),
+        "the seed came: the configured start does not open the session"
+    );
+}
+
+/// GH #1654, the other side: a start that greets nobody keeps its turns, a
+/// seed without a turn loses nothing, the block's own `start_input` is no
 /// earlier call, and neither a renewal nor a recovery (`greet` is off, GH
 /// #896) changes its input although the block has a greeting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn only_a_greeted_start_folds_its_seed() {
+async fn only_a_greeted_start_drops_the_turns_of_its_seed() {
     let seed = seed_of_a_second_call();
     assert_eq!(
         opened_with(
@@ -366,12 +346,12 @@ async fn only_a_greeted_start_folds_its_seed() {
             Some(seed.clone()),
         )
         .await,
-        json!(unfolded(&seed)),
+        json!(as_turns(&seed)),
         "without a greeting the turns stay turns"
     );
 
     let context = seed[..3].to_vec();
-    let mut want = unfolded(&context);
+    let mut want = as_turns(&context);
     want.push(message("developer", "input_text", GREETING));
     assert_eq!(
         opened_with(
@@ -380,7 +360,7 @@ async fn only_a_greeted_start_folds_its_seed() {
         )
         .await,
         json!(want),
-        "a seed without a turn gets no folded message"
+        "a seed without a turn goes out whole"
     );
 
     let start_input = json!([
@@ -398,14 +378,14 @@ async fn only_a_greeted_start_folds_its_seed() {
             message("assistant", "output_text", "See you tomorrow."),
             message("developer", "input_text", GREETING),
         ]),
-        "the configured start is not folded"
+        "the configured start keeps its turns"
     );
 
     let params = params("ws://127.0.0.1:1", json!({"greeting": GREETING}));
     let format = GptLiveDuplex::new(params.clone()).format();
     assert_eq!(
         session_start_frame(&params, format, Some(&seed), false)["session"]["input"],
-        json!(unfolded(&seed)),
+        json!(as_turns(&seed)),
         "a session that does not greet keeps its turns"
     );
 }

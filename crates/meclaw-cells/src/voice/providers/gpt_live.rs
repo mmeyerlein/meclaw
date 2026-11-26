@@ -343,17 +343,22 @@ async fn run_session(
             } else {
                 params.seed_max_messages
             };
-            let trim = if greets(&params, greet) {
-                trim_folded
+            // GH #1654: in front of a greeting the turns of the seed and what
+            // stands between them leave (R-W25fix-1); the cut counts the form
+            // that is sent.
+            let sent = if greets(&params, greet) {
+                drop_turns(messages)
             } else {
-                trim_seed
+                messages.to_vec()
             };
-            let trimmed = trim(
-                messages,
-                budget_tokens,
-                max_messages,
-                params.chars_per_token,
-            );
+            let dropped = messages.len() - sent.len();
+            if dropped > 0 {
+                tracing::info!(
+                    seed_dropped = dropped,
+                    "gpt_live: seed_dropped -- a greeted start carries no turn of an earlier conversation"
+                );
+            }
+            let trimmed = trim_seed(&sent, budget_tokens, max_messages, params.chars_per_token);
             if trimmed.trimmed > 0 {
                 tracing::info!(
                     seed_trimmed = trimmed.trimmed,
@@ -366,7 +371,14 @@ async fn run_session(
                 est_tokens = trimmed.est_tokens,
                 "gpt_live: seed_used"
             );
-            Some(trimmed.kept)
+            // A seed that came empty opens like no seed, as it always did; one
+            // left empty by its turns is still the seed that came and wins over
+            // the block's `start_input` (GH #1654, review I1).
+            if trimmed.kept.is_empty() && dropped == 0 {
+                None
+            } else {
+                Some(trimmed.kept)
+            }
         }
         None if params.seed_wait_ms > 0 => {
             tracing::info!(
@@ -1664,9 +1676,11 @@ fn classify_connect(error: WsError) -> DuplexError {
 /// non-empty `greeting` follows either of them, or stands alone, as ONE
 /// `developer` message and always the last one (GH #1628): the guide puts the
 /// greeting instructions there, so they are known from the start, and the
-/// seed's cut runs before this frame is built and cannot reach it. The turns
-/// of a seed in front of a greeting are folded into one `developer` message
-/// (GH #1641); the block's own `start_input` is not. The block's
+/// seed's cut runs before this frame is built and cannot reach it. `seed` is
+/// the form that is sent: in front of a greeting the session drops the turns
+/// of an earlier conversation before its cut (GH #1654, [`drop_turns`], the one
+/// place), and a seed left empty by that still wins over `start_input`; the
+/// block's own `start_input` keeps its turns. The block's
 /// `delegation` replaces the client default and its `safety_identifier` is
 /// added; without the three keys, a seed and a greeting the frame is byte for
 /// byte the one it always was.
@@ -1707,10 +1721,9 @@ pub fn session_start_frame(
     {
         session.insert("safety_identifier".to_string(), json!(id));
     }
-    // A seed wins over the configured start; the configured start drops empty
-    // texts the way the seed's parse does.
-    let mut opening: Vec<SeedMessage> = match seed.filter(|m| !m.is_empty()) {
-        Some(messages) if greets(params, greet) => fold_turns(messages),
+    // A seed wins over the configured start, even one its turns left empty;
+    // the configured start drops empty texts the way the seed's parse does.
+    let mut opening: Vec<SeedMessage> = match seed {
         Some(messages) => messages.to_vec(),
         None => params
             .start_input
@@ -1749,53 +1762,28 @@ pub fn session_start_frame(
     frame
 }
 
-/// The line in front of the folded turns of an earlier call (GH #1641).
-const EARLIER_LINE: &str = "Earlier conversation, ended:";
-
 /// Whether a message of a seed is a turn of the conversation.
 fn is_turn(m: &SeedMessage) -> bool {
     matches!(m.role.as_str(), "user" | "assistant")
 }
 
-/// The first and the last turn of a seed, `None` where it has none.
-fn turn_stretch(seed: &[SeedMessage]) -> Option<(usize, usize)> {
-    Some((
-        seed.iter().position(is_turn)?,
-        seed.iter().rposition(is_turn)?,
-    ))
-}
-
-/// One message as a line of the folded turns, its line break in front. White
-/// space becomes one space, so no line of its text reads as a turn of its own.
-fn turn_line(m: &SeedMessage) -> String {
-    let mut line = format!("\n{}:", m.role);
-    for word in m.text.split_whitespace() {
-        line.push(' ');
-        line.push_str(word);
-    }
-    line
-}
-
-/// The seed of a session that greets: the stretch from its first to its last
-/// turn becomes ONE `developer` message at the place of the first, one line per
-/// message; what stands in front of it and behind it stays as it came.
+/// The seed of a session that greets, as it is sent: the stretch from its
+/// first to its last turn leaves, the `developer` messages in front of it and
+/// behind it stay in their order.
 ///
-/// GH #1641: as `user` and `assistant` messages the turns of an earlier call
-/// read as the running dialogue of this one: 23 of 23 measured starts on a seed
-/// that ends on an assistant turn were silent, 7 of 7 without a turn greeted.
-fn fold_turns(seed: &[SeedMessage]) -> Vec<SeedMessage> {
-    let Some((first, last)) = turn_stretch(seed) else {
-        return seed.to_vec();
-    };
-    let mut text = EARLIER_LINE.to_string();
-    text.extend(seed[first..=last].iter().map(turn_line));
-    let mut folded = seed[..first].to_vec();
-    folded.push(SeedMessage {
-        role: "developer".to_string(),
-        text,
-    });
-    folded.extend_from_slice(&seed[last + 1..]);
-    folded
+/// GH #1654 (ruling R-W25fix-1): every call starts as a new conversation. The
+/// turns of an earlier call, as turns or folded into one `developer` message
+/// (GH #1641), left the model silent where the earlier call ended on an open
+/// question of its own; a `developer` message between two turns (a
+/// delegation, an advice, an event) belongs to that call too. What the
+/// greeting needs of the earlier call comes from the curator.
+fn drop_turns(seed: &[SeedMessage]) -> Vec<SeedMessage> {
+    let first = seed.iter().position(is_turn);
+    let last = seed.iter().rposition(is_turn);
+    match (first, last) {
+        (Some(first), Some(last)) => [&seed[..first], &seed[last + 1..]].concat(),
+        _ => seed.to_vec(),
+    }
 }
 
 /// Whether the start frame of a session carries the block's greeting: it was
@@ -1871,13 +1859,10 @@ pub struct TrimmedSeed {
 /// [`GptLiveParams::append_limit_chars`] counts it, so the numbers are the
 /// same on every machine.
 pub fn est_tokens(text: &str, chars_per_token: f64) -> u64 {
-    est_chars(text.chars().count(), chars_per_token)
-}
-
-/// [`est_tokens`] of a text of `chars` characters.
-fn est_chars(chars: usize, chars_per_token: f64) -> u64 {
     let milli_chars = ((chars_per_token * 1_000.0).round() as u64).max(1);
-    (chars as u64).saturating_mul(1_000).div_ceil(milli_chars)
+    (text.chars().count() as u64)
+        .saturating_mul(1_000)
+        .div_ceil(milli_chars)
 }
 
 /// The most tokens the start window of a session may carry besides its
@@ -1952,61 +1937,6 @@ pub fn trim_seed(
         trimmed: start,
         est_tokens: total,
     }
-}
-
-/// Cut a seed the session folds ([`fold_turns`]) to `max_messages` and to
-/// `max_tokens` of what it carries folded: the oldest turns first, and what
-/// stands around the turns only when none of them is left, as [`trim_seed`]
-/// cuts it.
-///
-/// GH #1641: the curator fills a seed up to [`start_budget`] at this rate, so
-/// the head line and the roles never had room: 127 turns of 64 tokens beside a
-/// greeting of 40 went out at 8 398 of the provider's 8 192. Cut oldest first
-/// over the whole seed, that room came from the fact line and from notes the
-/// curator had already booked as said. A `developer` message between two turns
-/// (a delegation) leaves with the turn in front of it; alone, it would stand in
-/// front of the turns as context of this call.
-fn trim_folded(
-    messages: &[SeedMessage],
-    max_tokens: u64,
-    max_messages: usize,
-    chars_per_token: f64,
-) -> TrimmedSeed {
-    let Some((first, last)) = turn_stretch(messages) else {
-        return trim_seed(messages, max_tokens, max_messages, chars_per_token);
-    };
-    let (head, tail) = (&messages[..first], &messages[last + 1..]);
-    let around: u64 = head
-        .iter()
-        .chain(tail)
-        .map(|m| est_tokens(&m.text, chars_per_token))
-        .sum();
-    let lines: Vec<usize> = messages[first..=last]
-        .iter()
-        .map(|m| turn_line(m).chars().count())
-        .collect();
-    let mut chars = EARLIER_LINE.chars().count() + lines.iter().sum::<usize>();
-    for (cut, line) in lines.iter().enumerate() {
-        let start = first + cut;
-        let total = around + est_chars(chars, chars_per_token);
-        if is_turn(&messages[start]) && messages.len() - cut <= max_messages && total <= max_tokens
-        {
-            return TrimmedSeed {
-                kept: [head, &messages[start..]].concat(),
-                trimmed: cut,
-                est_tokens: total,
-            };
-        }
-        chars -= line;
-    }
-    let mut rest = trim_seed(
-        &[head, tail].concat(),
-        max_tokens,
-        max_messages,
-        chars_per_token,
-    );
-    rest.trimmed += lines.len();
-    rest
 }
 
 /// What the opening of a seeded session collected while it waited.
@@ -3127,15 +3057,20 @@ mod tests {
         let started = input(None, true);
         assert_eq!(started.as_array().map(Vec::len), Some(3), "{started}");
         assert_eq!(started[2], greeting, "behind the configured start");
+        let seeded = drop_turns(&[seed("developer", "Today is Tuesday."), seed("user", "hi")]);
         assert_eq!(
-            input(Some(&[seed("user", "hi")]), true),
+            input(Some(&seeded), true),
             json!([
                 {"type": "message", "role": "developer",
-                 "content": [{"type": "input_text",
-                              "text": "Earlier conversation, ended:\nuser: hi"}]},
-                greeting
+                 "content": [{"type": "input_text", "text": "Today is Tuesday."}]},
+                greeting.clone()
             ]),
-            "behind the seed, whose turns are folded (GH #1641)"
+            "behind the seed, which carries no turn of an earlier conversation (GH #1654)"
+        );
+        assert_eq!(
+            input(Some(&drop_turns(&[seed("user", "hi")])), true),
+            json!([greeting]),
+            "a seed its turns left empty still wins over the configured start"
         );
         assert_eq!(
             input(Some(&[seed("user", "hi")]), false),

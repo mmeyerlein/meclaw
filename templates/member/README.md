@@ -1,4 +1,4 @@
-# `member@2.11.1`
+# `member@2.11.2`
 
 One person, as a level. **Eight holders, three open containers and no cell of
 its own** — eleven nodes and one hundred and seven edges.
@@ -1146,7 +1146,7 @@ The whole arrangement, as three mutations. The member first:
 
 ```json
 {"scope": "<org>/members", "diff": {
-  "add_nodes": [{"name": "alex", "template": "member@2.11.1"}]
+  "add_nodes": [{"name": "alex", "template": "member@2.11.2"}]
 }}
 ```
 
@@ -1155,7 +1155,7 @@ lanes (`../assistant/README.md` § *Instantiating* writes them out):
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@4.1.1"}],
+  "add_nodes": [{"name": "assistants/scribe", "template": "assistant@4.1.2"}],
   "add_edges": [
     {"from": "./assistants", "to": "./assistants/scribe",
      "condition": "has(hop.route) && hop.route == 'in_turn' && has(context.assistant) && context.assistant == 'scribe'"},

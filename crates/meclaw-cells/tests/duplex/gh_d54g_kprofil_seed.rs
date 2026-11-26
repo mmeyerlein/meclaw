@@ -357,15 +357,6 @@ async fn gh_d54g_kprofil_the_seed_is_trimmed_by_the_params() {
     );
 }
 
-/// The message the turns of a seed become beside a greeting (GH #1641).
-fn folded(turns: &[SeedMessage]) -> String {
-    let mut text = "Earlier conversation, ended:".to_string();
-    for m in turns {
-        text.push_str(&format!("\n{}: {}", m.role, m.text));
-    }
-    text
-}
-
 /// One message of a seed: `text`, filled up to `chars` characters.
 fn filled(role: &str, text: &str, chars: usize) -> SeedMessage {
     SeedMessage {
@@ -374,61 +365,59 @@ fn filled(role: &str, text: &str, chars: usize) -> SeedMessage {
     }
 }
 
-/// GH #1641: whoever builds the start window fills it up to the `start_budget`
-/// the cell named, at the cell's rate, and the folding comes on top. The room
-/// for it is taken from the oldest turns: the fact line and a note in front of
-/// the turns and the lines behind them stay, at the limit of tokens as at that
-/// of messages.
+/// GH #1654: in front of a greeting the turns of a seed leave (R-W25fix-1), and
+/// the cut counts the form that is sent. A seed whose turns alone go past the
+/// limit of tokens or of messages keeps every message in front of and behind
+/// them: it is not the oldest context that gives way to turns nobody sends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_folded_turns_leave_before_the_context_around_them() {
+async fn the_cut_of_a_greeted_seed_counts_the_form_it_is_sent_in() {
     // 160 characters at four a token: 40 tokens, 8 152 are left for the seed.
     let greeting = "g".repeat(160);
     let extra = json!({"chars_per_token": 4, "greeting": greeting});
     let facts = filled("developer", "Today is Tuesday.", 80);
     let note = filled("developer", "Say this once:", 80);
     let after = filled("developer", "Be kind.", 48);
-    // 20 + 20 + 12 tokens around 100 turns of 81: the budget, exactly.
-    let turns: Vec<SeedMessage> = (0..100)
+    // 20 + 20 + 12 tokens around 110 turns of 81: far past the budget.
+    let turns: Vec<SeedMessage> = (0..110)
         .map(|i| filled("user", &format!("{i:04}"), 324))
         .collect();
     let mut seed = vec![facts.clone(), note.clone()];
     seed.extend(turns.iter().cloned());
     seed.push(after.clone());
     let raw: u64 = seed.iter().map(|m| est(&m.text, 4)).sum();
-    assert_eq!(raw + 40, SEED_MAX_TOKENS, "the seed fills the window");
-    let kept = start_input(extra.clone(), &seed).await;
-    // 28 characters of head and 331 a line: 97 lines fit 8 100 tokens.
+    assert!(
+        raw + 40 > SEED_MAX_TOKENS,
+        "the seed goes past the window: {raw}"
+    );
     assert_eq!(
-        kept,
+        start_input(extra.clone(), &seed).await,
         vec![
             facts.text.clone(),
             note.text.clone(),
-            folded(&turns[3..]),
             after.text.clone(),
             greeting.clone()
         ],
-        "the three oldest turns leave, the context around them stays"
+        "the turns leave, the context around them stays whole"
     );
-    let total: u64 = kept.iter().map(|t| est(t, 4)).sum();
-    assert!(total <= SEED_MAX_TOKENS, "under the limit: {total}");
 
-    // 131 messages, of which 127 have room beside the greeting.
+    // 131 messages, of which 127 have room beside the greeting: counted as
+    // sent, the one in front of the turns stays.
     let turns: Vec<SeedMessage> = (0..130)
         .map(|i| filled("user", &format!("{i:04}"), 8))
         .collect();
     assert_eq!(
         start_input(extra, &[&[facts.clone()][..], &turns].concat()).await,
-        vec![facts.text, folded(&turns[4..]), greeting],
-        "the oldest turns leave at the limit of messages too"
+        vec![facts.text, greeting],
+        "at the limit of messages too"
     );
 }
 
-/// GH #1641: a `developer` message between two turns (a delegation) belongs to
-/// the turn in front of it and leaves with it: without it, it would stand in
-/// front of the turns as context of this call. The messages around the turns
-/// leave only when no turn is left, the oldest first, as without a greeting.
+/// GH #1654: a `developer` message between two turns (a delegation, an
+/// advice, an event) belongs to the earlier conversation and leaves with the
+/// turns, whatever room there is. What stands around the turns leaves only for
+/// the room, the oldest first, as without a greeting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn what_stands_between_two_folded_turns_leaves_with_the_first() {
+async fn what_stands_between_the_turns_leaves_with_them() {
     let greeting = "g".repeat(160);
     let extra = |budget: u64| json!({"chars_per_token": 4, "seed_max_tokens": 40 + budget, "greeting": greeting});
     let head = filled("developer", "Be kind.", 8);
@@ -439,12 +428,10 @@ async fn what_stands_between_two_folded_turns_leaves_with_the_first() {
         filled("user", "new", 20),
         filled("assistant", "Yes.", 20),
     ];
-    // With the delegation the rest is 2 + 28 of 100 tokens: it is not the
-    // room that takes it away.
     assert_eq!(
-        start_input(extra(100), &seed).await,
-        vec![head.text, folded(&seed[3..]), greeting.clone()],
-        "the delegation leaves with its turn"
+        start_input(extra(1_000), &seed).await,
+        vec![head.text, greeting.clone()],
+        "the delegation leaves with the turns"
     );
 
     let long = filled("developer", "long", 200);
@@ -453,28 +440,37 @@ async fn what_stands_between_two_folded_turns_leaves_with_the_first() {
     assert_eq!(
         start_input(extra(12), &[long, short.clone(), turn]).await,
         vec![short.text, greeting.clone()],
-        "no turn fits: they all leave, then the oldest context"
+        "the turn leaves, then the oldest context for the room"
     );
 }
 
-/// GH #1641: 127 messages of a seed have room beside a greeting, counted before
-/// the turns are folded.
+/// GH #1654: 127 messages of a seed have room beside a greeting, counted
+/// without the turns that leave.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_folded_turns_count_as_messages_of_the_seed() {
+async fn the_turns_of_a_greeted_seed_take_no_message_of_the_input() {
     let greeting = "g".repeat(160);
-    let turns: Vec<SeedMessage> = (0..128)
-        .map(|i| filled("user", &format!("{i:04}"), 8))
+    let context: Vec<SeedMessage> = (0..127)
+        .map(|i| filled("developer", &format!("{i:04}"), 8))
         .collect();
+    let turns: Vec<SeedMessage> = (0..10)
+        .map(|i| filled("user", &format!("t{i:03}"), 8))
+        .collect();
+    let mut want: Vec<String> = context.iter().map(|m| m.text.clone()).collect();
+    want.push(greeting.clone());
     assert_eq!(
-        start_input(json!({"chars_per_token": 4, "greeting": greeting}), &turns).await,
-        vec![folded(&turns[1..]), greeting],
-        "of 128 turns the oldest leaves, the greeting is last"
+        start_input(
+            json!({"chars_per_token": 4, "greeting": greeting}),
+            &[&context[..], &turns].concat()
+        )
+        .await,
+        want,
+        "127 messages in front of ten turns stay, the greeting is last"
     );
 }
 
-/// GH #1641: a renewed session greets nobody, so nothing is folded and the
-/// folding takes no room: a seed at the limit of tokens or of messages goes out
-/// as it came, although the block has a greeting.
+/// GH #1654: a renewed session greets nobody, so no turn leaves: a seed at the
+/// limit of tokens or of messages goes out as it came, although the block has
+/// a greeting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_renewed_session_keeps_a_seed_at_its_limit() {
     let extra = json!({"chars_per_token": 4, "greeting": "g".repeat(160)});
@@ -488,14 +484,10 @@ async fn a_renewed_session_keeps_a_seed_at_its_limit() {
     }
 }
 
-/// GH #1641: the head line and the role in front of each line of the folded
-/// turns count against the input limit too; the oldest turns leave for them and
-/// no more than that, the greeting stays whole, and a seed whose last turn does
-/// not fit folds nothing at all.
+/// GH #1654: a seed of nothing but turns leaves the greeting alone, never an
+/// empty message in front of it; a message behind the turns stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_folded_turns_count_against_the_input_limit() {
-    // 160 characters at four a token: 40 tokens. 127 turns of 64 tokens and
-    // the greeting are 8 168 of 8 192; the 127 prefixes are 222 more.
+async fn a_greeted_seed_of_turns_leaves_the_greeting_alone() {
     let greeting = "g".repeat(160);
     let turns: Vec<SeedMessage> = (0..127)
         .map(|i| SeedMessage {
@@ -503,23 +495,12 @@ async fn the_folded_turns_count_against_the_input_limit() {
             text: format!("{i:04}{}", "x".repeat(252)),
         })
         .collect();
-    let kept = start_input(json!({"chars_per_token": 4, "greeting": greeting}), &turns).await;
-    let total: u64 = kept.iter().map(|t| est(t, 4)).sum();
-    assert!(
-        total <= SEED_MAX_TOKENS,
-        "the input stays under the limit: {total}"
-    );
-    // 28 characters of head and 263 a line: 123 lines fit 8 152 tokens.
     assert_eq!(
-        kept,
-        vec![folded(&turns[4..]), greeting.clone()],
-        "the oldest four leave, the newest 123 stay, the greeting is last"
+        start_input(json!({"chars_per_token": 4, "greeting": greeting}), &turns).await,
+        vec![greeting.clone()],
+        "no turn and no empty message, the greeting is the input"
     );
-    let one_more = est(&folded(&turns[3..]), 4) + est(&greeting, 4);
-    assert!(one_more > SEED_MAX_TOKENS, "no turn left for nothing");
 
-    // Nothing but the greeting is left for a turn of 5 tokens once it is
-    // folded: no head line without a turn, and what follows it stays.
     let extra = json!({"chars_per_token": 4, "seed_max_tokens": 50, "greeting": greeting});
     let turn = SeedMessage {
         role: "user".into(),
@@ -529,11 +510,6 @@ async fn the_folded_turns_count_against_the_input_limit() {
         role: "developer".into(),
         text: "Be kind.".into(),
     };
-    assert_eq!(
-        start_input(extra.clone(), std::slice::from_ref(&turn)).await,
-        vec![greeting.clone()],
-        "no empty folded message, the greeting is never displaced"
-    );
     assert_eq!(
         start_input(extra, &[turn, after]).await,
         vec!["Be kind.".to_string(), greeting.clone()],
@@ -560,18 +536,18 @@ async fn the_seed_gives_way_to_the_greeting_at_the_input_limit() {
 
     // Four messages of 2 048 tokens fill the 8 192 exactly; beside the
     // greeting one of them has to leave, and the greeting stays whole.
-    let four = seed("user", 4, 8_192);
+    // `developer` messages, which a greeting keeps (turns leave, GH #1654).
+    let four = seed("developer", 4, 8_192);
     let kept = start_input(json!({"chars_per_token": 4}), &four).await;
     assert_eq!(kept.len(), 4, "without a greeting the seed fills the limit");
     let kept = start_input(json!({"chars_per_token": 4, "greeting": greeting}), &four).await;
-    // GH #1641: beside a greeting the turns stand in one folded message.
-    let want = vec![folded(&four[1..]), greeting.clone()];
+    let mut want: Vec<String> = four[1..].iter().map(|m| m.text.clone()).collect();
+    want.push(greeting.clone());
     assert_eq!(kept, want, "the oldest leaves, the greeting is last");
     let total: u64 = kept.iter().map(|t| est(t, 4)).sum();
     assert!(total <= SEED_MAX_TOKENS, "the input stays under the limit");
 
-    // 128 messages: one leaves for the greeting. They are `developer` messages,
-    // which are sent one by one; turns are folded into one (GH #1641).
+    // 128 messages: one leaves for the greeting.
     let many = seed("developer", 128, 8);
     let kept = start_input(json!({"chars_per_token": 4}), &many).await;
     assert_eq!(kept.len(), 128, "without a greeting 128 messages fit");

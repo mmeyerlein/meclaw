@@ -81,7 +81,13 @@ fn bytes(run: &Run) -> Vec<(Value, Value)> {
 /// `session_closed` marks, so the open end of a closed earlier session is said to be over); no
 /// session is closed here, so the answer is the one of before -- the only moved bytes are the read.
 /// Old `6527ae6f6f23c18efba607d50c9c6ec388632e1747a3ce15a43ba976e925e9c9`.
-const MASTER_OFF_DIGEST: &str = "206901d15afe65b5b8d49e2bc402d9ceac6563b2b723e8d1b730c139894f5def";
+/// Re-blessed for GH #1654 (w25fix stand): the read `s-closed` names three columns more (`seq`,
+/// `value`, `at`: the close's facts), and a `start` seed reads two legs more, `s-handover` (the
+/// prepared notes of the newest closes) and `s-outcome` (the errands' outcome rows), for the line
+/// about the last conversation; no session is closed here, so the seed says no such line and its
+/// messages are the ones of before -- the only moved bytes are the reads. Old
+/// `206901d15afe65b5b8d49e2bc402d9ceac6563b2b723e8d1b730c139894f5def`.
+const MASTER_OFF_DIGEST: &str = "66b7f4790039e038229c1a6e7d96cb494dbf3e1a4315d14df45ce52d9805da11";
 
 fn digest(runs: &[&Run]) -> String {
     let all: Vec<Value> = runs

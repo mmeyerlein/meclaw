@@ -11,6 +11,7 @@ pub mod curator_feed;
 pub mod curator_hive;
 #[path = "../support/curator_live.rs"]
 pub mod curator_live;
+pub mod gh1654_the_seed_names_the_last_conversation;
 pub mod gh_d54g_ack_listen;
 pub mod gh_d54g_curwall_a_spoken_line_reaches_the_wall;
 pub mod gh_d54g_kprofil_window;

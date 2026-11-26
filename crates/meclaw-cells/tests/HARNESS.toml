@@ -240,6 +240,11 @@ harness = "curator_live"
 match = "^gh_d54g_curwall"
 harness = "curator_live"
 
+# w25fix stand (GH #1654): the line about the last conversation in a seed, beside the live pins.
+[[rule]]
+match = "^gh1654_"
+harness = "curator_live"
+
 # d54s abbruch (GH #1587): the receiver of delegation_cancel, beside the live pins.
 [[rule]]
 match = "^gh_d54s_cancel"

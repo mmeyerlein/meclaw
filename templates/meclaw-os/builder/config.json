@@ -1,7 +1,7 @@
 {
   "cell": {
     "type": "ref",
-    "template": "builder@1.35.1"
+    "template": "builder@1.35.2"
   },
   "override_params": {
     "recipes": {

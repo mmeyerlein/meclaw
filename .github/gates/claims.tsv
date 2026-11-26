@@ -451,14 +451,16 @@ PIN-voice-duplex-speak-end-quiet-de	docs/cell-types.md	er endet, wenn `spoken_qu
 PIN-voice-duplex-speak-end-quiet-en	docs/cell-types.en.md	it ends when `spoken_quiet_ms` pass without an assistant fragment or `spoken_cap_ms` is reached	pinned	the_quiet_after_the_last_fragment_ends_the_section
 PIN-voice-duplex-greeting-once-de	docs/cell-types.md	steht sie als genau eine `developer`-Nachricht am Ende von `session.input` im `session.start`	pinned	the_greeting_is_the_last_developer_message_of_the_start_frame
 PIN-voice-duplex-greeting-once-en	docs/cell-types.en.md	it stands as exactly one `developer` message at the end of `session.input` in the `session.start`	pinned	the_greeting_is_the_last_developer_message_of_the_start_frame
-PIN-voice-duplex-greeting-fold-de	docs/cell-types.md	die Strecke vom ersten bis zum letzten Turn wird an der Stelle des ersten zu einer `developer`-Nachricht	pinned	a_greeted_start_carries_no_turn_of_an_earlier_call
-PIN-voice-duplex-greeting-fold-en	docs/cell-types.en.md	the stretch from the first to the last turn becomes one `developer` message at the place of the first	pinned	a_greeted_start_carries_no_turn_of_an_earlier_call
-PIN-voice-duplex-greeting-fold-cut-de	docs/cell-types.md	Kopfzeile und Rollen zählen in den Schnitt des Seeds	pinned	the_folded_turns_count_against_the_input_limit
-PIN-voice-duplex-greeting-fold-cut-en	docs/cell-types.en.md	head line and roles count in the cut of the seed	pinned	the_folded_turns_count_against_the_input_limit
-PIN-voice-duplex-greeting-fold-order-de	docs/cell-types.md	eine `developer`-Nachricht zwischen zwei Turns mit dem Turn vor ihr	pinned	what_stands_between_two_folded_turns_leaves_with_the_first
-PIN-voice-duplex-greeting-fold-order-en	docs/cell-types.en.md	a `developer` message between two turns with the turn in front of it	pinned	what_stands_between_two_folded_turns_leaves_with_the_first
-PIN-voice-duplex-greeting-fold-context-de	docs/cell-types.md	die Nachrichten davor und dahinter erst, wenn kein Turn mehr da ist	pinned	the_folded_turns_leave_before_the_context_around_them
-PIN-voice-duplex-greeting-fold-context-en	docs/cell-types.en.md	the messages in front of and behind them only when no turn is left	pinned	the_folded_turns_leave_before_the_context_around_them
+PIN-voice-duplex-greeting-newconv-de	docs/cell-types.md	keine `user`- und `assistant`-Nachricht des Seeds und keine der `developer`-Nachrichten zwischen seinem ersten und seinem letzten Turn	pinned	a_greeted_start_carries_no_turn_of_an_earlier_conversation
+PIN-voice-duplex-greeting-newconv-en	docs/cell-types.en.md	carries no `user` and no `assistant` message of the seed and none of the `developer` messages between its first and its last turn	pinned	a_greeted_start_carries_no_turn_of_an_earlier_conversation
+PIN-voice-duplex-greeting-newconv-cut-de	docs/cell-types.md	Der Schnitt des Seeds vor einer Begrüßung rechnet die Form, die gesendet wird	pinned	the_cut_of_a_greeted_seed_counts_the_form_it_is_sent_in
+PIN-voice-duplex-greeting-newconv-cut-en	docs/cell-types.en.md	the cut of the seed counts the form that is sent	pinned	the_cut_of_a_greeted_seed_counts_the_form_it_is_sent_in
+PIN-voice-duplex-greeting-newconv-between-de	docs/cell-types.md	die Turns nehmen weder Tokens noch Nachrichten	pinned	the_turns_of_a_greeted_seed_take_no_message_of_the_input
+PIN-voice-duplex-greeting-newconv-between-en	docs/cell-types.en.md	the turns take neither tokens nor messages	pinned	the_turns_of_a_greeted_seed_take_no_message_of_the_input
+PIN-voice-duplex-greeting-newconv-context-de	docs/cell-types.md	die Nachrichten davor und dahinter gehen nur für den Platz, die ältesten zuerst	pinned	what_stands_between_the_turns_leaves_with_them
+PIN-voice-duplex-greeting-newconv-context-en	docs/cell-types.en.md	the messages in front of and behind them leave only for the room, the oldest first	pinned	what_stands_between_the_turns_leaves_with_them
+PIN-voice-duplex-greeting-newconv-empty-de	docs/cell-types.md	Ein Seed, den das leert, ist trotzdem der Seed, der kam, und gewinnt gegen `start_input`	pinned	a_seed_of_nothing_but_turns_still_wins_over_the_start_input
+PIN-voice-duplex-greeting-newconv-empty-en	docs/cell-types.en.md	A seed this leaves empty is still the seed that came and wins over `start_input`	pinned	a_seed_of_nothing_but_turns_still_wins_over_the_start_input
 PIN-voice-duplex-immutable-de	docs/cell-types.md	`duplex` steht daneben und ist aus demselben Grund unveränderlich	pinned	an_update_may_not_move_the_engine
 PIN-voice-duplex-immutable-en	docs/cell-types.en.md	`duplex` stands beside them and is immutable for the same reason	pinned	an_update_may_not_move_the_engine
 PIN-voice-duplex-spoken-frame-de	docs/voice-wire-protocol.md	Kumulativ wie `partial`: jedes ersetzt das vorige. Nur hinter einem Duplex-Provider.	pinned	a_spoken_frame_names_the_turn_it_is_filling
