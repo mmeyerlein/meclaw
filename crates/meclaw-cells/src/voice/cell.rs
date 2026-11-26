@@ -278,6 +278,16 @@ pub enum VoiceEvent {
         /// leaves the key out.
         limits: Option<Value>,
     },
+    /// The model of an early session has begun to greet while its line still
+    /// rings (#1650): the first audible window of the greeting is parked. The
+    /// park pump sends it once, at that moment and past the events it keeps for
+    /// the adoption; only where `params.emit_prewarm_ready` orders it.
+    PrewarmReady {
+        /// The call whose line rings.
+        session_id: String,
+        /// The milliseconds since the cell was told that the line rings.
+        at_ms: u64,
+    },
     /// A time mark of this call fell due (`params.call_marks_s` /
     /// `call_mark_every_s`, D48): the handler emits it on the `call_mark`
     /// lane. The connection's own timer, so a call that is over fires none.
@@ -394,6 +404,7 @@ impl VoiceEvent {
             | Self::DuplexFailed { session_id, .. }
             | Self::Renewed { session_id, .. }
             | Self::SeedAsk { session_id, .. }
+            | Self::PrewarmReady { session_id, .. }
             | Self::CallMark { session_id, .. }
             | Self::CallUsage { session_id, .. }
             | Self::AudioReport { session_id, .. }
@@ -975,6 +986,9 @@ pub struct VoiceCell {
     /// Whether a duplex call reports how its audio went on the `audio_report`
     /// lane (`params.emit_audio_report`, #1637). Settled at birth.
     emit_audio_report: bool,
+    /// Whether an early session reports its greeting on the `prewarm_ready`
+    /// lane (`params.emit_prewarm_ready`, #1650). Settled at birth.
+    emit_prewarm_ready: bool,
     /// The model the duplex calls of this cell run on, for that report; `None`
     /// where the provider has no model.
     duplex_model: Option<String>,
@@ -1100,6 +1114,7 @@ impl VoiceCell {
             duplex_emit_spoken: duplex_emit_spoken(params),
             emit_first_audio: params.emit_first_audio,
             emit_audio_report: params.emit_audio_report,
+            emit_prewarm_ready: params.emit_prewarm_ready,
             duplex_model: duplex_model(params),
             emit_speak_end: params.emit_speak_end,
             external_timeout_ms: params.external_timeout_ms,
@@ -1252,6 +1267,7 @@ impl VoiceCell {
             http_referer: self.attribution.1.clone(),
             emit_first_audio: self.emit_first_audio,
             emit_audio_report: self.emit_audio_report,
+            emit_prewarm_ready: self.emit_prewarm_ready,
         }
     }
 
@@ -4733,6 +4749,16 @@ impl LongRunningCell for VoiceCell {
                     }
                     let content = self.live_body("seed_ask", &session_id, hop, json!([]));
                     self.emit(sink, content).await;
+                }
+                VoiceEvent::PrewarmReady { session_id, at_ms } => {
+                    // No session check, like `SeedAsk`: the call still rings.
+                    // The pump sends this only where the switch orders it; the
+                    // handler asks again because the lane is its own.
+                    if self.emit_prewarm_ready {
+                        let hop = json!({"t_ready_ms": at_ms});
+                        let content = self.live_body("prewarm_ready", &session_id, hop, json!([]));
+                        self.emit(sink, content).await;
+                    }
                 }
                 VoiceEvent::CallMark {
                     session_id,

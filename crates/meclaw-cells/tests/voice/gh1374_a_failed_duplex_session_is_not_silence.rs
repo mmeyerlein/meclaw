@@ -338,6 +338,46 @@ fn a_refused_transfer_is_said_on_stderr() {
     );
 }
 
+/// #1650: `prewarm_ready` goes to the signalling half alone, and the id that
+/// reaches the switch's argv is as plain as the one of `failure_media`. It is
+/// the `call_uuid` of the `call_ringing` that opened the early session.
+#[test]
+fn a_ready_greeting_is_told_for_a_plain_call_id_only() {
+    if skip() {
+        return;
+    }
+    let ready = |id: &str| {
+        obj(
+            json!({"route": "prewarm_ready", "session_id": id, "call_id": id,
+                   "platform": "voice", "mode": "auto", "engine": "duplex", "t_ready_ms": 1400}),
+        )
+    };
+    assert_eq!(carried("./voice", "./signal", &ready(A_CALL)), 1);
+    assert_eq!(
+        carried("./voice", ".", &ready(A_CALL)),
+        0,
+        "it is not a lane of the rim"
+    );
+
+    let out = run(ready(A_CALL), None);
+    assert_eq!(out.len(), 1, "one command at the switch: {out:#?}");
+    let m = &out[0];
+    assert_eq!(m["header"]["route"], "switch", "{m:#}");
+    assert_eq!(m["header"]["operation"], "setvar", "{m:#}");
+    assert_eq!(m["header"]["call_uuid"], A_CALL, "{m:#}");
+    let args: Value =
+        sj::from_str(m["messages"][0]["text"].as_str().expect("a tool call")).expect("json");
+    assert_eq!(
+        unquote(args["url"].as_str().expect("a url")),
+        format!("http://127.0.0.1:8080/webapi/uuid_setvar?{A_CALL} meclaw_ready true"),
+    );
+
+    for odd in ["", "abc def", "abc meclaw_x"] {
+        let out = run(ready(odd), None);
+        assert!(out.is_empty(), "call id {odd:?}: {out:#?}");
+    }
+}
+
 #[test]
 fn the_setting_is_declared_where_an_operator_reads_it() {
     if skip() {

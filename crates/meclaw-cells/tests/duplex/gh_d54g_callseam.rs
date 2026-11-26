@@ -1162,6 +1162,26 @@ async fn gh_d54g_callseam_the_first_audio_of_an_answer_is_stamped() {
     );
 }
 
+/// A set orders the ready report of a ringing call (#1650) as it orders the
+/// stamp: the door admits `emit_prewarm_ready` on the shipped `voice` template
+/// and on the telephone's media half, and the parse reads it.
+#[test]
+fn a_set_override_of_ready_is_accepted() {
+    let over = json!({"emit_prewarm_ready": true});
+    for (cell, of, template) in [
+        (shipped_voice_cell(), None, "voice"),
+        (shipped_telephone_media_cell(), Some("voice"), "freeswitch"),
+    ] {
+        if let Some(cell) = cell
+            && let Err(why) = check_override_params(&cell, of, template, &over)
+        {
+            panic!("a set's `emit_prewarm_ready` on '{template}' must pass the door: {why:?}");
+        }
+    }
+    let parsed = meclaw_cells::voice::params::VoiceParams::parse(&duplex_params(over));
+    assert!(parsed.is_ok(), "the parse reads it: {parsed:?}");
+}
+
 /// The first answer of a session is stamped once, although its words run
 /// ahead of its audio.
 ///

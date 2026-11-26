@@ -287,6 +287,7 @@ const KNOWN_PARAMS_KEYS: &[&str] = &[
     "http_referer",
     "emit_first_audio",
     "emit_audio_report",
+    "emit_prewarm_ready",
 ];
 
 /// Everything a `voice` cell needs to serve one WebSocket endpoint.
@@ -454,6 +455,16 @@ pub struct VoiceParams {
     /// drains it every report would dead-letter. Settled at birth: the I/O half
     /// reads it once per life.
     pub emit_audio_report: bool,
+    /// Whether a session opened while its line rings reports that the model
+    /// has begun to greet on the `prewarm_ready` lane (#1650): one emission per
+    /// early session, when the first audible window of the greeting is parked
+    /// and nobody has picked up yet. Hop `t_ready_ms` is the time since the
+    /// ring; no audio and no word.
+    ///
+    /// **Off by default**, the rule of `emit_first_audio`: without an edge that
+    /// drains it every report would dead-letter. Settled at birth: the I/O half
+    /// reads it once per life.
+    pub emit_prewarm_ready: bool,
 }
 
 /// GH #1059: the three provider slots of a voice cell that can spend a
@@ -1849,6 +1860,7 @@ impl VoiceParams {
         let emit_usage = read_bool(obj, "emit_usage", false)?;
         let emit_first_audio = read_bool(obj, "emit_first_audio", false)?;
         let emit_audio_report = read_bool(obj, "emit_audio_report", false)?;
+        let emit_prewarm_ready = read_bool(obj, "emit_prewarm_ready", false)?;
         let call_marks = read_call_marks(obj)?;
 
         for key in obj.keys() {
@@ -1883,6 +1895,7 @@ impl VoiceParams {
             http_referer,
             emit_first_audio,
             emit_audio_report,
+            emit_prewarm_ready,
         };
         parsed.check_secrets()?;
         // Whether the duplex block NAMED a rate: the parsed struct cannot say,
@@ -2433,6 +2446,10 @@ pub struct VoiceOverlay {
     /// an update and not written while off, all as `emit_first_audio` is.
     #[serde(skip_serializing_if = "switch_is_off")]
     pub emit_audio_report: bool,
+    /// Whether the `prewarm_ready` lane is ordered (#1650), carried, refused by
+    /// an update and not written while off, all as `emit_first_audio` is.
+    #[serde(skip_serializing_if = "switch_is_off")]
+    pub emit_prewarm_ready: bool,
 }
 
 /// The wire form of a `"0"` | `"1"` switch.
@@ -2472,8 +2489,9 @@ impl OverlayParams for VoiceOverlay {
     /// The credential rounds' ceiling (GH #1059), the three D48 call
     /// settings (`emit_usage`, `call_marks_s`, `call_mark_every_s`, GH #1379)
     /// the app attribution (`x_title`, `http_referer`, GH #1455) and the
-    /// `first_audio` and `audio_report` lanes' switches (`emit_first_audio`,
-    /// d54g callseam; `emit_audio_report`, #1637),
+    /// `first_audio`, `audio_report` and `prewarm_ready` lanes' switches
+    /// (`emit_first_audio`, d54g callseam; `emit_audio_report`, #1637;
+    /// `emit_prewarm_ready`, #1650),
     /// all read once per life. Nothing else is refused here for being the key
     /// it is; the provider blocks — grants included — are out of reach because they
     /// are not *known* keys, which is a different sentence and a better one —
@@ -2488,6 +2506,7 @@ impl OverlayParams for VoiceOverlay {
         "http_referer",
         "emit_first_audio",
         "emit_audio_report",
+        "emit_prewarm_ready",
     ];
 
     fn parse(raw: &JsonValue) -> Result<Self, String> {
@@ -2534,6 +2553,7 @@ impl OverlayParams for VoiceOverlay {
             http_referer,
             emit_first_audio,
             emit_audio_report,
+            emit_prewarm_ready,
         } = VoiceParams::parse(raw)?;
         let obj = raw.as_object().ok_or("params: must be object")?;
         Ok(Self {
@@ -2560,6 +2580,7 @@ impl OverlayParams for VoiceOverlay {
             http_referer,
             emit_first_audio,
             emit_audio_report,
+            emit_prewarm_ready,
         })
     }
 }
@@ -2596,6 +2617,7 @@ mod tests {
             "and again: the first_audio lane is ordered, not assumed"
         );
         assert!(!p.emit_audio_report, "and the audio_report lane");
+        assert!(!p.emit_prewarm_ready, "and the prewarm_ready lane");
         assert_eq!(p.external_timeout_ms, 5000);
         assert_eq!(p.provider_idle_timeout_ms, 30000);
         assert_eq!(
@@ -3462,6 +3484,7 @@ mod tests {
             ("http_referer", json!("https://example.org")),
             ("emit_first_audio", json!(true)),
             ("emit_audio_report", json!(true)),
+            ("emit_prewarm_ready", json!(true)),
         ] {
             let mut update = meclaw_core::serde_json::Map::new();
             update.insert(key.into(), value);

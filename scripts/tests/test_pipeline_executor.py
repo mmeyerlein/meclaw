@@ -3133,6 +3133,160 @@ class TestFailFastGivesAGrace(ExecutorCase):
         self.assertEqual("RED", passed["verdict"])
 
 
+# The executor of a red run as its own process. `executor.run` gets the live
+# descendants of this process as its scope's members (a subreaper keeps the
+# orphans below it, as the scope's cgroup would); everything else is real:
+# the process tree, the own sessions, the signals.
+SCOPE_DRIVER = """import ctypes, io, json, os, sys
+from unittest import mock
+from scripts.pipeline import executor
+
+ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)     # PR_SET_CHILD_SUBREAPER
+with open(sys.argv[1], encoding="utf-8") as fh:
+    spec = json.load(fh)
+out, err, looks = io.StringIO(), io.StringIO(), []
+
+
+def members():
+    ppid = {}
+    for name in os.listdir("/proc"):
+        if name.isdigit():
+            try:
+                with open("/proc/%s/stat" % name, encoding="utf-8", errors="replace") as fh:
+                    rest = fh.read().rsplit(")", 1)[1].split()
+            except (OSError, IndexError):
+                continue
+            if rest[0] != "Z":
+                ppid[int(name)] = int(rest[1])
+    mine = {os.getpid()}
+    while True:
+        more = {p for p, pp in ppid.items() if pp in mine} - mine
+        if not more:
+            return sorted(mine)
+        mine |= more
+
+
+def scope_procs(run):
+    looks.append([run, out.getvalue().splitlines()[-1]])
+    return members()
+
+
+with mock.patch.object(executor, "_scope_procs", scope_procs, create=True), \
+        mock.patch.object(executor, "STOP_GRACE_S", spec["grace"]):
+    rc = executor.run(spec["dispatch"], out, err)
+print(json.dumps({"rc": rc, "out": out.getvalue().splitlines(), "err": err.getvalue(),
+                  "looks": looks, "alive": [p for p in members() if p != os.getpid()]}))
+"""
+
+
+class TestARedRunEndsItsScope(ExecutorCase):
+    """#1651: two red gates of wave w25 (build01 run-6a66ebff395e, build04
+    run-7ab632876ecc) left 298 and 366 processes in their scope: a stop reaches
+    the stations' process GROUPS, what a station started in its own session
+    (`unit_runner`'s units, their colonies and stubs) lived on, held the lease
+    and loaded the next gate."""
+
+    def drive(self, body, cmd_after, grace, **kw):
+        """Run `side` (starts a child in its own session) beside `last`."""
+        fifo, pid, script = self.root / "go", self.root / "child.pid", self.root / "child.sh"
+        os.mkfifo(fifo)
+        # The child ends by itself once the test's directory is gone (a red run).
+        script.write_text("%s\necho $$ > %s\necho x > %s\nwhile [ -e %s ]; do sleep 1; done\n"
+                          % (body, pid, fifo, pid))
+        stations = [station("side", "setsid sh %s & %s" % (script, cmd_after[0])),
+                    station("last", "cat %s > /dev/null; %s" % (fifo, cmd_after[1]))]
+        driver, spec = self.root / "driver.py", self.root / "spec.json"
+        driver.write_text(SCOPE_DRIVER)
+        spec.write_text(json.dumps({"dispatch": self.dispatch(stations, **kw), "grace": grace}))
+        res = subprocess.run([sys.executable, str(driver), str(spec)], cwd=str(REPO),
+                             env=dict(os.environ, PYTHONPATH=str(REPO)), capture_output=True,
+                             text=True, timeout=kit_time.HANG)
+        self.assertEqual(0, res.returncode, res.stderr)
+        return json.loads(res.stdout), int(pid.read_text())
+
+    def check_red(self, got, child):
+        self.assertEqual(1, got["rc"], got["err"])
+        last = json.loads(got["out"][-1])
+        self.assertEqual(("pass_ended", "RED"), (last["event"], last["data"]["verdict"]))
+        self.assertNotIn(child, got["alive"], "a process of the scope outlived the red run")
+        self.assertEqual([], got["alive"])
+        # The verdict is in the stream before the first look at the scope.
+        self.assertEqual({(RUN, "pass_ended")},
+                         {(run, json.loads(line)["event"]) for run, line in got["looks"]})
+
+    def test_a_child_in_its_own_session_cleans_up_and_ends_after_a_fail_fast(self):
+        mark = self.root / "cleaned"
+        got, child = self.drive("trap 'echo done > %s; exit 0' TERM" % mark,
+                                ("exec sleep 600", "exit 1"), kit_time.HANG, **{"+fail_fast": True})
+        self.check_red(got, child)
+        self.assertEqual("done", mark.read_text().strip())
+        self.assertIn("pipe-%s.scope" % RUN, got["err"])
+
+    def test_a_child_in_its_own_session_that_ignores_term_ends_by_kill(self):
+        got, child = self.drive("trap '' TERM", ("exec sleep 600", "exit 1"), 0.2,
+                                **{"+fail_fast": True})
+        self.check_red(got, child)
+
+    def test_a_red_run_without_a_stop_ends_the_leftovers_too(self):
+        # The form of a station that failed on its own (a cap, a crash): no
+        # fail-fast, the leftover's station is green.
+        got, child = self.drive("true", ("true", "exit 1"), kit_time.HANG)
+        self.check_red(got, child)
+
+    def test_a_green_run_never_looks_at_its_scope(self):
+        got, child = self.drive("true", ("true", "true"), kit_time.HANG)
+        self.assertEqual((0, []), (got["rc"], got["looks"]), got["err"])
+        self.assertIn(child, got["alive"])
+
+    def test_a_scope_that_cannot_be_ended_never_changes_the_verdict(self):
+        with mock.patch.object(executor, "_scope_procs", side_effect=ValueError("boom"), create=True):
+            rc, evs = self.run_exec(self.dispatch([station("red", "exit 1")]))
+        self.assertEqual((1, "RED"), (rc, evs[-1]["data"]["verdict"]))
+        self.assertIn("boom", self.err_text)
+
+    def test_neither_the_executor_nor_its_ancestors_are_signalled(self):
+        members = [1, os.getppid(), os.getpid(), 4000001, 4000002]
+        sent = []
+
+        def send(pid, sig):
+            sent.append((pid, sig))
+            members.remove(pid)
+        executor._end_scope(RUN, io.StringIO(), kit_time.HANG, lambda run: list(members), send)
+        self.assertEqual([(4000001, signal.SIGTERM), (4000002, signal.SIGTERM)], sent)
+
+    def test_only_the_run_s_own_scope_names_processes(self):
+        proc, cg = self.root / "proc", self.root / "cgroup"
+        (proc / "self").mkdir(parents=True)
+        unit = "/user.slice/app.slice/pipe-%s.scope" % RUN
+        for path, want in ((unit, [11, 12]),
+                           (unit + "/inner", None), (unit + "-x", None),
+                           ("/user.slice/app.slice/pipe-run-ffffffffffff.scope", None),
+                           ("/user.slice/session-1.scope", None), ("/", None)):
+            with self.subTest(path=path):
+                (proc / "self" / "cgroup").write_text("1:name=x:%s\n0::%s\n" % (unit, path))
+                at = cg / path.lstrip("/")
+                at.mkdir(parents=True, exist_ok=True)
+                (at / "cgroup.procs").write_text("11\n12\n")
+                self.assertEqual(want, executor._scope_procs(RUN, str(proc), str(cg)))
+        (proc / "self" / "cgroup").unlink()
+        self.assertIsNone(executor._scope_procs(RUN, str(proc), str(cg)))
+
+    def test_a_signal_needs_the_executor_s_own_cgroup(self):
+        kid = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                               stdin=subprocess.PIPE)
+        self.addCleanup(kid.wait, kit_time.HANG)
+        self.addCleanup(kid.stdin.close)
+        real = executor._cgroup
+        for other in ("/other.scope", None):
+            with mock.patch.object(executor, "_cgroup", lambda pid, *a: other if pid == kid.pid
+                                   else real(pid, *a)), \
+                    mock.patch.object(signal, "pidfd_send_signal") as send:
+                executor._signal_member(kid.pid, signal.SIGTERM)
+            self.assertFalse(send.called)
+        executor._signal_member(kid.pid, signal.SIGTERM)
+        self.assertEqual(-signal.SIGTERM, kid.wait(kit_time.HANG))
+
+
 def setUpModule():
     store_isolation.isolate()
 

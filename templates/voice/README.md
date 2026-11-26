@@ -1,4 +1,4 @@
-# `voice@2.11.0`
+# `voice@2.12.0`
 
 A spoken conversation as one cell. One WebSocket surface, one pair of provider
 credentials, one wire up and one wire down. No persona, no memory, no answer of
@@ -44,6 +44,7 @@ instantiating mutation put it -- and not a scope with a door, so there is no
 | out, `hop.route == 'speak_end'` | one synthesis is over. Empty `messages[]`; `hop` carries `session_id`, `call_id`, `speak_id` and `reason` (`done`, `cancelled`, `failed`) beside `platform`. OFF by default -- `params.emit_speak_end` turns it on |
 | out, `hop.route == 'first_audio'` | the first audio of an answer went out to the client. Empty `messages[]`. A duplex session emits one per answer at its first audible audio; `hop` carries `turn_id` (the open turn) and `t_first_audio_ms`, the time the closed `turn` later carries, on the session's clock. The way through a speech synthesis emits one per synthesis at its first audio frame, ahead of its `speak_end`; `hop` carries `speak_id` and `t_first_audio_ms` in milliseconds since the connection opened. OFF by default -- `params.emit_first_audio` turns it on, and the set that sets it draws the edge |
 | out, `hop.route == 'audio_report'` | how the audio of a duplex call went ([#1637](https://github.com/mmeyerlein/meclaw/issues/1637)): one at the end of the call, after its `final` usage. Empty `messages[]`; the body carries when the call began and ended, how the model's audio arrived over every provider session of the call, the holes at the way out, the longest waits, the lead and the model (the fields stand in `docs/cell-types.en.md`, section `voice`). No audio and no word of the call. OFF by default -- `params.emit_audio_report` turns it on. Duplex only |
+| out, `hop.route == 'prewarm_ready'` | the greeting of a call that still rings can be heard at the pickup ([#1650](https://github.com/mmeyerlein/meclaw/issues/1650)): one per session that opened while its line rang (`duplex.prewarm_ttl_ms`), the moment the first audible sound of its greeting is kept. Empty `messages[]`; `hop` carries `t_ready_ms`, the milliseconds since `call_ringing`. No audio and no word. Nothing where the call ends first, the early session runs out or the media connection adopts it; a report already on its way at that moment can still go out. OFF by default -- `params.emit_prewarm_ready` turns it on, and the set that sets it draws the edge where no hive has one. Duplex only |
 | out, `hop.route == 'delegation'` | the duplex provider handed work to the client and named the handle: `hop` carries `delegation_id` and `offset_ms`, the body the user text of the open turn. Duplex only |
 | out, `hop.route == 'renewed'` | the provider session was renewed inside the SAME call -- same connection, same `call_id`, the caller's audio never cut -- because a live model ends a session at a limit of its own. Empty `messages[]`; `hop` carries `renewal_n` (counting from 1) and `renewed_at` (epoch milliseconds). The receiver answers with an `in_advise` `context` that carries `hop.renewal_n`: it reaches the new session at once, BEFORE the caller does, and the call goes over at the next quiet moment of the line -- no spoken section open, `spoken_quiet_ms` without the model's audio or a transcript -- at the latest `spoken_cap_ms` after the block; without a block the session is due after `renew_grace_ms`. What the old session still says reaches the caller until the new one speaks, never both at once. A renewal that fails before it takes over leaves the call on its session. Duplex only, and only where `renew_after_ms` is set |
 | out, `hop.route == 'error'` | the cell's own failure: empty `messages[]`, `hop.error_code` plus `msg_type: 'voice_error'`, `session_id` and `call_id` where a session exists, detail in `meta` |
@@ -87,7 +88,7 @@ with `edge_schema`.
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/voice", "template": "voice@2.11.0",
+  "add_nodes": [{"name": "channels/voice", "template": "voice@2.12.0",
                  "override_params": {"mount": "voice"}}],
   "add_edges": [
     {"from": "./channels/voice", "to": "./channels",
@@ -240,7 +241,7 @@ install`). Until then the manifest that wants partials does both halves itself
 one key on the node:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.11.0",
+{"name": "channels/voice", "template": "voice@2.12.0",
  "override_params": {"emit_partials": true}}
 ```
 
@@ -274,7 +275,7 @@ at the switch pending — see [`freeswitch`](../freeswitch/) § *Hanging up*).
 **Both halves or neither**, exactly as for `partial`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.11.0",
+{"name": "channels/voice", "template": "voice@2.12.0",
  "override_params": {"emit_speak_end": true}}
 ```
 
@@ -545,7 +546,7 @@ a new name takes effect on the next life of the cell — the registration happen
 once, when the I/O half starts.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.11.0",
+{"name": "channels/voice", "template": "voice@2.12.0",
  "override_params": {"mount": "voice-b"}}
 ```
 
@@ -610,7 +611,7 @@ spelling that says "not set" -- `VoiceParams::parse` reads a null `tts` exactly
 as an absent one, which is legal precisely when the recogniser is `echo`:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.11.0",
+{"name": "channels/voice", "template": "voice@2.12.0",
  "override_params": {"stt": {"provider": "echo"}, "tts": null}}
 ```
 
@@ -622,7 +623,7 @@ routes -- a self-hosted realtime transcription endpoint, a self-hosted
 `/v1/audio/speech` -- stands in for the hosted one without touching the cell:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.11.0",
+{"name": "channels/voice", "template": "voice@2.12.0",
  "override_params": {
    "tts": {"provider": "openai",
            "base_url": "http://<local-host>:<port>",
@@ -694,7 +695,7 @@ sets both to `null` in the same breath -- `override_params` merges and has no
 gesture that removes a key:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.11.0",
+{"name": "channels/voice", "template": "voice@2.12.0",
  "override_params": {"duplex": {"provider": "gpt_live",
                                 "credential_grant_id": "<grant of the live model's key>",
                                 "instructions": "<who the model is for this session>",
@@ -837,7 +838,7 @@ grants and the edges in the same mutation (`seed_rows` writes through the mutati
       },
       {
         "name": "voice",
-        "template": "voice@2.11.0"
+        "template": "voice@2.12.0"
       }
     ],
     "seed_rows": [
@@ -998,7 +999,7 @@ instantiating manifest's `override_params`, where it is substituted at
 instantiation.
 
 ```json
-{"name": "channels/voice", "template": "voice@2.11.0",
+{"name": "channels/voice", "template": "voice@2.12.0",
  "override_params": {"tts": {"provider": "cartesia",
                              "credential_grant_id": "grant:cartesia@template-voice/tts",
                              "voice": "${CARTESIA_VOICE}"}}}
@@ -1013,7 +1014,7 @@ exactly the same place, and the whole switch is one override -- the template doe
 not change, because `provider` was always a value rather than a shape:
 
 ```json
-{"name": "channels/voice", "template": "voice@2.11.0",
+{"name": "channels/voice", "template": "voice@2.12.0",
  "override_params": {"tts": {"provider": "elevenlabs",
                              "credential_grant_id": "<grant of the elevenlabs key>",
                              "voice": "${ELEVENLABS_VOICE}"}}}

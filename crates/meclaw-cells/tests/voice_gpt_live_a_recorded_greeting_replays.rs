@@ -20,7 +20,7 @@ use meclaw_cells::voice::contract::AudioFormat;
 use meclaw_cells::voice::params::GptLiveParams;
 use meclaw_cells::voice::providers::gpt_live::{session_start_frame, session_url};
 use meclaw_testing::mock_gpt_live::{
-    LiveScript, MockGptLive, RecordingError, RecordingHeader, parse_recording,
+    LiveScript, MockGptLive, ProviderIds, RecordingError, RecordingHeader, parse_recording,
 };
 use meclaw_testing::mock_openai_realtime::b64_decode;
 use serde_json::Value as JsonValue;
@@ -140,6 +140,37 @@ async fn a_recorded_greeting_replays_in_the_mock() {
             );
         }
     }
+}
+
+/// GH #1646: no recording this repository ships carries an id of the provider.
+/// A live session id has the shape of another vendor's access token, and a
+/// secret scanner of a public tree reads it as one.
+#[test]
+fn no_shipped_recording_carries_a_provider_id() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/live");
+    let mut read = 0;
+    for entry in std::fs::read_dir(&dir).expect("the fixtures are listed") {
+        let path = entry.expect("a fixture").path();
+        if path.extension().is_none_or(|e| e != "jsonl") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a recording is readable");
+        let (_, events) = parse_recording(&text).expect("a recording parses");
+        let mut ids = ProviderIds::default();
+        for (n, event) in events.iter().enumerate() {
+            let mut scrubbed = event.payload.clone();
+            ids.scrub(&mut scrubbed);
+            // Never the payload itself: the message would carry the id.
+            assert!(
+                scrubbed == event.payload,
+                "{}: event {n} ({}) carries an id of the provider",
+                path.display(),
+                event.kind
+            );
+            read += 1;
+        }
+    }
+    assert!(read > 0, "a recording was read");
 }
 
 /// GH #1632: what is recorded is what the adapter sends, not a frame somebody

@@ -776,3 +776,242 @@ async fn gh_d54g_prewarm_only_the_greeting_is_parked_and_a_second_phrase_into_th
         "one call, one model"
     );
 }
+
+// ── The ready report of a parked session (#1650, `prewarm_ready`) ─────────
+
+/// The lane's name.
+const READY: &str = "prewarm_ready";
+
+/// [`params`] with the lane ordered.
+fn ready_params(extra: Value) -> Value {
+    let mut raw = params(extra);
+    if let Some(obj) = raw.as_object_mut() {
+        obj.insert("emit_prewarm_ready".into(), json!(true));
+    }
+    raw
+}
+
+/// Everything the cell emits, up to and including the first emission of
+/// `route` that names `call`.
+async fn emitted_until(live: &mut Live, route: &str, call: &str) -> Vec<Value> {
+    let mut seen: Vec<Value> = Vec::new();
+    loop {
+        let e = tokio::time::timeout(duplex_cell::marker(), live.emissions.recv())
+            .await
+            .unwrap_or_else(|_| panic!("HANG: no `{route}` of {call}; saw {seen:?}"))
+            .expect("the cell is running")
+            .content;
+        let last = duplex_cell::emission_route(&e) == Some(route)
+            && duplex_cell::header(&e, "call_id") == Some(&json!(call));
+        seen.push(e);
+        if last {
+            return seen;
+        }
+    }
+}
+
+/// The calls that reported ready, in order.
+fn ready_calls(seen: &[Value]) -> Vec<&str> {
+    seen.iter()
+        .filter(|e| duplex_cell::emission_route(e) == Some(READY))
+        .filter_map(|e| duplex_cell::header(e, "call_id").and_then(Value::as_str))
+        .collect()
+}
+
+/// `call` rings, its model greets, and the cell says so: the marker behind
+/// which an earlier report would have been seen.
+async fn rings_and_greets(live: &mut Live, call: &str) -> Vec<Value> {
+    live.send(line_fact("call_ringing", call)).await;
+    let session = live.session().await;
+    model_says(&session, GREET, 1).await;
+    emitted_until(live, READY, call).await
+}
+
+/// The first audible window of the greeting reports the parked session ready,
+/// at once and once. Nobody has picked up when the report leaves; it names the
+/// call like `seed_ask` does and how long the line has rung, and carries no
+/// word. What the model says after it reports nothing, parked or adopted.
+///
+/// That the time counts from the ring is `the_ready_report_counts_from_the_ring`
+/// in `connection.rs`, on the virtual clock: no real session, no judged duration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_audible_greeting_reports_ready_once() {
+    let mut live = duplex_cell::boot_edge(ready_params(json!({})), 60_000, off()).await;
+
+    live.send(line_fact("call_ringing", "call-r1")).await;
+    let session = live.session().await;
+    model_says(&session, GREET, 1).await;
+    let seen = emitted_until(&mut live, READY, "call-r1").await;
+    let ready = seen.last().expect("the report");
+    for (key, want) in [
+        ("session_id", json!("call-r1")),
+        ("platform", json!("voice")),
+        ("mode", json!("auto")),
+        ("engine", json!("duplex")),
+    ] {
+        assert_eq!(duplex_cell::header(ready, key), Some(&want), "{ready}");
+    }
+    assert!(
+        duplex_cell::header(ready, "t_ready_ms").is_some_and(Value::is_u64),
+        "the milliseconds since the ring: {ready}"
+    );
+    assert_eq!(ready["messages"], json!([]), "no word: {ready}");
+    let keys: Vec<&String> = ready.as_object().expect("an object").keys().collect();
+    assert_eq!(keys, ["header", "messages"], "nothing beside the hop");
+
+    // The rest of the greeting, a pause and a second phrase, still ringing.
+    model_says(&session, GREET, 4).await;
+    model_says(&session, 0, 3).await;
+    model_says(&session, SECOND, 2).await;
+    all_of_it_is_parked(&session).await;
+    // And the pickup, with a word after it.
+    let (mut client, _hello) = live.link("call-r1", "auto").await;
+    assert_eq!(sample_of(&client.next_audio().await), GREET);
+    model_says(&session, LATER, 1).await;
+    while sample_of(&client.next_audio().await) != LATER {}
+
+    let seen = rings_and_greets(&mut live, "call-r2").await;
+    assert_eq!(
+        ready_calls(&seen),
+        ["call-r2"],
+        "one report per early session"
+    );
+}
+
+/// Silence is not a greeting: what the model streams before its first word
+/// reports nothing, also where the pickup comes before that word. The word
+/// the model says after the pickup then reports nothing either: nobody waits
+/// for it any more.
+///
+/// The `hello` leaves before the connection adopts the early session, and
+/// silence leaves no parked sound whose first frame would prove the adoption.
+/// The line's noise does: it reaches the model on the adopted session only. A
+/// chunk the pump takes after that is taken by a pump that has been told, so
+/// the word behind it is filed as said after the pickup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn silence_before_the_greeting_reports_nothing() {
+    let mut live = duplex_cell::boot_edge(ready_params(json!({})), 60_000, off()).await;
+
+    live.send(line_fact("call_ringing", "call-s1")).await;
+    let session = live.session().await;
+    model_says(&session, 0, 20).await;
+    all_of_it_is_parked(&session).await;
+    let (mut client, _hello) = live
+        .connect("session=call-s1&sample_rate=16000&mode=auto")
+        .await;
+    line_noise_reaches_the_model(&mut client, &mut live, 1).await;
+    model_says(&session, 0, 1).await;
+    all_of_it_is_parked(&session).await;
+    model_says(&session, LATER, 1).await;
+    heard_until(&mut client, LATER).await;
+    assert_eq!(
+        live.starts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the early session was adopted"
+    );
+
+    let seen = rings_and_greets(&mut live, "call-s2").await;
+    assert_eq!(
+        ready_calls(&seen),
+        ["call-s2"],
+        "neither the silence nor the word after the pickup is a ready report"
+    );
+}
+
+/// A call that ends while its line rings reports nothing after: its early
+/// session is closed. The same where the early session runs out of its time.
+///
+/// The second cell keeps an early session for a moment only. The test waits for
+/// that session's end, and its marker is the next ring's `seed_ask`, which
+/// leaves at the ring: nothing here has to happen within that moment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_that_ends_while_ringing_reports_nothing_after() {
+    let mut live = duplex_cell::boot_edge(ready_params(json!({})), 60_000, off()).await;
+    live.send(line_fact("call_ringing", "call-e1")).await;
+    let session = live.session().await;
+    model_says(&session, 0, 2).await;
+    all_of_it_is_parked(&session).await;
+    live.send(line_fact("call_ended", "call-e1")).await;
+    closed_for_good(&session).await;
+    let seen = rings_and_greets(&mut live, "call-e3").await;
+    assert_eq!(ready_calls(&seen), ["call-e3"], "nothing after the end");
+
+    let mut live = duplex_cell::boot_seeded(ready_params(json!({})), 100, 0, 0, 400).await;
+    live.send(line_fact("call_ringing", "call-e2")).await;
+    let session = live.session().await;
+    closed_for_good(&session).await;
+    live.send(line_fact("call_ringing", "call-e4")).await;
+    let seen = emitted_until(&mut live, "seed_ask", "call-e4").await;
+    assert!(ready_calls(&seen).is_empty(), "nothing after it: {seen:?}");
+}
+
+/// The early session is closed, and a provider that still talks is heard by
+/// nobody.
+async fn closed_for_good(session: &FakeSession) {
+    tokio::time::timeout(duplex_cell::marker(), session.audio_out.closed())
+        .await
+        .expect("HANG: the early session is closed");
+    assert!(session.audio_out.send(chunk(GREET)).await.is_err());
+}
+
+/// The lane is ordered, never assumed: without `emit_prewarm_ready` the same
+/// ring, greeting and pickup emit nothing on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ready_is_silent_unless_asked() {
+    for asked in [false, true] {
+        let raw = if asked {
+            ready_params(json!({}))
+        } else {
+            params(json!({}))
+        };
+        let mut live = duplex_cell::boot_seeded(raw, 60_000, 0, 0, 400).await;
+        live.send(line_fact("call_ringing", "call-q1")).await;
+        let session = live.session().await;
+        model_says(&session, GREET, 2).await;
+        all_of_it_is_parked(&session).await;
+        let (mut client, _hello) = live
+            .connect("session=call-q1&sample_rate=16000&mode=auto")
+            .await;
+        assert_eq!(next_sample(&mut client).await, GREET);
+
+        live.send(line_fact("call_ringing", "call-q2")).await;
+        let seen = emitted_until(&mut live, "seed_ask", "call-q2").await;
+        let want: &[&str] = if asked { &["call-q1"] } else { &[] };
+        assert_eq!(ready_calls(&seen), want, "asked: {asked}");
+    }
+}
+
+/// Without an early session there is nothing to report: the line rings, the
+/// model opens with the media connection, and its greeting is no ready report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_prewarm_no_ready() {
+    let mut live = duplex_cell::boot_seeded(ready_params(json!({})), 0, 0, 0, 400).await;
+    live.send(line_fact("call_ringing", "call-n1")).await;
+    let (mut client, _hello) = live
+        .connect("session=call-n1&sample_rate=16000&mode=auto")
+        .await;
+    let session = live.session().await;
+    model_says(&session, GREET, 2).await;
+    assert_eq!(next_sample(&mut client).await, GREET);
+
+    let (_second, _hello) = live
+        .connect("session=call-n2&sample_rate=16000&mode=auto")
+        .await;
+    let seen = emitted_until(&mut live, "seed_ask", "call-n2").await;
+    assert!(ready_calls(&seen).is_empty(), "saw {seen:?}");
+}
+
+/// A page rings no line: the session its early word opens reports nothing,
+/// there is no ring whose time the report could name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_rings_no_line_and_reports_no_ready() {
+    let mut live = duplex_cell::boot_page(ready_params(json!({})), 0, 60_000, 0).await;
+    let (client, _hello) = live.link("page-n", "hold").await;
+    client.ready().await;
+    let session = live.session().await;
+    model_says(&session, GREET, 2).await;
+    all_of_it_is_parked(&session).await;
+
+    let seen = rings_and_greets(&mut live, "call-p1").await;
+    assert_eq!(ready_calls(&seen), ["call-p1"]);
+}

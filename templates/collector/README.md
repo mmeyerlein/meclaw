@@ -1,4 +1,4 @@
-# `collector@8.0.0`
+# `collector@8.0.1`
 
 Context assembly as a hive of existing cell types -- no new cell type, no Rust. Three cells:
 `assemble` (a `code` cell, the state machine), `window` (a `store` cell, the state) and `clock`
@@ -259,7 +259,7 @@ caller that may use it, and no caller could offer a model anything nobody typed.
 own template says it uses -- and the schemas behind those names are **asked for**:
 
 ```json
-{"add_nodes": [{"name": "scribe", "template": "collector@8.0.0",
+{"add_nodes": [{"name": "scribe", "template": "collector@8.0.1",
                 "override_params": {"assemble": {"tools": ["web_search", "web_fetch"]}}}]}
 ```
 
@@ -727,7 +727,10 @@ the stamp is a leg of the turn, parked beside the window, memory and brief legs,
   body) together with its `turn_id`; the order hands them on as `ctx_speaker`/`ctx_turn_round` only for that
   turn; `./clock` declares `contract.parks_context`, so the colony lets them pass, and the edge restores them
   (`has(hop.ctx_<key>) ? hop.ctx_<key> : ''`) and drops the hop keys. The park lives in the round's rows and
-  goes with them, the order with the strike or its `remove`; with `route_wait_ms` 0 nothing is parked.
+  goes with them, the order with the strike or its `remove`; a turn that can wait for neither its stamp
+  (`route_wait_ms` 0) nor its memory leg (no `memory_tier`, or `recall_wait_ms` 0) keeps nothing. Before
+  [#1648](https://github.com/mmeyerlein/meclaw/issues/1648) only `route_wait_ms` was read here, so at its shipped 0 a
+  recall past its bound sent the answer out without its channel.
   Because the clock holds that privilege, an app (`privileged: false`) cannot bring this collector.
   A window leg written without `ctx` (before #1564, e.g. an in-place update mid-turn) still orders a strike;
   the collector writes a WARN line and the turn fires without its channel context. Two limits stay: the

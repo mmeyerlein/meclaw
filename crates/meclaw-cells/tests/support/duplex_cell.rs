@@ -1115,6 +1115,8 @@ async fn boot_core_paged(
     io.duplex_call_marks = params.call_marks.clone();
     // #1637: and so does the audio report.
     io.emit_audio_report = params.emit_audio_report;
+    // #1650: and the ready report of a parked session.
+    io.emit_prewarm_ready = params.emit_prewarm_ready;
     io.cell_path = Path::new("/voice");
     io.surfaces = Arc::clone(&surfaces);
 

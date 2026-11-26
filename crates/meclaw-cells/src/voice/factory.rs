@@ -558,6 +558,9 @@ fn make_build(
         // And the `audio_report` lane's: the connection collects what a duplex
         // call reports only where ordered.
         io.emit_audio_report = parsed.emit_audio_report;
+        // And the `prewarm_ready` lane's: the park pump reports only where
+        // ordered.
+        io.emit_prewarm_ready = parsed.emit_prewarm_ready;
         // The duplex half of this life, read here for the same reason the
         // frame length is: the I/O half is built from the effective params of
         // the life about to start.
@@ -850,6 +853,7 @@ mod tests {
             "emit_usage": true,
             "emit_first_audio": true,
             "emit_audio_report": true,
+            "emit_prewarm_ready": true,
             "call_marks_s": [60, 120],
             "call_mark_every_s": 600
         });
@@ -875,6 +879,10 @@ mod tests {
         assert!(
             effective.emit_audio_report,
             "emit_audio_report was lost between birth and the life the cell runs"
+        );
+        assert!(
+            effective.emit_prewarm_ready,
+            "emit_prewarm_ready was lost between birth and the life the cell runs"
         );
 
         // Every top-level key of THIS birth is still there after the replay.

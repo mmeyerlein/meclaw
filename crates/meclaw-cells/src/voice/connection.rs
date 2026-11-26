@@ -1524,6 +1524,11 @@ impl ParkBuffer {
         }
     }
 
+    /// Whether something audible of the greeting is kept for the caller.
+    fn holds_speech(&self) -> bool {
+        !self.kept.is_empty()
+    }
+
     /// The greeting is over: the model began a second answer at `start_ms` on
     /// its clock. What is kept ends where the pause before that answer began,
     /// and nothing that arrives from here on is kept.
@@ -1585,6 +1590,24 @@ impl ParkBuffer {
             tail_ms,
             cut_ms: self.cut_ms,
         }
+    }
+}
+
+/// What the park pump needs to say once that the parked model greets (#1650).
+struct ReadyReport {
+    shared: Arc<VoiceIoShared>,
+    session_id: String,
+    /// When the cell was told that the line rings.
+    rang: Instant,
+}
+
+impl ReadyReport {
+    fn send(self) {
+        let at_ms = u64::try_from(self.rang.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.shared.emit(VoiceEvent::PrewarmReady {
+            session_id: self.session_id,
+            at_ms,
+        });
     }
 }
 
@@ -1749,6 +1772,9 @@ impl HeardSpan {
 ///   frames, 640 B every 20 ms) — a model that paces its output on its
 ///   input then still talks into the ring.
 ///
+/// Where `ready` is given, the first audible window it keeps is reported at
+/// once ([`ReadyReport`]), unless the adoption came first.
+///
 /// At the adoption it stops feeding, sends what it kept at once and goes on
 /// forwarding. What it sent ahead is a lag at the edge's playback buffer, so
 /// that much of the model's following SILENCE is dropped (`catchup`); audible
@@ -1767,6 +1793,7 @@ async fn park_pump(
     level: f64,
     gap_ms: u64,
     session_id: String,
+    mut ready: Option<ReadyReport>,
 ) {
     use std::collections::VecDeque;
     let rate = format.sample_rate;
@@ -1792,6 +1819,8 @@ async fn park_pump(
             signal = &mut adopt, if !adopted => match signal {
                 Ok(()) => {
                     adopted = true;
+                    // Picked up: nobody waits for the report any more.
+                    ready = None;
                     // The connection's reader feeds the model from here on.
                     feed = None;
                     // What the model said before the pickup is judged as
@@ -1858,6 +1887,11 @@ async fn park_pump(
                 Some(c) if !adopted => {
                     if let Some(p) = park.as_mut() {
                         p.push(c, greeting.now_ms());
+                        // Said here and not kept like the events: whoever
+                        // answers the line waits for it.
+                        if p.holds_speech() && let Some(r) = ready.take() {
+                            r.send();
+                        }
                     }
                 }
                 Some(c) => {
@@ -1923,9 +1957,17 @@ async fn ask_seed(
 /// the check and the opening are one step under the registry's lock, so no
 /// provider handshake is paid for a session that is thrown away (R5).
 ///
+/// `rang` is when the line began to ring, `None` for a page, which rings
+/// nothing: only a ring has somebody who waits for the greeting, so only its
+/// session reports it (`emit_prewarm_ready`, #1650).
+///
 /// Returns whether this call opened and parked one (d54g weblive, review
 /// M-3: a page counts past the name of an early session that ran out).
-pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) -> bool {
+pub(crate) async fn prewarm(
+    shared: &Arc<VoiceIoShared>,
+    session_id: &str,
+    rang: Option<Instant>,
+) -> bool {
     let Some(provider) = shared.duplex.clone() else {
         return false;
     };
@@ -1937,6 +1979,13 @@ pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) -> bo
     let level = crate::voice::duck::linear(shared.duck.level_dbfs);
     let open = || {
         let mut run = DuplexRun::start(shared, &provider, format);
+        let ready = rang
+            .filter(|_| shared.emit_prewarm_ready)
+            .map(|rang| ReadyReport {
+                shared: Arc::clone(shared),
+                session_id: session_id.to_string(),
+                rang,
+            });
         let (audio_to, audio_rx) = mpsc::channel::<Vec<u8>>(AUDIO_QUEUE);
         let (events_to, events_rx) = mpsc::channel::<DuplexEvent>(AUDIO_QUEUE);
         let audio_from = std::mem::replace(&mut run.audio_out_rx, audio_rx);
@@ -1953,6 +2002,7 @@ pub(crate) async fn prewarm(shared: &Arc<VoiceIoShared>, session_id: &str) -> bo
             level,
             shared.duplex_turn_gap_ms,
             session_id.to_string(),
+            ready,
         ));
         Prewarmed { run, format, adopt }
     };
@@ -3401,7 +3451,7 @@ async fn page_wait(
                                         .await;
                                     let next =
                                         page_session_name(session_id, page_n.saturating_add(1));
-                                    if prewarm(shared, &next).await {
+                                    if prewarm(shared, &next, None).await {
                                         warmed = true;
                                     }
                                 }
@@ -7935,5 +7985,30 @@ mod tests {
         let report = the_report(ends(&mut line));
         assert_eq!(report.send_wait_max_ms, whole_ms(MARKER));
         drop(model);
+    }
+
+    /// #1650: the ready report names the call and the milliseconds since its
+    /// line began to ring, on the virtual clock and exactly.
+    #[tokio::test(start_paused = true)]
+    async fn the_ready_report_counts_from_the_ring() {
+        let (events_tx, mut events) = mpsc::channel::<VoiceEvent>(16);
+        let shared = crate::voice::io::VoiceIoShared::for_test_with_stt(
+            events_tx,
+            MARKER,
+            Arc::new(crate::voice::providers::echo::EchoStt::new()),
+        );
+        let report = ReadyReport {
+            shared,
+            session_id: "call-1".to_string(),
+            rang: Instant::now(),
+        };
+        tokio::time::advance(Duration::from_millis(700)).await;
+        report.send();
+        match events.recv().await {
+            Some(VoiceEvent::PrewarmReady { session_id, at_ms }) => {
+                assert_eq!((session_id.as_str(), at_ms), ("call-1", 700));
+            }
+            _ => panic!("the report is the one event"),
+        }
     }
 }

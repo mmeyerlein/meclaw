@@ -421,6 +421,7 @@ impl Lab {
     }
 
     async fn apply(&self, payload: Value) -> MutationDoorOutcome {
+        awaiting("the mutation door's verdict on a manifest");
         let (ack_tx, ack_rx) = oneshot::channel();
         self.h
             .inbox_tx
@@ -498,6 +499,7 @@ impl Lab {
         under: &[&str],
         pick: impl Fn(&[MessageLogDto]) -> Option<T>,
     ) -> T {
+        awaiting(what);
         let seq = self.h.subscribe_log_seq();
         let read_at = std::cell::Cell::new(None);
         let (seq, read_at, pick) = (&seq, &read_at, &pick);
@@ -611,8 +613,17 @@ impl Lab {
     }
 
     /// A person's turn on the grown channel, waited until its answer arrived
-    /// on that channel.
-    async fn turn(&self, text: &str) {
+    /// on that channel. Returns the dead letters drained while waiting.
+    ///
+    /// The wait ends on either of two events: the answer on the channel, or a
+    /// dead letter of the way's own lanes ([`WAY`], never a class). An answer
+    /// that dead-lettered never arrives any more, so waiting on for it says
+    /// nothing -- and said nothing in the gate of GH #1648: the mark of this
+    /// wait (`TURN_HANG`, 270 s) sits above the runner's kill (240 s), so the
+    /// lost answer was a nameless TIMEOUT instead of the claim's own failure.
+    /// An answer that is lost without a dead letter still meets the kill first;
+    /// its report then ends on the line [`awaiting`] wrote for this wait.
+    async fn turn(&self, text: &str) -> Vec<Dead> {
         let mark = self.mark().await;
         self.h
             .send(person(MEMBER_PATH, text, Some(GROWN_CHANNEL)))
@@ -628,10 +639,12 @@ impl Lab {
         // call, the recall, the channel's code cell), so it waits under its
         // own mark (`deadline::TURN_HANG`, whose doc carries the measured
         // basis and why `HANG` does not carry a turn). The wait reads
-        // the log whenever the writer committed rows (`log_seq`), never on a
-        // clock of its own.
+        // the log and the dead letters whenever the writer committed rows
+        // (`log_seq`), never on a clock of its own.
+        awaiting(&format!("the answer on the grown channel to {text:?}"));
         let channel = format!("{MEMBER_PATH}/channels/{GROWN_CHANNEL}");
         let mut seq = self.h.subscribe_log_seq();
+        let pool = std::cell::RefCell::new(Vec::new());
         deadline::turn_hang_with(
             "the answer on the grown channel",
             async {
@@ -645,6 +658,14 @@ impl Lab {
                     {
                         return;
                     }
+                    let fresh = self.drain().await;
+                    pool.borrow_mut().extend(fresh);
+                    let broke = on_the_way(&pool.borrow());
+                    assert!(
+                        broke.is_empty(),
+                        "the way's own messages dead-lettered while the answer \
+                         was awaited on the grown channel: {broke:#?}"
+                    );
                     if seq.changed().await.is_err() {
                         // The writer is gone: nothing commits again, the mark names it.
                         std::future::pending::<()>().await;
@@ -652,15 +673,18 @@ impl Lab {
                 }
             },
             || async {
+                let fresh = self.drain().await;
+                pool.borrow_mut().extend(fresh);
+                let round = self.round_of(&mark, &[MEMBER_PATH]).await;
                 format!(
-                    "dead letters so far: {:#?}; the round under {:?}: {:#?}",
-                    say(&self.drain().await),
+                    "dead letters so far: {:#?}; the round under {:?}: {round:#?}",
+                    say(&pool.borrow()),
                     [MEMBER_PATH],
-                    self.round_of(&mark, &[MEMBER_PATH]).await
                 )
             },
         )
         .await;
+        pool.into_inner()
     }
 
     /// The archive echoes a run of `turns` turns owes since `mark`: one
@@ -882,6 +906,13 @@ fn person(member: &str, text: &str, channel_node: Option<&str>) -> Message {
         .build()
 }
 
+/// Names the event a wait begins for on stderr. The runner prints a killed
+/// test's stderr, so a kill that comes before the wait's own mark still says
+/// what never came: the last line (GH #1648). No clock, no verdict.
+fn awaiting(what: &str) {
+    eprintln!("gh974 awaiting {what}");
+}
+
 fn say(dead: &[Dead]) -> Vec<String> {
     dead.iter().map(Dead::say).collect()
 }
@@ -954,9 +985,9 @@ async fn a_person_round_leaves_only_declared_dead_letters() {
 
     // Two turns on the grown channel; the first asks a tool.
     let round = lab.mark().await;
-    lab.turn("the plumber came").await;
-    lab.turn("and the roofer").await;
-    let turns = lab.drain().await;
+    let mut turns = lab.turn("the plumber came").await;
+    turns.extend(lab.turn("and the roofer").await);
+    turns.extend(lab.drain().await);
     report("turns", &turns);
     dead.extend(turns);
 
@@ -1026,8 +1057,8 @@ async fn a_round_with_context_turns_and_the_stamp_out_leaves_only_declared_dead_
     let mut dead = lab.drain().await;
 
     let round = lab.mark().await;
-    lab.turn("the plumber came").await;
-    lab.turn("and the roofer").await;
+    dead.extend(lab.turn("the plumber came").await);
+    dead.extend(lab.turn("and the roofer").await);
     lab.echoes(&round, 2).await;
     let hits = lab.sentinel(&mut dead).await;
     assert_eq!(hits.len(), 1, "the sentinel: {:#?}", say(&hits));
@@ -1079,7 +1110,7 @@ async fn the_ways_own_messages_never_dead_letter() {
     // A turn on the channel the member grew: the turn, the brain's tool call,
     // its result and the answer travel the road a person's words take.
     let mark = lab.mark().await;
-    lab.turn("what is on today").await;
+    dead.extend(lab.turn("what is on today").await);
     // The tool's result HAS to arrive at the asker, or the absence below
     // would say nothing about it.
     lab.wait_for(
@@ -1192,8 +1223,8 @@ async fn a_round_with_the_conversation_events_on_leaves_only_declared_dead_lette
     let mut dead = lab.drain().await;
 
     let round = lab.mark().await;
-    lab.turn("the plumber came").await;
-    lab.turn("and the roofer").await;
+    dead.extend(lab.turn("the plumber came").await);
+    dead.extend(lab.turn("and the roofer").await);
     lab.echoes(&round, 2).await;
     // The session closes (idle_ms 1) on the sweep, as in the person's round
     // above; the curator writer sends `closed` behind the close's `write`.

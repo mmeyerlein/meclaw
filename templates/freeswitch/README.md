@@ -1,4 +1,4 @@
-# `freeswitch@3.2.0`
+# `freeswitch@3.3.0`
 
 A telephone as one **channel** of a person, in two halves inside one hive.
 
@@ -102,12 +102,15 @@ out and refuses the session. No key travels through `.env`.
 | out, `tool_result` / `tool_schemas` | the receipt of a `call`/`hangup`, and the offer itself |
 | out, `call_accepted` / `call_queued` / `call_refused` / `call_abandoned` | what a second call got. One receipt per inbound call, empty `messages[]`, `hop` carries `call_id`, `policy`, `capacity` and `cause`. The installing manifest draws the edge that drains them |
 
-**One lane travels only INSIDE this hive**, and it is the reason the media half
-carries an `override_params` at all: `speak_end`, from the `voice` cell to the
-signalling half, one per sentence the assistant spoke. Nothing outside sees it.
+**Two lanes of the media half travel only INSIDE this hive.** `speak_end` is the
+reason the media half carries an `override_params` at all: from the `voice` cell
+to the signalling half, one per sentence the assistant spoke. Nothing outside
+sees it. `prewarm_ready` (#1650) takes the same way and is off unless the set
+orders it (`emit_prewarm_ready`) — § *Opening the live session while the line
+rings*.
 (The media half's `error` `duplex_failed` also goes to the signalling half, but
 it leaves the hive at the rim as well — § *When the duplex session fails*.)
-What it buys is two things a telephone needs and a browser does not — a hang-up
+What `speak_end` buys is two things a telephone needs and a browser does not — a hang-up
 that waits for the sentence, and a barge-in that reaches the switch — and both
 are written out under *Hanging up* below.
 
@@ -281,7 +284,7 @@ and the three grants seeded there in the same declaration (`seed_rows`).
 
 ```json
 {"scope": "<member>", "diff": {
-  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.2.0",
+  "add_nodes": [{"name": "channels/freeswitch", "template": "freeswitch@3.3.0",
                  "override_params": {
                    "signal": {"dial_prefix": "sofia/gateway/fs02/",
                               "voice_ws_url": "ws://<colony-host>:<listener-port>/phone/ws",
@@ -622,6 +625,22 @@ while it waits for the pickup is neither played nor counted against what is kept
 its greeting, and an early session whose provider gave up during the ring is replaced
 by a fresh one when the stream connects (`voice` README, *Early session and ducking*).
 
+**Telling the switch that the greeting is ready (#1650).** How long a line has to
+ring until the model speaks is not a fixed number: in 4 of 20 measured calls with a
+fixed 2.5 s ring the model had not begun to speak when the call was answered. With
+`emit_prewarm_ready` set on `./voice` (off as shipped) the media half emits
+`prewarm_ready` once, the moment the first audible sound of the greeting is kept;
+the hive hands it to `signal`, and `signal` sets ONE channel variable on the
+ringing call, `meclaw_ready=true`, with `uuid_setvar`. It carries no audio and no
+text, moves no row and raises no turn. WHEN the line is picked up stays
+with the dialplan: one that rings before it answers may read the variable while it
+rings (`${meclaw_ready}`) and keep its own shortest and longest ring; the colony says
+*ready* and knows neither.
+A caller who hung up first makes the switch answer `-ERR`, and nothing follows from
+that. A media half that does not warm up, or whose early session ended, reports nothing
+(a report already on its way at that moment can still go out), and what ends the wait
+then is the longest ring of such a dialplan.
+
 `call_uuid` is the **same** UUID that hangs on the stream URL as `?session=`. For an
 outbound call the channel mints it and hands it to the switch as
 `origination_uuid`, so both ends of the wire already agree before the telephone
@@ -800,7 +819,7 @@ kills that leg itself rather than leaving it parked (see *Who is on the line*).
 
 ## What leaves for the switch
 
-Seven commands, all as a GET at `mod_xml_rpc`'s `/webapi` endpoint — `web_fetch`
+Eight commands, all as a GET at `mod_xml_rpc`'s `/webapi` endpoint — `web_fetch`
 implements GET and nothing else (`docs/cell-types.md` § `web_fetch`), and
 `/webapi/<command>?<args>` is exactly a GET. The endpoint, its credentials and
 its host live in **one** provider lane, `${FREESWITCH_XMLRPC_BASE_URL}`, which is
@@ -819,12 +838,13 @@ GET <base>/webapi/uuid_audio_stream?<uuid>%20pause
 GET <base>/webapi/uuid_audio_stream?<uuid>%20resume
 GET <base>/webapi/uuid_broadcast?<uuid>%20<queue_hold_media>%20aleg
 GET <base>/webapi/uuid_transfer?<uuid>%20playback:<failure_media>,hangup:NORMAL_CLEARING%20inline
+GET <base>/webapi/uuid_setvar?<uuid>%20meclaw_ready%20true
 GET <base>/webapi/db?insert/<db_realm>/<number>/<line_user_id>|<voice_ws_url>
 GET <base>/webapi/db?insert/<db_realm>/pin.<line_user_id>/<pin>
 GET <base>/webapi/db?delete/<db_realm>/pin.<line_user_id>
 ```
 
-Eleven lines, seven commands. `uuid_kill` appears twice because a refused call is
+Twelve lines, eight commands. `uuid_kill` appears twice because a refused call is
 ended with a CAUSE — `USER_BUSY` is what the caller hears as a busy signal, and
 a bare kill is a line that died for no reason they can name — `uuid_audio_stream`
 twice for the pause and the resume of a waiting caller, and `db` three times
@@ -1280,7 +1300,7 @@ caller types before they are put through, are the proxy's business — this colo
 holds no register of them and no PIN at all, and there is no tool that reads one
 back.
 
-Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.2.0`, then give
+Migrating a colony on `1.1.1`: `swap_nodes` onto `freeswitch@3.3.0`, then give
 `./signal` a `line_user_id` (without it the three new tools refuse by name and
 nothing else changes), and point `voice_ws_url` at the colony's listener and this
 hive's mount instead of at a port. The dialplan keeps working unchanged as long
@@ -1293,7 +1313,7 @@ exported, so for almost everybody this section is history. A colony that *did* g
 in two steps and keeps its call table:
 
 1. `swap_nodes` the node onto the new template
-   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.2.0"}`),
+   (`{"match": {"name": "channels/phone"}, "template": "freeswitch@3.3.0"}`),
    which leaves the `store` where it is.
 2. Rewrite the edges of the installing manifest above: they name the node, and
    the node's name is what changed. The receipt edges go in at the same time.

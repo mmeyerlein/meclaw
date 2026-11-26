@@ -929,12 +929,135 @@ pub fn recorded_event(event: &JsonValue, gap_ms: u64, audio_rate: u64) -> Record
     }
 }
 
+/// From how many characters on an id is long enough to read as a token. Every
+/// id the provider was seen to make is longer (`event_` plus 21, `live_` plus
+/// 35), every word of the protocol shorter.
+const PROVIDER_ID_MIN: usize = 16;
+
+/// The ids of the provider a recording has met, each with its placeholder
+/// (GH #1646).
+///
+/// A live session id (`live_` plus 35 characters) has the shape of another
+/// vendor's access token, and the secret scanner of a public tree reports it as
+/// one (the 0.90.0 export, alert `gocardless_live_access_token`). No replay
+/// needs the value, only that the same id stays the same: the first id of a
+/// prefix becomes `<prefix>_placeholder_1`, the next `_2`, wherever it stands.
+#[derive(Debug, Default)]
+pub struct ProviderIds {
+    seen: Vec<(String, String)>,
+}
+
+impl ProviderIds {
+    /// Replaces the provider's ids in `payload`: every long value under an id
+    /// key, and every token-shaped word of any other string. The client's own
+    /// `client_event_id` is an echo and stays.
+    pub fn scrub(&mut self, payload: &mut JsonValue) {
+        self.scrub_value(payload, false);
+    }
+
+    fn scrub_value(&mut self, value: &mut JsonValue, is_id: bool) {
+        match value {
+            JsonValue::String(text) => {
+                let scrubbed = if is_id && text.len() >= PROVIDER_ID_MIN && !is_placeholder(text) {
+                    self.placeholder(text)
+                } else {
+                    self.scrub_text(text)
+                };
+                *text = scrubbed;
+            }
+            JsonValue::Array(items) => {
+                for item in items {
+                    self.scrub_value(item, is_id);
+                }
+            }
+            JsonValue::Object(fields) => {
+                for (key, field) in fields.iter_mut() {
+                    let is_id = key != "client_event_id"
+                        && (key == "id" || key.ends_with("_id") || key.ends_with("_ids"));
+                    self.scrub_value(field, is_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `text` with every token-shaped word replaced.
+    fn scrub_text(&mut self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find(is_id_char) {
+            let (before, tail) = rest.split_at(start);
+            let end = tail.find(|c| !is_id_char(c)).unwrap_or(tail.len());
+            let (word, after) = tail.split_at(end);
+            out.push_str(before);
+            if is_token_shaped(word) {
+                out.push_str(&self.placeholder(word));
+            } else {
+                out.push_str(word);
+            }
+            rest = after;
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The placeholder of `id`, the same one every time.
+    fn placeholder(&mut self, id: &str) -> String {
+        if let Some((_, placeholder)) = self.seen.iter().find(|(seen, _)| seen == id) {
+            return placeholder.clone();
+        }
+        let prefix = match id.split_once('_') {
+            Some((prefix, _)) if is_id_prefix(prefix) => prefix,
+            _ => "id",
+        };
+        let stem = format!("{prefix}_placeholder_");
+        let nth = 1 + self
+            .seen
+            .iter()
+            .filter(|(_, p)| p.starts_with(&stem))
+            .count();
+        let placeholder = format!("{stem}{nth}");
+        self.seen.push((id.to_string(), placeholder.clone()));
+        placeholder
+    }
+}
+
+fn is_id_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+fn is_id_prefix(prefix: &str) -> bool {
+    !prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+fn is_placeholder(text: &str) -> bool {
+    text.split_once("_placeholder_").is_some_and(|(prefix, n)| {
+        is_id_prefix(prefix) && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// Whether `word` is `<prefix>_<random>`: mixed case, or one long run with a
+/// digit. A snake_case name is neither, however long it is.
+fn is_token_shaped(word: &str) -> bool {
+    let Some((prefix, tail)) = word.split_once('_') else {
+        return false;
+    };
+    let any = |test: fn(&u8) -> bool| tail.as_bytes().iter().any(test);
+    is_id_prefix(prefix)
+        && tail.len() >= PROVIDER_ID_MIN
+        && ((any(u8::is_ascii_uppercase) && any(u8::is_ascii_lowercase))
+            || tail
+                .split(['_', '-'])
+                .any(|run| run.len() >= PROVIDER_ID_MIN && run.bytes().any(|b| b.is_ascii_digit())))
+}
+
 /// Writes the server events of one real session as a recording (JSONL: the
 /// header line, then one line per event).
 pub struct LiveRecorder {
     header: RecordingHeader,
     last: tokio::time::Instant,
     events: Vec<RecordedEvent>,
+    ids: ProviderIds,
 }
 
 impl LiveRecorder {
@@ -951,16 +1074,19 @@ impl LiveRecorder {
             header,
             last: opened,
             events: Vec::new(),
+            ids: ProviderIds::default(),
         }
     }
 
-    /// Notes one server event that arrived at `at`.
+    /// Notes one server event that arrived at `at`, the provider's ids replaced
+    /// ([`ProviderIds`]).
     pub fn note(&mut self, event: &JsonValue, at: tokio::time::Instant) {
         let gap_ms =
             u64::try_from(at.saturating_duration_since(self.last).as_millis()).unwrap_or(u64::MAX);
         self.last = at;
-        self.events
-            .push(recorded_event(event, gap_ms, self.header.audio_rate));
+        let mut recorded = recorded_event(event, gap_ms, self.header.audio_rate);
+        self.ids.scrub(&mut recorded.payload);
+        self.events.push(recorded);
     }
 
     /// The events noted so far.
@@ -1090,6 +1216,65 @@ mod tests {
             recorded.payload,
             json!({ "type": "session.output_audio.delta", "event_id": "e1" })
         );
+    }
+
+    /// GH #1646: an id the provider made leaves the recorder as a placeholder,
+    /// the same one wherever the id comes back, and no recorded string is long
+    /// enough to read as somebody's token. The ids are built here, never
+    /// written out: a literal one would be the finding itself.
+    #[tokio::test(start_paused = true)]
+    async fn a_provider_id_is_recorded_as_the_same_placeholder_everywhere() {
+        let live = format!("live_{}", "Ab1_x".repeat(7));
+        let other = format!("live_{}", "Zy9-w".repeat(7));
+        let event = format!("event_{}", "Qr7Tu".repeat(4));
+        let header = RecordingHeader::for_opening(&[], "/p");
+        let t0 = tokio::time::Instant::now();
+        let mut recorder = LiveRecorder::new(header.clone(), t0);
+        recorder.note(
+            &json!({
+                "type": "session.started", "event_id": event, "client_event_id": "start",
+                "session": { "id": live, "instructions": "a live_session_of_the_same_length_as_an_id", "n": 3 },
+            }),
+            t0,
+        );
+        recorder.note(
+            &json!({ "type": "error", "message": format!("session {live} follows {other}."), "item_ids": [other, "x"] }),
+            t0,
+        );
+        recorder.note(
+            &json!({ "type": "session.closed", "session": { "id": live } }),
+            t0,
+        );
+        let text = recorder.to_jsonl();
+        for id in [&live, &other, &event] {
+            assert!(!text.contains(id.as_str()), "{text}");
+        }
+        let payloads: Vec<_> = recorder.events().iter().map(|e| &e.payload).collect();
+        assert_eq!(
+            *payloads[0],
+            json!({
+                "type": "session.started", "event_id": "event_placeholder_1", "client_event_id": "start",
+                "session": { "id": "live_placeholder_1", "instructions": "a live_session_of_the_same_length_as_an_id", "n": 3 },
+            })
+        );
+        assert_eq!(
+            *payloads[1],
+            json!({
+                "type": "error", "message": "session live_placeholder_1 follows live_placeholder_2.",
+                "item_ids": ["live_placeholder_2", "x"],
+            })
+        );
+        assert_eq!(payloads[2]["session"]["id"], "live_placeholder_1");
+
+        // What a recording holds stays as it is: a second pass changes nothing.
+        let mut again = ProviderIds::default();
+        for payload in payloads {
+            let mut scrubbed = payload.clone();
+            again.scrub(&mut scrubbed);
+            assert_eq!(scrubbed, *payload);
+        }
+        let script = LiveScript::from_recording(&text, &header).expect("replays");
+        assert_eq!(script.session_id, "live_placeholder_1");
     }
 
     #[tokio::test(start_paused = true)]

@@ -601,6 +601,7 @@ fn label(event: &VoiceEvent) -> &'static str {
         // nothing in this file vaults one). Exhaustive on purpose.
         VoiceEvent::CredentialRoundExpired { .. } => "CredentialRoundExpired",
         VoiceEvent::SeedAsk { .. } => "SeedAsk",
+        VoiceEvent::PrewarmReady { .. } => "PrewarmReady",
         VoiceEvent::SeedUnheld { .. } => "SeedUnheld",
         VoiceEvent::CallMark { .. } => "CallMark",
         VoiceEvent::CallUsage { .. } => "CallUsage",

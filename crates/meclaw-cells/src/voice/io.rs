@@ -338,6 +338,10 @@ pub struct VoiceIoShared {
     /// (`params.emit_audio_report`, #1637). Read once per life. Off, the
     /// connection collects nothing and sends no event for it.
     pub emit_audio_report: bool,
+    /// Whether a session parked while its line rings reports its greeting
+    /// (`params.emit_prewarm_ready`, #1650). Read once per life. Off, the park
+    /// pump sends no event for it.
+    pub emit_prewarm_ready: bool,
 }
 
 /// The connection table: who is connected, under which session identity.
@@ -629,6 +633,7 @@ impl VoiceIoShared {
             shutdown: None,
             emit_first_audio: false,
             emit_audio_report: false,
+            emit_prewarm_ready: false,
         })
     }
 
@@ -1004,6 +1009,8 @@ pub struct VoiceIo {
     pub emit_first_audio: bool,
     /// See [`VoiceIoShared::emit_audio_report`].
     pub emit_audio_report: bool,
+    /// See [`VoiceIoShared::emit_prewarm_ready`].
+    pub emit_prewarm_ready: bool,
 }
 
 impl VoiceIo {
@@ -1061,6 +1068,7 @@ impl VoiceIo {
             ),
             emit_first_audio: false,
             emit_audio_report: false,
+            emit_prewarm_ready: false,
         }
     }
 }
@@ -1126,6 +1134,7 @@ pub async fn run_io(mut io: VoiceIo, mut reconfig_rx: mpsc::Receiver<VoiceReconf
         shutdown: Some(shutdown_rx),
         emit_first_audio: io.emit_first_audio,
         emit_audio_report: io.emit_audio_report,
+        emit_prewarm_ready: io.emit_prewarm_ready,
     });
     let mount = io.mount;
     let cell_path = io.cell_path;
@@ -1355,7 +1364,8 @@ async fn serve_until_the_handler_goes(
             // Neither waits on anything: opening spawns the provider task, and
             // dropping a parked session is what closes it.
             Some(VoiceReconfig::Prewarm { session_id }) => {
-                crate::voice::connection::prewarm(shared, &session_id).await;
+                let rang = Some(tokio::time::Instant::now());
+                crate::voice::connection::prewarm(shared, &session_id, rang).await;
             }
             Some(VoiceReconfig::DropPrewarm { session_id }) => {
                 crate::voice::connection::drop_prewarm(shared, &session_id).await;
@@ -2373,6 +2383,7 @@ mod tests {
             shutdown: None,
             emit_first_audio: false,
             emit_audio_report: false,
+            emit_prewarm_ready: false,
         });
 
         // A connection nobody reads: the receiver is held and never polled, so
@@ -2484,6 +2495,7 @@ mod tests {
             shutdown: None,
             emit_first_audio: false,
             emit_audio_report: false,
+            emit_prewarm_ready: false,
         });
 
         let (conn_id, to_conn, mut to_conn_rx) = new_connection_slot();

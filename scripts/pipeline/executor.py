@@ -67,6 +67,8 @@ STOPPING A RUN. SIGTERM to the executor -- a foreign stop of its scope, or
 run like a watcher: the stations' own sessions get SIGTERM (SIGKILL after
 the grace), every station that never started ends ABORTED, and the stream
 ends with `pass_ended ABORTED` before the process goes; never `lost`.
+After `pass_ended RED` the executor ends every other process of its own scope
+(`pipe-<run>.scope`, never another cgroup) and only then goes (#1651).
 """
 import datetime
 import fcntl
@@ -1210,6 +1212,91 @@ def _default_scope_stopper(run):
     # stop may already be running; waiting for that job would wait for itself.
     subprocess.run(["systemctl", "--user", "stop", "--no-block", unit], timeout=60,
                    stdin=subprocess.DEVNULL, capture_output=True)
+
+
+def _cgroup(pid, proc_root="/proc"):
+    """The cgroup (v2) path of `pid`, or None."""
+    try:
+        with open("%s/%s/cgroup" % (proc_root, pid), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("0::"):
+                    return line[len("0::"):].rstrip("\n")
+    except OSError:
+        pass
+    return None
+
+
+def _scope_procs(run, proc_root="/proc", cgroup_root="/sys/fs/cgroup"):
+    """The pids of this process's own cgroup; None unless that cgroup is exactly
+    `pipe-<run>.scope` (a run without a scope has nothing it may end)."""
+    path = _cgroup("self", proc_root)
+    if path is None or os.path.basename(path) != "pipe-%s.scope" % run:
+        return None
+    try:
+        with open(cgroup_root + path + "/cgroup.procs", encoding="utf-8") as fh:
+            return [int(word) for word in fh.read().split()]
+    except (OSError, ValueError):
+        return None
+
+
+def _signal_member(pid, sig):
+    """`sig` to `pid`, only while it is in this process's own cgroup: the pidfd
+    pins the process, so a pid reused since the listing is never hit."""
+    try:
+        fd = os.pidfd_open(pid)
+    except OSError:
+        return
+    try:
+        own = _cgroup("self")
+        if own is not None and _cgroup(pid) == own:
+            signal.pidfd_send_signal(fd, sig)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _ancestors():
+    """This process and its ancestors."""
+    out, pid = set(), os.getpid()
+    while pid > 0 and pid not in out:
+        out.add(pid)
+        try:
+            with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as fh:
+                pid = int(fh.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return out
+
+
+def _end_scope(run, err, grace, procs=None, send=None):
+    """End every other process of the run's own scope: SIGTERM once each, up to
+    `grace` s, then SIGKILL; give up `GROUP_SLACK_S` later.
+
+    #1651: a stop reaches the stations' process groups; what a station started
+    in its own session (the units of `unit_runner`, their colonies and stubs)
+    outlived the red runs run-6a66ebff395e (298 processes) and run-7ab632876ecc
+    (366), held the lease and loaded the next gate."""
+    procs, send = procs or _scope_procs, send or _signal_member
+    keep = _ancestors()
+    termed, killed, rest = set(), set(), []
+    end = time.monotonic() + grace
+    while True:
+        rest = [p for p in procs(run) or [] if p not in keep]
+        now = time.monotonic()
+        if not rest or now >= end + GROUP_SLACK_S:
+            break
+        for pid in rest:
+            if now >= end:
+                send(pid, signal.SIGKILL)
+                killed.add(pid)
+            elif pid not in termed:
+                send(pid, signal.SIGTERM)
+                termed.add(pid)
+        time.sleep(GROUP_POLL_S)
+    if termed or killed:
+        print("exec: the run left %d processes in pipe-%s.scope -- ended (%d by SIGKILL, %d still there)"
+              % (len(termed | killed), run, len(killed), len(rest)), file=err, flush=True)
 
 
 # --- the run --------------------------------------------------------------------------
@@ -3070,6 +3157,16 @@ class _Run:
             undo_wakeup = self._sigterm_wakeup()
         try:
             verdict = self._execute()
+            if verdict == "RED":
+                # #1651: `pass_ended` is in the stream and flushed; exit and
+                # verdict stand whatever happens here. Inside the handlers: a
+                # foreign SIGTERM meanwhile must not turn the RED into a 143.
+                # ABORTED stops the whole scope below, GREEN stopped nothing.
+                try:
+                    _end_scope(self.run_id, self.err, STOP_GRACE_S)
+                except Exception as exc:
+                    print("exec: the scope of %s was not ended: %s" % (self.run_id, exc),
+                          file=self.err)
         finally:
             if undo_wakeup is not None:
                 undo_wakeup()

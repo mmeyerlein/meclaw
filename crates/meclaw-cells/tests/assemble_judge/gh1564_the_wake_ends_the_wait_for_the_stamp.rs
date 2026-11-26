@@ -416,6 +416,10 @@ const ROUND: &str = "[\"agent:talky\",\"member:anna\"]";
 /// The turn's opening with `speaker`/`turn_round` in its context, a forged pair
 /// on the hop and in the body beside it; returns the parked window row's payload.
 fn opened_window(w: i64) -> Value {
+    opened_window_with(&knob(w))
+}
+
+fn opened_window_with(over: &[(&str, Value)]) -> Value {
     let rows = json!([{"id": "2999-01-01T00:00:00.000400Z-aaaa0001", "session_id": SESSION,
                        "turn_id": TURN, "role": "user", "content": "hi",
                        "deferred": 0, "consult_id": ""}]);
@@ -437,7 +441,7 @@ fn opened_window(w: i64) -> Value {
     doc["header"]["hop"]["turn_round"] = json!("[\"member:mallory\"]");
     doc["speaker"] = json!("member:mallory");
     doc["messages"][1]["speaker"] = json!("member:mallory");
-    let out = assemble(&knob(w), doc);
+    let out = assemble(over, doc);
     let row = call(in_phase(&out, "collect"), "c-collect-row")["row"].clone();
     assert_eq!(row["role"], "leg-window", "{row}");
     serde_json::from_str(row["turn"].as_str().expect("the payload")).expect("json")
@@ -468,6 +472,39 @@ fn gh1564_a_turn_that_never_waits_keeps_no_context() {
     let flat = opened_window(0);
     assert!(flat.get("ctx").is_none(), "{flat}");
     assert!(flat.get("park").is_none(), "{flat}");
+}
+
+#[test]
+fn gh1648_a_turn_bounded_only_by_its_recall_keeps_its_context() {
+    // The recall order (GH #1596) carries the same snapshot as the route wake
+    // and ships on; with `route_wait_ms` 0 (shipped) its strike used to come
+    // back with an empty context and the answer dead-lettered.
+    let knobs = [
+        ("memory_tier", json!("1")),
+        ("route_wait_ms", json!(0)),
+        ("recall_wait_ms", json!(10000)),
+    ];
+    let win = opened_window_with(&knobs);
+    assert_eq!(win["ctx"]["channel"], json!("web"), "{win}");
+    assert_eq!(win["park"]["speaker"], json!(ANNA), "{win}");
+    // The order the fan-in makes off that very row carries it to the clock.
+    let out = collect(&knobs, json!([row("leg-window", win, 0, REC)]));
+    let orders = clock(&out);
+    assert_eq!(orders.len(), 1, "{out:?}");
+    assert_eq!(orders[0]["schedule_name"], "recall_wait", "{out:?}");
+    let headers = &orders[0]["emit_headers"];
+    assert_eq!(headers["wake_ctx"]["channel"], json!("web"), "{headers}");
+    assert_eq!(headers["ctx_speaker"], json!(ANNA), "{headers}");
+    assert_eq!(headers["ctx_turn_round"], json!(ROUND), "{headers}");
+
+    // Without a memory leg, or without its bound, nothing can strike.
+    for off in [("memory_tier", json!("")), ("recall_wait_ms", json!(0))] {
+        let mut knobs = knobs.to_vec();
+        knobs.push(off);
+        let flat = opened_window_with(&knobs);
+        assert!(flat.get("ctx").is_none(), "{flat}");
+        assert!(flat.get("park").is_none(), "{flat}");
+    }
 }
 
 fn parked_window(park: Value) -> Value {

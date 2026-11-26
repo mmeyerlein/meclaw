@@ -232,6 +232,24 @@
           }
         },
         {
+          "from": "./voice",
+          "to": "./signal",
+          "condition": "has(hop.route) && hop.route == 'prewarm_ready'",
+          "modifier": {
+            "delete_context": [
+              "phone_origin",
+              "phone_phase",
+              "phone_call",
+              "phone_cause",
+              "phone_number",
+              "phone_user",
+              "phone_verified",
+              "phone_op",
+              "phone_tool_call_id"
+            ]
+          }
+        },
+        {
           "from": "./signal",
           "to": "./voice",
           "condition": "has(hop.route) && hop.route == 'in_session'"

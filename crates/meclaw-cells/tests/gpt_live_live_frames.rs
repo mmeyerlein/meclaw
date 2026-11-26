@@ -58,7 +58,8 @@
 //! `fixtures/live/greeting_opening_gpt_live_1_1.json`, lets the model greet and notes every
 //! server event. With `MECLAW_LIVE_RECORD=<path>` set it writes them as a
 //! recording (`meclaw_testing::mock_gpt_live::LiveRecorder`: a header line,
-//! then one line per event with its gap, audio as a duration only) that
+//! then one line per event with its gap, audio as a duration only, every id of
+//! the provider as a placeholder, GH #1646) that
 //! `LiveScript::from_recording` replays in the mock; without it nothing is
 //! written. Budget: one session of about fifteen seconds.
 

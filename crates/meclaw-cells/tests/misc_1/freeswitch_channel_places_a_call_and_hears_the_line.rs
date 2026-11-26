@@ -47,10 +47,12 @@
 use meclaw_cells::code::CodeCellFactory;
 use meclaw_cells::store::StoreCellFactory;
 use meclaw_cells::web_fetch::WebFetchCellFactory;
+use meclaw_colony::api_dto::MessageLogFilter;
 use meclaw_colony::{CellFactory, CellFactoryRegistry, bootstrap_from_filesystem};
 use meclaw_core::serde_json::{Value, json};
 use meclaw_core::{Body, Message, MessageBuilder, Path};
 use meclaw_testing::ColonyHandle;
+use meclaw_testing::deadline::hang;
 use meclaw_testing::mock_http::{CapturedRequest, MockResponse, start_mock_server_capturing};
 use meclaw_testing::topologies::phase_3a::CaptureCell;
 use std::collections::BTreeSet;
@@ -168,6 +170,16 @@ elif route == "end_speak":
                    "speak_id": "sp-1",
                    "reason": str(hop.get("reason") or "done"),
                    "platform": "voice"},
+        "messages": []}))
+elif route == "greeting_kept":
+    # The `prewarm_ready` lane of a real `voice` cell (#1650), on demand, with
+    # the hop a real one stamps.
+    sys.stdout.write(json.dumps({
+        "header": {"route": "prewarm_ready",
+                   "session_id": str(hop.get("session_id") or ""),
+                   "call_id": str(hop.get("session_id") or ""),
+                   "platform": "voice", "mode": "auto", "engine": "duplex",
+                   "t_ready_ms": 1400},
         "messages": []}))
 else:
     sys.stdout.write(json.dumps([]))
@@ -1180,6 +1192,164 @@ async fn a_cancelled_sentence_breaks_the_playback_at_the_switch() {
     assert!(
         !paths.iter().any(|p| p.contains("uuid_kill")),
         "a barge-in is not a hang-up: {paths:?}"
+    );
+}
+
+/// The cell of this channel under `name`.
+fn of_the_channel(name: &str) -> String {
+    format!("/person/channels/{CHANNEL}/{name}")
+}
+
+/// The media half holds the first audible sound of `call`'s greeting while the
+/// line still rings. Sent as the hive, for the reason `speak_ends` gives.
+async fn greeting_kept(c: &Colony, call: &str) {
+    c.h.send_from(
+        Path::new(&format!("/person/channels/{CHANNEL}")),
+        MessageBuilder::new(Path::new(&of_the_channel("voice")))
+            .hop(
+                json!({"route": "greeting_kept", "session_id": call})
+                    .as_object()
+                    .expect("an object")
+                    .clone(),
+            )
+            .body(Body::Inline(json!({"messages": []})))
+            .ttl(200)
+            .build(),
+    )
+    .await;
+}
+
+/// Wait until the switch answered `n` commands and everything that follows from
+/// the answers is done: the rows of `./gateway -> ./signal` in the message log,
+/// then quiescence (DR § 11: an event and the log, no quiet window).
+async fn switch_answered(c: &Colony, n: usize) {
+    let mut seq = c.h.subscribe_log_seq();
+    let answers = async {
+        loop {
+            seq.borrow_and_update();
+            let rows =
+                c.h.read_log(MessageLogFilter {
+                    from_path_prefix: Some(of_the_channel("gateway")),
+                    to_path_prefix: Some(of_the_channel("signal")),
+                    ..Default::default()
+                })
+                .await;
+            if rows.len() >= n {
+                return;
+            }
+            seq.changed().await.expect("the log writer lives");
+        }
+    };
+    hang(&format!("the switch answered command {n}"), answers).await;
+    c.h.quiesce().await;
+}
+
+/// **The greeting is ready, and the switch is told** (#1650). The media half's
+/// `prewarm_ready` becomes ONE command at the switch: the channel variable
+/// `meclaw_ready` on the ringing call, through the command channel every other
+/// command takes. Nothing else moves: no row of the book, no turn, no lane at
+/// the rim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn prewarm_ready_sets_the_ready_variable_on_the_ringing_call() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![ok("+OK\n")]).await;
+    c.h.send(inject(
+        json!({"mode": "ev", "ev": "call_ringing", "call_uuid": INBOUND_UUID, "number": KNOWN}),
+    ))
+    .await;
+    c.h.quiesce().await;
+    c.h.drain_dead_letters().await;
+    let mark = c.h.log_mark().await;
+
+    greeting_kept(&c, INBOUND_UUID).await;
+    switch_answered(&c, 1).await;
+
+    let paths: Vec<String> = switch_paths(&c)
+        .await
+        .iter()
+        .map(|p| percent_decode(p))
+        .collect();
+    assert_eq!(
+        paths,
+        vec![format!(
+            "/webapi/uuid_setvar?{INBOUND_UUID} meclaw_ready true"
+        )],
+        "one variable on the call the media half names, and no other command"
+    );
+    let booked =
+        c.h.log_since(
+            &mark,
+            MessageLogFilter {
+                to_path_prefix: Some(of_the_channel("calls")),
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        booked.is_empty(),
+        "the line's row stays as it was: {booked:#?}"
+    );
+    let said = c.rx.try_recv();
+    assert!(said.is_err(), "nothing leaves the member: {said:?}");
+    let dead = c.h.drain_dead_letters().await;
+    assert!(dead.is_empty(), "no dead letter: {dead:?}");
+}
+
+/// **A caller who is gone before the variable is set costs nothing** (#1650).
+/// The switch refuses the command (`-ERR`), or answers with an HTTP failure:
+/// no turn, no error at the rim, no dead letter, and the line works on. The
+/// control is the last message: a real arrival raises its turn, and that turn
+/// is the FIRST thing the sink hears.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_setvar_is_no_error_turn() {
+    if skip() {
+        return;
+    }
+    let mut c = start(vec![
+        ok("-ERR No such channel!\n"),
+        MockResponse::server_error(),
+    ])
+    .await;
+    c.h.quiesce().await;
+    c.h.drain_dead_letters().await;
+    let mark = c.h.log_mark().await;
+
+    for n in 1..=2 {
+        greeting_kept(&c, INBOUND_UUID).await;
+        switch_answered(&c, n).await;
+    }
+
+    let after =
+        c.h.log_since(
+            &mark,
+            MessageLogFilter {
+                from_path_prefix: Some(of_the_channel("signal")),
+                ..Default::default()
+            },
+        )
+        .await;
+    let to: Vec<&str> = after.iter().map(|r| r.to_path.as_str()).collect();
+    assert_eq!(
+        to,
+        vec![of_the_channel("gateway"); 2],
+        "the signalling half sent the two commands and nothing about their answers"
+    );
+    let dead = c.h.drain_dead_letters().await;
+    assert!(dead.is_empty(), "no dead letter: {dead:?}");
+
+    c.h.send(inject(
+        json!({"mode": "ev", "ev": "call_incoming", "call_uuid": INBOUND_UUID, "number": KNOWN}),
+    ))
+    .await;
+    let first = hang("the arrival turn reaches the surface", c.rx.recv())
+        .await
+        .expect("the sink lives");
+    assert_eq!(
+        hop_of(&first, "got_text"),
+        "The caller is on the line. Greet them.",
+        "the first thing anybody hears is the arrival, not a failed command: {first:#?}"
     );
 }
 
